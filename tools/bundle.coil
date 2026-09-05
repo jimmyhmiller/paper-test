@@ -1,0 +1,59 @@
+(module papercut.bundle)
+(import "paper.objc" :use *)
+(import "paper.ffi" :use [strcmp])
+
+(extern chmod :cc c [(ptr i8) u16] (-> i32))
+
+;;; Package the already-built executable using macOS file APIs, entirely in Coil.
+(defn main [] (-> i64)
+  (let [pool (new c"NSAutoreleasePool")
+        manager (msg (ptr i8) (class c"NSFileManager") (sel c"defaultManager") [])
+        directory (ns c"build/Papercut Studio.app/Contents/MacOS")
+        (mut error) (nil)
+        ok
+          (msg bool
+               manager
+               (sel c"createDirectoryAtPath:withIntermediateDirectories:attributes:error:")
+               [(ptr i8) bool (ptr i8) (mut (ptr i8))]
+               directory
+               true
+               (nil)
+               (mut error))]
+    (if (not ok)
+        (do (println "Could not create app bundle") 1)
+        (let [binary
+                (msg (ptr i8)
+                     (class c"NSData")
+                     (sel c"dataWithContentsOfFile:")
+                     [(ptr i8)]
+                     (ns c"build/release/papercut"))
+              info (new c"NSMutableDictionary")]
+          (assert (!= binary (nil)))
+          (assert (msg bool
+                       binary
+                       (sel c"writeToFile:atomically:")
+                       [(ptr i8) bool]
+                       (ns c"build/Papercut Studio.app/Contents/MacOS/papercut")
+                       true))
+          (assert (= (chmod c"build/Papercut Studio.app/Contents/MacOS/papercut" (cast u16 493)) (cast i32 0)))
+          (msg i64
+               info
+               (sel c"setObject:forKey:")
+               [(ptr i8) (ptr i8)]
+               (ns c"dev.coil.papercut")
+               (ns c"CFBundleIdentifier"))
+          (msg i64 info (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] (ns c"Papercut Studio") (ns c"CFBundleName"))
+          (msg i64 info (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] (ns c"papercut") (ns c"CFBundleExecutable"))
+          (msg i64 info (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] (ns c"APPL") (ns c"CFBundlePackageType"))
+          (msg i64 info (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] (ns c"0.1.0") (ns c"CFBundleShortVersionString"))
+          (msg i64 info (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] (ns c"13.0") (ns c"LSMinimumSystemVersion"))
+          (assert (msg bool
+                       info
+                       (sel c"writeToFile:atomically:")
+                       [(ptr i8) bool]
+                       (ns c"build/Papercut Studio.app/Contents/Info.plist")
+                       true))
+          (release info)
+          (release pool)
+          (println "Built build/Papercut Studio.app")
+          0))))

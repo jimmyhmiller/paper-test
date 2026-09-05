@@ -1,0 +1,7 @@
+[package]
+name = "paper"
+source-roots = ["src"]
+
+[link]
+frameworks = ["AppKit", "QuartzCore", "CoreGraphics", "CoreText", "ImageIO", "CoreFoundation", "AVFoundation"]
+libs = ["objc"]

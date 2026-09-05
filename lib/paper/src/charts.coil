@@ -1,0 +1,71 @@
+(module paper.charts)
+(import "paper.surface" :use *)
+(import "paper.material" :use *)
+(import "paper.geometry" :use [rect clamp])
+(import "paper.components" :use [label rule])
+(import "paper.ffi" :use [sin cos])
+
+;;; A data-driven paper area. Values are normalized, and curve control points
+;;; preserve each sample's height without overshooting neighboring samples.
+(defn area-path [(x f64) (y f64) (w f64) (h f64) (values (slice f64))] (-> i64)
+  (let [count (len values)]
+    (when (> count 1)
+      (move-to x (+ y h))
+      (line-to x (+ y (* h (- 1.0 (clamp (get values 0) 0.0 1.0)))))
+      (for [i 1 count]
+        (let [step (/ w (cast f64 (- count 1)))
+              previous-x (+ x (* step (cast f64 (- i 1))))
+              next-x (+ x (* step (cast f64 i)))
+              previous-y (+ y (* h (- 1.0 (clamp (get values (- i 1)) 0.0 1.0))))
+              next-y (+ y (* h (- 1.0 (clamp (get values i) 0.0 1.0))))]
+          (curve-to (+ previous-x (* step 0.5)) previous-y (- next-x (* step 0.5)) next-y next-x next-y)))
+      (line-to (+ x w) (+ y h))
+      (close-path)))
+  0)
+
+(defn area [(x f64) (y f64) (w f64) (h f64) (values (slice f64)) (z f64) (material Material)] (-> i64)
+  (begin-sheet)
+  (area-path x y w h values)
+  (finish-sheet z material))
+
+;;; A stacked band can be carved into lower bands. The height order is separate
+;;; from series order, allowing the upper contour to cast into the one below it.
+(defn area-band [(x f64) (y f64) (w f64) (h f64) (upper (slice f64)) (lower (slice f64)) (z f64) (material Material)] (-> i64)
+  (begin-sheet)
+  (area-path x y w h upper)
+  (area-path x y w h lower)
+  (finish-sheet z material))
+
+;;; Donut segments are actual annular sheet geometry, not colored wedges
+;;; hidden beneath a circle. The center remains an open aperture.
+(defn arc-sheet [(cx f64) (cy f64) (outer f64) (inner f64) (start f64) (end f64) (z f64) (material Material)] (-> i64)
+  (begin-sheet)
+  (for [i 0 49]
+    (let [a (+ start (* (- end start) (/ (cast f64 i) 48.0)))
+          x (+ cx (* outer (cos a)))
+          y (+ cy (* outer (sin a)))]
+      (if (= i 0) (move-to x y) (line-to x y))))
+  (for [i 0 49]
+    (let [a (- end (* (- end start) (/ (cast f64 i) 48.0)))]
+      (line-to (+ cx (* inner (cos a))) (+ cy (* inner (sin a))))))
+  (close-path)
+  (finish-sheet z material))
+
+;;; A cut-paper leaf with two cubic sides. Flip the width to mirror the leaf.
+(defn leaf [(x f64) (y f64) (w f64) (h f64) (z f64) (material Material)] (-> i64)
+  (begin-sheet)
+  (move-to x y)
+  (curve-to (+ x (* w 0.12)) (- y (* h 0.68)) (+ x (* w 0.85)) (- y h) (+ x w) (- y h))
+  (curve-to (+ x (* w 0.98)) (- y (* h 0.1)) (+ x (* w 0.28)) (+ y (* h 0.1)) x y)
+  (close-path)
+  (finish-sheet z material))
+
+;;; Freeform topographic contour, suitable as either an outside edge or a hole.
+(defn contour-path [(cx f64) (cy f64) (rx f64) (ry f64) (phase f64)] (-> i64)
+  (for [i 0 97]
+    (let [a (* (/ (cast f64 i) 96.0) 6.28318530718)
+          wave (+ 1.0 (+ (* 0.12 (sin (+ (* a 3.0) phase))) (* 0.055 (cos (* a 5.0)))))
+          x (+ cx (* (* rx wave) (cos a)))
+          y (+ cy (* (* ry wave) (sin a)))]
+      (if (= i 0) (move-to x y) (line-to x y))))
+  (close-path))

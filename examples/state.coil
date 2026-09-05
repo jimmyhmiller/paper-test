@@ -1,0 +1,81 @@
+(module papercut.state)
+(import "coil.primitive" :as primitive)
+(import "paper.platform" :as host)
+(import "paper.objc" :as o)
+
+(defstruct State
+  [(app i64)
+   (light-x f64)
+   (light-y f64)
+   (elevation f64)
+   (depth f64)
+   (grain f64)
+   (shape i64)
+   (hole-x f64)
+   (hole-y f64)
+   (stock i64)
+   (agents i64)
+   (agent-names (ptr i8))
+   (agent-editor bool)
+   (agent-page i64)
+   (agent-error bool)
+   (agent-nav i64)
+   (project i64)
+   (paused bool)
+   (notes i64)
+   (tasks i64)
+   (plant i64)
+   (watered i64)
+   (journal i64)
+   (journal-edit bool)
+   (track i64)
+   (playing bool)
+   (favorite i64)
+   (volume f64)
+   (seconds i64)
+   (destination i64)
+   (saved i64)
+   (days i64)])
+
+(defn state [] (-> (ptr State))
+  (primitive/alloc-static State))
+
+(defn initialize [(app i64)] (-> i64)
+  (let [s (state)]
+    (set! (.app s) (if (and (>= app 0) (< app 4)) app 0))
+    (set! (.light-x s) 200.0)
+    (set! (.light-y s) -160.0)
+    (set! (.elevation s) 680.0)
+    (set! (.depth s) 0.82)
+    (set! (.grain s) 1.0)
+    (set! (.hole-x s) 1332.0)
+    (set! (.hole-y s) 784.0)
+    (set! (.agent-names s) (host/paper_pref_array c"agent-names"))
+    (when (= (o/msg i64 (.agent-names s) (o/sel c"count") []) 0)
+      (let [(mut name) (zeroed (array i8 64))]
+        (for [i 0 24]
+          (host/snprintf (index name 0) 64 c"Worker-%02lld" (+ i 1))
+          (o/msg i64
+                 (.agent-names s)
+                 (o/sel c"addObject:")
+                 [(ptr i8)]
+                 (case i 0
+                       (o/ns c"ResearchAgent") 1
+                       (o/ns c"DataCollector") 2
+                       (o/ns c"SummaryAgent") 3
+                       (o/ns c"WebScraper") 4
+                       (o/ns c"EmailResponder") (o/ns (index name 0)))))))
+    (set! (.agents s) (o/msg i64 (.agent-names s) (o/sel c"count") []))
+    (set! (.watered s) (host/paper_pref_get c"watered" 0))
+    (set! (.journal s) (host/paper_pref_get c"journal-count" 0))
+    (set! (.favorite s) (host/paper_pref_get c"favorites" 0))
+    (set! (.saved s) (host/paper_pref_get c"saved" 0))
+    (set! (.volume s) 0.35)
+    (set! (.days s) 3))
+  0)
+
+(defn selected-bit? [(mask i64) (index i64)] (-> bool)
+  (!= (& mask (<< 1 index)) 0))
+
+(defn flip-bit [(mask i64) (index i64)] (-> i64)
+  (^ mask (<< 1 index)))

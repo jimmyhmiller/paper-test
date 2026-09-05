@@ -1,0 +1,118 @@
+(module paper.ffi)
+
+(defstruct CGPoint [(x f64) (y f64)])
+
+(defstruct CGSize [(w f64) (h f64)])
+
+(defstruct CGRect [(x f64) (y f64) (w f64) (h f64)])
+
+(defstruct CGAffine [(a f64) (b f64) (c f64) (d f64) (tx f64) (ty f64)])
+
+(defn cgrect [(x f64) (y f64) (w f64) (h f64)] (-> CGRect)
+  (CGRect
+    :x x
+    :y y
+    :w w
+    :h h))
+
+(extern CGColorSpaceCreateDeviceRGB :cc c [] (-> (ptr i8)))
+
+(extern CGColorSpaceCreateDeviceGray :cc c [] (-> (ptr i8)))
+
+(extern CGColorSpaceRelease :cc c [(ptr i8)] (-> void))
+
+(extern CGBitmapContextCreate :cc c [(ptr i8) u64 u64 u64 u64 (ptr i8) u32] (-> (ptr i8)))
+
+(extern CGBitmapContextGetData :cc c [(ptr i8)] (-> (ptr u8)))
+
+(extern CGBitmapContextCreateImage :cc c [(ptr i8)] (-> (ptr i8)))
+
+(extern CGContextRelease :cc c [(ptr i8)] (-> void))
+
+(extern CGImageRelease :cc c [(ptr i8)] (-> void))
+
+(extern CGContextSetRGBFillColor :cc c [(ptr i8) f64 f64 f64 f64] (-> void))
+
+(extern CGContextSetGrayFillColor :cc c [(ptr i8) f64 f64] (-> void))
+
+(extern CGContextSetGrayStrokeColor :cc c [(ptr i8) f64 f64] (-> void))
+
+(extern CGContextSetLineWidth :cc c [(ptr i8) f64] (-> void))
+
+(extern CGContextFillRect :cc c [(ptr i8) CGRect] (-> void))
+
+(extern CGContextSaveGState :cc c [(ptr i8)] (-> void))
+
+(extern CGContextRestoreGState :cc c [(ptr i8)] (-> void))
+
+(extern CGContextTranslateCTM :cc c [(ptr i8) f64 f64] (-> void))
+
+(extern CGContextScaleCTM :cc c [(ptr i8) f64 f64] (-> void))
+
+(extern CGContextAddPath :cc c [(ptr i8) (ptr i8)] (-> void))
+
+(extern CGContextEOFillPath :cc c [(ptr i8)] (-> void))
+
+(extern CGContextEOClip :cc c [(ptr i8)] (-> void))
+
+(extern CGContextStrokePath :cc c [(ptr i8)] (-> void))
+
+(extern CGPathCreateMutable :cc c [] (-> (ptr i8)))
+
+(extern CGPathCreateCopy :cc c [(ptr i8)] (-> (ptr i8)))
+
+(extern CGPathCreateCopyBySubtractingPath :cc c [(ptr i8) (ptr i8) bool] (-> (ptr i8)))
+
+(extern CGPathContainsPoint :cc c [(ptr i8) (ptr CGAffine) CGPoint bool] (-> bool))
+
+(extern CGPathIsEmpty :cc c [(ptr i8)] (-> bool))
+
+(extern CGPathRelease :cc c [(ptr i8)] (-> void))
+
+(extern CGPathMoveToPoint :cc c [(ptr i8) (ptr CGAffine) f64 f64] (-> void))
+
+(extern CGPathAddLineToPoint :cc c [(ptr i8) (ptr CGAffine) f64 f64] (-> void))
+
+(extern CGPathAddCurveToPoint :cc c [(ptr i8) (ptr CGAffine) f64 f64 f64 f64 f64 f64] (-> void))
+
+(extern CGPathCloseSubpath :cc c [(ptr i8)] (-> void))
+
+(extern CGPathAddRoundedRect :cc c [(ptr i8) (ptr CGAffine) CGRect f64 f64] (-> void))
+
+(extern CGPathAddEllipseInRect :cc c [(ptr i8) (ptr CGAffine) CGRect] (-> void))
+
+(extern CFRelease :cc c [(ptr i8)] (-> void))
+
+(extern CGImageDestinationCreateWithURL :cc c [(ptr i8) (ptr i8) u64 (ptr i8)] (-> (ptr i8)))
+
+(extern CGImageDestinationAddImage :cc c [(ptr i8) (ptr i8) (ptr i8)] (-> void))
+
+(extern CGImageDestinationFinalize :cc c [(ptr i8)] (-> bool))
+
+(extern sin :cc c [f64] (-> f64))
+
+(extern cos :cc c [f64] (-> f64))
+
+(extern fabs :cc c [f64] (-> f64))
+
+(extern sqrt :cc c [f64] (-> f64))
+
+(extern floor :cc c [f64] (-> f64))
+
+(extern pow :cc c [f64 f64] (-> f64))
+
+(extern snprintf :cc c [(ptr i8) u64 (ptr i8) ...] (-> i32))
+
+(extern strlen :cc c [(ptr i8)] (-> u64))
+
+(extern strcmp :cc c [(ptr i8) (ptr i8)] (-> i32))
+
+(extern strcasestr :cc c [(ptr i8) (ptr i8)] (-> (ptr i8)))
+
+(extern CACurrentMediaTime :cc c [] (-> f64))
+
+(extern objc_allocateClassPair :cc c [(ptr i8) (ptr i8) u64] (-> (ptr i8)))
+
+(extern objc_registerClassPair :cc c [(ptr i8)] (-> void))
+
+(extern class_addMethod :cc c [(ptr i8) (ptr i8) (ptr i8) (ptr i8)] (-> bool))

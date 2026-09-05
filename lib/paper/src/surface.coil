@@ -1,0 +1,103 @@
+(module paper.surface)
+(import "paper.platform" :as host)
+(import "paper.geometry" :use [Rect rect inset])
+(import "paper.material" :use [Material])
+
+;;; Start one sheet mask. Add outer paths and holes before calling finish-sheet.
+;;; The even-odd fill rule makes each enclosed subpath a true cutout.
+(defn begin-sheet [] (-> i64)
+  (host/paper_path_begin)
+  0)
+
+;;; Offset a whole component subtree in depth. Geometry, cuts, and component
+;;; controls retain their relationships. The previous scope is restored afterward.
+(defn with-elevation [(amount Code) & (body Code)] (-> Code)
+  `(let [previous-offset (host/paper_offset)
+         previous-ink (host/paper_ink_offset)]
+     (host/paper_set_offset (+ previous-offset ~amount))
+     (let [result (do ~@body)]
+       (host/paper_set_offset previous-offset)
+       (host/paper_ink_height previous-ink)
+       result)))
+
+(defn ink-height [(z f64)] (-> i64)
+  (host/paper_ink_height z))
+
+(defn rounded-path [(r Rect) (radius f64)] (-> i64)
+  (host/paper_round_rect (.x r)
+                         (.y r)
+                         (.w r)
+                         (.h r)
+                         radius)
+  0)
+
+(defn oval-path [(r Rect)] (-> i64)
+  (host/paper_ellipse (.x r)
+                      (.y r)
+                      (.w r)
+                      (.h r))
+  0)
+
+(defn move-to [(x f64) (y f64)] (-> i64)
+  (host/paper_move x y)
+  0)
+
+(defn line-to [(x f64) (y f64)] (-> i64)
+  (host/paper_line x y)
+  0)
+
+(defn curve-to [(a f64) (b f64) (c f64) (d f64) (e f64) (f f64)] (-> i64)
+  (host/paper_curve a b c d e f)
+  0)
+
+(defn close-path [] (-> i64)
+  (host/paper_close)
+  0)
+
+;;; Carve the current path into the existing stack, down to an absolute floor.
+;;; Unlike an even-odd hole, this also supports cuts crossing the outside edge.
+(defn cut-through [(floor f64)] (-> i64)
+  (host/paper_cut floor))
+
+;;; Elevation is absolute, in paper points, in [0,64]. Rendering sorts by elevation.
+;;; Submit low base sheets as well as cut upper sheets to reveal real lower material.
+(defn finish-sheet [(z f64) (material Material)] (-> i64)
+  (host/paper_sheet z
+                    (.pigment material)
+                    (.roughness material)
+                    (.fiber material)
+                    (.seed material))
+  0)
+
+(defn panel [(r Rect) (radius f64) (z f64) (material Material)] (-> i64)
+  (begin-sheet)
+  (rounded-path r radius)
+  (finish-sheet z material))
+
+(defn disc [(x f64) (y f64) (diameter f64) (z f64) (material Material)] (-> i64)
+  (begin-sheet)
+  (oval-path (rect x y diameter diameter))
+  (finish-sheet z material))
+
+;;; A frame is a sheet with a rounded hole. It casts shadows onto any lower sheet.
+(defn frame [(r Rect) (radius f64) (border f64) (z f64) (material Material)] (-> i64)
+  (begin-sheet)
+  (rounded-path r radius)
+  (rounded-path (inset r border) (- radius border))
+  (finish-sheet z material))
+
+;;; Concentric cut sheets create a stepped well, with real intermediate surfaces.
+(defn well [(r Rect) (radius f64) (z f64) (top Material) (middle Material) (bottom Material)] (-> i64)
+  (begin-sheet)
+  (rounded-path r radius)
+  (cut-through (- z 9.0))
+  (panel r radius (- z 9.0) bottom)
+  (frame r radius 12.0 (- z 4.5) middle)
+  (frame r radius 5.0 z top))
+
+;;; A ring is an elliptical sheet with an elliptical aperture.
+(defn ring [(x f64) (y f64) (d f64) (border f64) (z f64) (material Material)] (-> i64)
+  (begin-sheet)
+  (oval-path (rect x y d d))
+  (oval-path (rect (+ x border) (+ y border) (- d (* border 2.0)) (- d (* border 2.0))))
+  (finish-sheet z material))

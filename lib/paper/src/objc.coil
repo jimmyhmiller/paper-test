@@ -1,0 +1,44 @@
+(module paper.objc)
+(import "coil.primitive" :as primitive)
+
+;; Direct message-send pattern from jim-coil-rewrite/src/objc.coil.
+;; Argument and value-return ABIs are explicit. Void messages follow Jim's
+;; unit-message convention: the return register is ignored. Coil currently
+;; rejects void-returning fnptr casts (recorded in the coil-bugs pad).
+(extern objc_getClass :cc c [(ptr i8)] (-> (ptr i8)))
+
+(extern sel_registerName :cc c [(ptr i8)] (-> (ptr i8)))
+
+(extern objc_msgSend :cc c [(ptr i8) (ptr i8)] (-> (ptr i8)))
+
+(defn class [(name (ptr i8))] (-> (ptr i8))
+  (objc_getClass name))
+
+(defn sel [(name (ptr i8))] (-> (ptr i8))
+  (sel_registerName name))
+
+(defn msg [(ret Code) (recv Code) (selector Code) (argtypes Code) & (args Code)] (-> Code)
+  `(primitive/call-ptr (primitive/cast (fnptr c [(ptr i8) (ptr i8) ~@argtypes] ~ret)
+                                       (primitive/fnptr-of objc_msgSend))
+                       ~recv
+                       ~selector
+                       ~@args))
+
+(defn nil [] (-> (ptr i8))
+  (cast (ptr i8) 0))
+
+(defn ns [(text (ptr i8))] (-> (ptr i8))
+  (msg (ptr i8) (class c"NSString") (sel c"stringWithUTF8String:") [(ptr i8)] text))
+
+(defn new [(name (ptr i8))] (-> (ptr i8))
+  (msg (ptr i8) (class name) (sel c"new") []))
+
+(defn release [(obj (ptr i8))] (-> i64)
+  (msg i64 obj (sel c"release") [])
+  0)
+
+(defn retain [(obj (ptr i8))] (-> (ptr i8))
+  (msg (ptr i8) obj (sel c"retain") []))
+
+(defn utf8 [(obj (ptr i8))] (-> (ptr i8))
+  (msg (ptr i8) obj (sel c"UTF8String") []))

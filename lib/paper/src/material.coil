@@ -1,0 +1,56 @@
+(module paper.material)
+
+;;; Pigment and microstructure belong to each sheet, independently of the light.
+;;; roughness and fiber are in [0,1]; seed is a stable per-material grain offset.
+(defstruct Material [(pigment u32) (roughness f64) (fiber f64) (seed f64)])
+
+(defn stock [(pigment u32) (roughness f64) (fiber f64) (seed f64)] (-> Material)
+  (Material
+    :pigment pigment
+    :roughness roughness
+    :fiber fiber
+    :seed seed))
+
+;;; Mix pigments without replacing the stock's texture or grain seed.
+(defn tint [(material Material) (pigment u32) (amount f64)] (-> Material)
+  (assert (and (>= amount 0.0) (<= amount 1.0)))
+  (let [(mut color) 0]
+    (for [channel 0 3]
+      (let [shift (* channel 8)
+            a (cast f64 (& (>> (cast i64 (.pigment material)) shift) 255))
+            b (cast f64 (& (>> (cast i64 pigment) shift) 255))]
+        (set! color (| (load color) (<< (cast i64 (+ a (* (- b a) amount))) shift)))))
+    (stock (cast u32 (load color)) (.roughness material) (.fiber material) (.seed material))))
+
+(defn cotton [(pigment u32)] (-> Material)
+  (stock pigment 0.78 0.8 0.13))
+
+(defn linen [(pigment u32)] (-> Material)
+  (stock pigment 0.95 0.12 0.48))
+
+(defn recycled [(pigment u32)] (-> Material)
+  (stock pigment 1.0 0.96 0.72))
+
+(defn smooth [(pigment u32)] (-> Material)
+  (stock pigment 0.3 0.65 0.92))
+
+(defn cream [] (-> Material)
+  (cotton 0xebe3d2))
+
+(defn sage [] (-> Material)
+  (recycled 0xa6ae8c))
+
+(defn moss [] (-> Material)
+  (recycled 0x647551))
+
+(defn ochre [] (-> Material)
+  (cotton 0xdfac50))
+
+(defn clay [] (-> Material)
+  (recycled 0xc86b4c))
+
+(defn blue [] (-> Material)
+  (linen 0x819ba9))
+
+(defn ink-stock [] (-> Material)
+  (linen 0x303936))

@@ -1,0 +1,17 @@
+(module paper.layout)
+(import "paper.geometry" :use [Rect rect clamp])
+
+;;; Equal-width cells inside a row. Index and count are checked, and an oversized
+;;; gap consumes available space without producing negative rectangle dimensions.
+(defn row-cell [(bounds Rect) (count i64) (gap f64) (index i64)] (-> Rect)
+  (assert (and (> count 0) (>= index 0) (< index count)))
+  (let [safe-gap (clamp gap 0.0 (/ (.w bounds) (cast f64 count)))
+        width (/ (- (.w bounds) (* safe-gap (cast f64 (- count 1)))) (cast f64 count))]
+    (rect (+ (.x bounds) (* (cast f64 index) (+ width safe-gap))) (.y bounds) width (.h bounds))))
+
+(defn column-cell [(bounds Rect) (count i64) (gap f64) (index i64)] (-> Rect)
+  (let [horizontal (row-cell (rect (.y bounds) (.x bounds) (.h bounds) (.w bounds)) count gap index)]
+    (rect (.y horizontal) (.x horizontal) (.h horizontal) (.w horizontal))))
+
+(defn grid-cell [(bounds Rect) (columns i64) (rows i64) (gap f64) (column i64) (row i64)] (-> Rect)
+  (column-cell (row-cell bounds columns gap column) rows gap row))

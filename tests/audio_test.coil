@@ -1,0 +1,15 @@
+(module papercut.audio-test)
+(import "paper.audio" :as audio)
+(import "paper.objc" :as o)
+
+(deftest all-three-coil-compositions-decode-as-twelve-second-audio
+         (for [track 0 3]
+           (let [data (audio/composition track)]
+             (assert (= (o/msg i64 data (o/sel c"length") []) 1058444)))
+           (audio/play false track 0.0)
+           (let [player (.player (audio/transport))]
+             (assert (!= player (o/nil)))
+             (let [duration (o/msg f64 player (o/sel c"duration") [])]
+               (assert (> duration 11.99))
+               (assert (< duration 12.01)))
+             (assert (not (o/msg bool player (o/sel c"isPlaying") []))))))

@@ -1,0 +1,34 @@
+(module papercut.geometry-test)
+(import "paper.geometry" :use *)
+(import "papercut.state" :use [selected-bit? flip-bit])
+(import "paper.layout" :use *)
+
+(deftest rectangle-has-half-open-bounds
+         (let [r (rect 10.0 20.0 100.0 50.0)]
+           (assert (contains? r 10.0 20.0))
+           (assert (not (contains? r 110.0 25.0)))
+           (assert (not (contains? r 15.0 70.0)))))
+
+(deftest sliders-clamp-and-handle-zero-width
+         (assert (< (fraction -10.0 10.0 100.0) 0.001))
+         (assert (> (fraction 150.0 10.0 100.0) 0.999))
+         (assert (< (fraction 15.0 10.0 0.0) 0.001)))
+
+(deftest shadow-direction-reverses-with-light
+         (assert (< (shadow-offset 10.0 50.0 100.0) 0.0))
+         (assert (> (shadow-offset 10.0 -50.0 100.0) 0.0)))
+
+(deftest independent-persistent-selections
+         (let [mask (flip-bit (flip-bit 0 1) 5)]
+           (assert (selected-bit? mask 1))
+           (assert (selected-bit? mask 5))
+           (assert (not (selected-bit? (flip-bit mask 1) 1)))
+           (assert (selected-bit? (flip-bit mask 1) 5))))
+
+(deftest grid-cells-fit-their-bounds
+         (let [cell (grid-cell (rect 10.0 20.0 310.0 210.0) 3 2 10.0 2 1)]
+           (assert (> (.x cell) 223.0))
+           (assert (< (.x cell) 224.0))
+           (assert (> (.y cell) 129.99))
+           (assert (< (+ (.x cell) (.w cell)) 320.01))
+           (assert (< (+ (.y cell) (.h cell)) 230.01))))

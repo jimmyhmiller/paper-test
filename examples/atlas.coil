@@ -1,0 +1,112 @@
+(module papercut.atlas)
+(import "paper.surface" :use *)
+(import "paper.material" :use *)
+(import "paper.geometry" :use [rect])
+(import "paper.components" :use *)
+(import "paper.navigation" :use *)
+(import "paper.charts" :use *)
+(import "papercut.state" :use *)
+
+(defn destination-name [(i i64)] (-> (ptr i8))
+  (case i 0 c"The quiet coast" 1 c"Into the highlands" c"An island of your own"))
+
+(defn map-art [] (-> i64)
+  (let [s (state)
+        phase (* (cast f64 (.destination s)) 1.3)]
+    (panel (rect 334.0 233.0 813.0 404.0) 27.0 20.0 (linen 0x4e7c89))
+    (for [i 0 5]
+      (let [shrink (* (cast f64 i) 22.0)
+            mat
+              (case i 0
+                    (recycled 0x9eac83) 1
+                    (cotton 0xe5dbc0) 2
+                    (recycled 0xd4dac5) 3
+                    (cotton 0xb9cfca) (linen 0x95b4b8))]
+        (begin-sheet)
+        (rounded-path (rect 334.0 233.0 813.0 404.0) 27.0)
+        (contour-path 775.0 435.0 (- 290.0 shrink) (- 145.0 (* shrink 0.7)) phase)
+        (finish-sheet (- 44.0 (* (cast f64 i) 4.0)) mat)))
+    (begin-sheet)
+    (contour-path 800.0 469.0 81.0 61.0 phase)
+    (finish-sheet 30.0 (cotton 0xd6d5b4))
+    (begin-sheet)
+    (contour-path 800.0 469.0 61.0 40.0 phase)
+    (finish-sheet 35.0 (recycled 0x809673))
+    (for [i 0 12] (disc (+ 526.0 (* (cast f64 i) 20.0)) (+ 383.0 (* (cast f64 i) 7.0)) 4.0 45.0 (cream)))
+    (disc 506.0 363.0 30.0 46.0 (clay))
+    (disc 516.0 373.0 10.0 48.0 (cream))
+    (disc 778.0 461.0 25.0 43.0 (ochre))
+    (disc 787.0 470.0 7.0 46.0 (cream))
+    (label 375.0 266.0 10.0 0x5c736a 2 c"N  ↑")
+    (label 368.0 593.0 10.0 0x617970 2 c"1 : 25 000     CONTOUR INTERVAL 20 M")
+    (label 920.0 274.0 13.0 0x5c7668 1 c"Somewhere worth getting lost.")
+    (label 449.0 341.0 12.0 0x536d5d 3 c"You start here")
+    (label 826.0 491.0 13.0 0xe0e2ca 1 c"a quieter place"))
+  0)
+
+(defn draw [] (-> i64)
+  (let [s (state)]
+    (panel (rect 24.0 102.0 1160.0 800.0) 30.0 6.0 (linen 0x789295))
+    (panel (rect 24.0 92.0 1160.0 800.0) 30.0 15.0 (cotton 0xe4e4d1))
+    (panel (rect 43.0 112.0 245.0 759.0) 23.0 23.0 (linen 0xc2d0c5))
+    (label 69.0 143.0 32.0 0x375e56 1 c"elsewhere")
+    (label 71.0 185.0 10.0 0x658277 3 c"TAKE THE SCENIC ROUTE")
+    (rule 68.0 220.0 192.0 0x9caf9f)
+    (label 70.0 247.0 11.0 0x59786b 3 c"PLACES TO DAYDREAM ABOUT")
+    (let [(mut style) (selection-style (linen 0xc2d0c5) (cotton 0xb3c9bb) (linen 0x8aaba5))]
+      (set! (.font style) 1)
+      (set! (.size style) 16.0)
+      (set! (.radius style) 16.0)
+      (set! (.z style) 29.0)
+      (set! (.ink style) 0x3c655a)
+      (set! (.active-ink style) 0x3c655a)
+      (set! (.secondary style) 0x6c8a7c)
+      (for [i 0 3]
+        (selection-row 400
+                       (choice (+ 400 i)
+                               (destination-name i)
+                               (case i 0
+                                     c"Salt air · coastal paths" 1
+                                     c"Open skies · winding trails" c"Still water · hidden coves"))
+                       (rect 58.0 (+ 282.0 (* 93.0 (cast f64 i))) 216.0 77.0)
+                       (= i (.destination s))
+                       (load style))))
+    (well (rect 62.0 636.0 205.0 211.0) 80.0 28.0 (linen 0xc2d0c5) (cotton 0xa8bdb0) (cotton 0xd7ddc6))
+    (ring 111.0 672.0 104.0 4.0 33.0 (linen 0x7d9b8e))
+    (begin-sheet)
+    (move-to 163.0 684.0)
+    (line-to 151.0 731.0)
+    (line-to 163.0 721.0)
+    (line-to 174.0 731.0)
+    (close-path)
+    (finish-sheet 38.0 (clay))
+    (label 159.0 653.0 10.0 0x5f8173 2 c"N")
+    (label 103.0 798.0 11.0 0x648172 1 c"Follow your curiosity.")
+    (label 333.0 130.0 10.0 0x7d8977 3 c"YOUR NEXT SMALL ADVENTURE")
+    (label 331.0 164.0 34.0 0x3c6155 1 (destination-name (.destination s)))
+    (button 410
+            (rect 960.0 157.0 186.0 43.0)
+            (if (selected-bit? (.saved s) (.destination s)) c"✓  Saved to your places" c"+  Save this place")
+            false
+            (cotton 0xd2ddc4))
+    (map-art)
+    (panel (rect 334.0 656.0 496.0 207.0) 22.0 29.0 (cotton 0xedead6))
+    (label 356.0 678.0 20.0 0x4d6c5a 1 c"A loose plan. Plenty of room.")
+    (label 359.0 718.0 12.0 0x6c8270 0 c"01    Arrive slowly. Find the water.")
+    (rule 358.0 747.0 449.0 0xcbd2bc)
+    (label 359.0 764.0 12.0 0x6c8270 0 c"02    Walk until the map folds differently.")
+    (rule 358.0 793.0 449.0 0xcbd2bc)
+    (label 359.0
+           810.0
+           12.0
+           0x6c8270
+           0
+           (if (> (.days s) 2) c"03    One more sunrise before you go." c"      Leave room for another visit."))
+    (panel (rect 845.0 656.0 302.0 207.0) 22.0 29.0 (linen 0xd3dcc6))
+    (label 869.0 681.0 11.0 0x668371 3 c"MAKE A LITTLE TIME")
+    (number 878.0 718.0 44.0 0x426956 (.days s))
+    (label 919.0 743.0 14.0 0x668371 1 c"unhurried days")
+    (button 411 (rect 868.0 794.0 68.0 40.0) c"−" false (cotton 0xe7e6ce))
+    (button 412 (rect 954.0 794.0 68.0 40.0) c"+" false (cotton 0xe7e6ce))
+    (label 1055.0 806.0 10.0 0x79907d 0 c"1–7 days"))
+  0)

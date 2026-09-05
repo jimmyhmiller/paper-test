@@ -1,0 +1,15 @@
+[package]
+name = "papercut"
+entry = "examples/main.coil"
+source-roots = ["examples", "tests"]
+
+[dependencies]
+paper = { path = "lib/paper" }
+
+[link]
+frameworks = ["AppKit", "QuartzCore", "CoreGraphics", "CoreText", "ImageIO", "CoreFoundation", "AVFoundation"]
+libs = ["objc"]
+
+[test]
+roots = ["tests"]
+suffixes = ["_test.coil"]

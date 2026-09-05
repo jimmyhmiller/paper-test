@@ -1,0 +1,92 @@
+(module papercut.navigation-test)
+(import "paper.navigation" :use *)
+(import "paper.scene" :as scene)
+(import "paper.platform" :as host)
+(import "paper.components" :use [with-enabled])
+(import "paper.geometry" :use [rect])
+(import "paper.material" :use [cream sage moss])
+(import "coil.arraylist" :as al)
+(import "coil.slice" :use [slice-new])
+
+(deftest pagination-covers-empty-partial-and-exact-pages
+         (assert (= (page-count 0 5) 0))
+         (assert (= (page-length 7 0 5) 0))
+         (assert (= (page-count 24 5) 5))
+         (assert (= (page-start 4 24 5) 20))
+         (assert (= (page-length 4 24 5) 4))
+         (assert (= (page-count 25 5) 5))
+         (assert (= (page-length 4 25 5) 5))
+         (assert (= (page-count 26 5) 6))
+         (assert (= (page-index 90 26 5) 5))
+         (assert (= (page-index -1 26 5) 0)))
+
+(deftest pagination-remains-safe-near-the-integer-limit
+         (assert (= (page-count 9223372036854775807 5) 1844674407370955162))
+         (assert (= (page-start 9223372036854775807 9223372036854775807 5) 9223372036854775805))
+         (assert (= (page-length 9223372036854775807 9223372036854775807 5) 2)))
+
+(deftest selection-navigation-wraps-and-stays-in-its-group
+         (scene/init)
+         (host/paper_begin 0xffffff)
+         (host/paper_selection_hit 10 1 0.0 0.0 50.0 40.0 c"First" true)
+         (with-enabled false (host/paper_selection_hit 10 2 0.0 40.0 50.0 40.0 c"Disabled" false))
+         (host/paper_selection_hit 20 9 100.0 0.0 50.0 40.0 c"Other group" false)
+         (host/paper_selection_hit 10 3 0.0 80.0 50.0 40.0 c"Last" false)
+         (assert (= (host/selection-target 1 false false) 3))
+         (assert (= (host/selection-target 1 true false) 3))
+         (assert (= (host/selection-target 3 false false) 1))
+         (assert (= (host/selection-target 3 true false) 1))
+         (assert (= (host/selection-target 1 false true) 3))
+         (assert (= (host/selection-target 3 true true) 1))
+         (assert (= (host/selection-target 2 false false) 0))
+         (assert (= (host/selection-target 9 false false) 9)))
+
+(deftest selection-arrows-follow-reading-order
+         (assert (host/selection-backward? 123))
+         (assert (host/selection-backward? 126))
+         (assert (not (host/selection-backward? 124)))
+         (assert (not (host/selection-backward? 125))))
+
+(deftest empty-choice-lists-add-no-controls
+         (scene/init)
+         (host/paper_begin 0xffffff)
+         (choice-list 1
+                      (rect 0.0 0.0 200.0 200.0)
+                      (slice-new (cast (ptr Choice) 0) 0)
+                      0
+                      8.0
+                      (selection-style (cream) (sage) (moss)))
+         (assert (= (al/al-len [scene/Hit] (.hits (scene/scene))) 0)))
+
+(deftest pager-disables-controls-at-data-boundaries
+         (scene/init)
+         (host/paper_begin 0xffffff)
+         (pager 1 2 (rect 0.0 0.0 220.0 40.0) 0 0 5 (cream))
+         (assert (< (scene/focus-index 1) 0))
+         (assert (< (scene/focus-index 2) 0))
+         (host/paper_begin 0xffffff)
+         (pager 1 2 (rect 0.0 0.0 220.0 40.0) 0 26 5 (cream))
+         (assert (< (scene/focus-index 1) 0))
+         (assert (>= (scene/focus-index 2) 0))
+         (host/paper_begin 0xffffff)
+         (pager 1 2 (rect 0.0 0.0 220.0 40.0) 5 26 5 (cream))
+         (assert (>= (scene/focus-index 1) 0))
+         (assert (< (scene/focus-index 2) 0)))
+
+(deftest choice-rows-publish-selected-and-disabled-accessibility-state
+         (scene/init)
+         (host/paper_begin 0xffffff)
+         (let [(mut disabled) (choice 2 c"Unavailable" c"Not ready")]
+           (set! (.enabled disabled) false)
+           (choice-list 1
+                        (rect 0.0 0.0 200.0 130.0)
+                        (: [(choice 1 c"Selected" c"Ready") (load disabled)] (slice Choice))
+                        1
+                        10.0
+                        (selection-style (cream) (sage) (moss))))
+         (let [first (al/al-get [scene/Hit] (.hits (scene/scene)) 0)
+               second (al/al-get [scene/Hit] (.hits (scene/scene)) 1)]
+           (assert (= (.role first) 3))
+           (assert (> (.value first) 0.99))
+           (assert (not (.enabled second)))
+           (assert (< (scene/focus-index 2) 0))))

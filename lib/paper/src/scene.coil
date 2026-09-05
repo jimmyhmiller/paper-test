@@ -1,0 +1,181 @@
+(module paper.scene)
+(import "coil.primitive" :as primitive)
+(import "coil.alloc" :as alloc)
+(import "coil.arraylist" :as al)
+(import "paper.ffi" :use *)
+(import "paper.objc" :as objc)
+
+(defstruct Sheet [(path (ptr i8)) (z f64) (order i64) (color u32) (rough f64) (fiber f64) (seed f64)])
+
+(defstruct Ink
+  [(x f64)
+   (y f64)
+   (width f64)
+   (height f64)
+   (size f64)
+   (color u32)
+   (font i64)
+   (text (ptr i8))
+   (z f64)
+   (order i64)
+   (kind i64)
+   (clip (ptr i8))])
+
+(defstruct Hit
+  [(id i64)
+   (bounds CGRect)
+   (label (ptr i8))
+   (role i64)
+   (value f64)
+   (z f64)
+   (path (ptr i8))
+   (enabled bool) (group i64)])
+
+(defstruct FocusTarget [(id i64) (native bool)])
+
+(defstruct Scene
+  [(sheets (al/ArrayList Sheet))
+   (inks (al/ArrayList Ink))
+   (hits (al/ArrayList Hit))
+   (focus-targets (al/ArrayList FocusTarget))
+   (path (ptr i8))
+   (background u32)
+   (light-x f64)
+   (light-y f64)
+   (elevation f64)
+   (depth f64)
+   (grain f64)
+   (dirty bool)
+   (geometry-dirty bool)
+   (color-context (ptr i8))
+   (height-context (ptr i8))
+   (material-context (ptr i8))
+   (output-context (ptr i8))
+   (width i64)
+   (height i64)
+   (scale f64)
+   (serial i64)
+   (paint-z f64)
+   (offset f64)
+   (enabled bool)])
+
+(defn scene [] (-> (ptr Scene))
+  (primitive/alloc-static Scene))
+
+(defn init [] (-> i64)
+  (let [s (scene)
+        a (alloc/malloc-allocator)]
+    (set! (.sheets s) (al/al-new [Sheet] a))
+    (set! (.inks s) (al/al-new [Ink] a))
+    (set! (.hits s) (al/al-new [Hit] a))
+    (set! (.focus-targets s) (al/al-new [FocusTarget] a))
+    (set! (.light-x s) 200.0)
+    (set! (.light-y s) -100.0)
+    (set! (.elevation s) 520.0)
+    (set! (.depth s) 1.0)
+    (set! (.grain s) 1.0)
+    (set! (.width s) 2960)
+    (set! (.height s) 1920)
+    (set! (.scale s) 2.0)
+    (set! (.dirty s) true)
+    (set! (.geometry-dirty s) true))
+  0)
+
+(defn clear [(background u32)] (-> i64)
+  (let [s (scene)]
+    (for [i 0 (al/al-len [Sheet] (.sheets s))] (CGPathRelease (.path (al/al-elem [Sheet] (field s sheets) i))))
+    (for [i 0 (al/al-len [Ink] (.inks s))]
+      (let [ink (al/al-elem [Ink] (field s inks) i)]
+        (objc/release (.text ink))
+        (when (!= (.clip ink) (objc/nil)) (CGPathRelease (.clip ink)) 0)))
+    (clear-hits)
+    (al/al-clear! [Sheet] (mut (.sheets s)))
+    (al/al-clear! [Ink] (mut (.inks s)))
+    (set! (.background s) background)
+    (set! (.serial s) 0)
+    (set! (.paint-z s) 0.0)
+    (set! (.offset s) 0.0)
+    (set! (.enabled s) true)
+    (set! (.geometry-dirty s) true))
+  0)
+
+(defn release-hit [(hit Hit)] (-> i64)
+  (objc/release (.label hit))
+  (CGPathRelease (.path hit))
+  0)
+
+(defn clear-hits [] (-> i64)
+  (let [s (scene)]
+    (for [i 0 (al/al-len [Hit] (.hits s))]
+      (release-hit (al/al-get [Hit] (.hits s) i)))
+    (al/al-clear! [Hit] (mut (.hits s)))
+    (al/al-clear! [FocusTarget] (mut (.focus-targets s))))
+  0)
+
+(defn remove-hit [(index i64)] (-> i64)
+  (let [s (scene)
+        count (al/al-len [Hit] (.hits s))]
+    (assert (and (>= index 0) (< index count)))
+    (remove-focus (.id (al/al-elem [Hit] (field s hits) index)))
+    (release-hit (al/al-get [Hit] (.hits s) index))
+    (for [i (+ index 1) count]
+      (al/al-set! [Hit] (mut (.hits s)) (- i 1) (al/al-get [Hit] (.hits s) i)))
+    (al/al-pop! [Hit] (mut (.hits s))))
+  0)
+
+(defn focus-index [(id i64)] (-> i64)
+  (let [(mut result) -1]
+    (for [i 0 (al/al-len [FocusTarget] (.focus-targets (scene)))]
+      (when (= id (.id (al/al-elem [FocusTarget] (field (scene) focus-targets) i)))
+        (set! result i)))
+    (load result)))
+
+;;; Register once per draw, in reading order. IDs span native and paper controls.
+(defn register-focus [(id i64) (native bool)] (-> i64)
+  (assert (and (> id 0) (< (focus-index id) 0)))
+  (al/al-push! [FocusTarget]
+               (mut (.focus-targets (scene)))
+               (FocusTarget :id id :native native)))
+
+(defn remove-focus [(id i64)] (-> i64)
+  (let [s (scene)
+        index (focus-index id)
+        count (al/al-len [FocusTarget] (.focus-targets s))]
+    (when (>= index 0)
+      (for [i (+ index 1) count]
+        (al/al-set! [FocusTarget]
+                    (mut (.focus-targets s))
+                    (- i 1)
+                    (al/al-get [FocusTarget] (.focus-targets s) i)))
+      (al/al-pop! [FocusTarget] (mut (.focus-targets s)))
+      0))
+  0)
+
+;;; Stable insertion maintains elevation order and painter order within a sheet.
+(defn add-sheet [(sheet Sheet)] (-> i64)
+  (let [s (scene)
+        n (al/al-len [Sheet] (.sheets s))
+        (mut i) n]
+    (al/al-push! [Sheet] (mut (.sheets s)) sheet)
+    (while (> (load i) 0)
+      (let [previous (al/al-get [Sheet] (.sheets s) (- (load i) 1))]
+        (if (> (.z previous) (.z sheet))
+            (do (al/al-set! [Sheet] (mut (.sheets s)) (load i) previous) (set! i (- (load i) 1)))
+            (break))))
+    (al/al-set! [Sheet] (mut (.sheets s)) (load i) sheet)))
+
+(defn next-order [] (-> i64)
+  (set! (.serial (scene)) (+ (.serial (scene)) 1))
+  (.serial (scene)))
+
+(defn add-ink [(ink Ink)] (-> i64)
+  (let [s (scene)
+        n (al/al-len [Ink] (.inks s))
+        (mut i) n]
+    (al/al-push! [Ink] (mut (.inks s)) ink)
+    (while (> (load i) 0)
+      (let [previous (al/al-get [Ink] (.inks s) (- (load i) 1))]
+        (if (> (.z previous) (.z ink))
+            (do (al/al-set! [Ink] (mut (.inks s)) (load i) previous) (set! i (- (load i) 1)))
+            (break))))
+    (al/al-set! [Ink] (mut (.inks s)) (load i) ink)))

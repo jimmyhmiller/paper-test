@@ -1,0 +1,249 @@
+(module paper.render)
+(import "coil.primitive" :as primitive)
+(import "coil.arraylist" :as al)
+(import "coil.thread" :as thread)
+(import "paper.ffi" :use *)
+(import "paper.objc" :use *)
+(import "paper.scene" :use *)
+(import "paper.geometry" :use [clamp])
+
+(defn channel [(rgb u32) (shift i64)] (-> f64)
+  (/ (cast f64 (& (>> (cast i64 rgb) shift) 255)) 255.0))
+
+(defn fill [(ctx (ptr i8)) (rgb u32)] (-> i64)
+  (CGContextSetRGBFillColor ctx (channel rgb 16) (channel rgb 8) (channel rgb 0) 1.0)
+  0)
+
+(defn make-bitmap [(gray bool)] (-> (ptr i8))
+  (let [s (scene)
+        cs (if gray (CGColorSpaceCreateDeviceGray) (CGColorSpaceCreateDeviceRGB))
+        ctx
+          (CGBitmapContextCreate (nil)
+                                 (cast u64 (.width s))
+                                 (cast u64 (.height s))
+                                 8
+                                 (cast u64 (* (.width s) (if gray 1 4)))
+                                 cs
+                                 (cast u32 (if gray 0 0x4001)))]
+    (CGColorSpaceRelease cs)
+    (assert (!= ctx (nil)))
+    (CGContextTranslateCTM ctx 0.0 (cast f64 (.height s)))
+    (CGContextScaleCTM ctx (.scale s) (- 0.0 (.scale s)))
+    ctx))
+
+(defn setup [] (-> i64)
+  (let [s (scene)]
+    (when (!= (.color-context s) (nil)) (CGContextRelease (.color-context s)) 0)
+    (when (!= (.height-context s) (nil)) (CGContextRelease (.height-context s)) 0)
+    (when (!= (.material-context s) (nil)) (CGContextRelease (.material-context s)) 0)
+    (when (!= (.output-context s) (nil)) (CGContextRelease (.output-context s)) 0)
+    (set! (.color-context s) (make-bitmap false))
+    (set! (.height-context s) (make-bitmap true))
+    (set! (.material-context s) (make-bitmap false))
+    (set! (.output-context s) (make-bitmap false)))
+  0)
+
+(defn draw-ink [(ctx (ptr i8)) (ink Ink)] (-> i64)
+  (let [font-name
+          (cond (= (.font ink) 1) c"Georgia"
+                (= (.font ink) 2) c"Menlo"
+                (= (.font ink) 3) c"HelveticaNeue-Medium"
+                :else c"HelveticaNeue")
+        font (msg (ptr i8) (class c"NSFont") (sel c"fontWithName:size:") [(ptr i8) f64] (ns font-name) (.size ink))
+        color
+          (msg (ptr i8)
+               (class c"NSColor")
+               (sel c"colorWithSRGBRed:green:blue:alpha:")
+               [f64 f64 f64 f64]
+               (channel (.color ink) 16)
+               (channel (.color ink) 8)
+               (channel (.color ink) 0)
+               1.0)
+        attrs (new c"NSMutableDictionary")]
+    (msg i64 attrs (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] font (ns c"NSFont"))
+    (msg i64 attrs (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] color (ns c"NSColor"))
+    (if (> (.width ink) 0.0)
+        (msg i64
+             (.text ink)
+             (sel c"drawWithRect:options:attributes:context:")
+             [CGRect u64 (ptr i8) (ptr i8)]
+             (cgrect (.x ink) (.y ink) (.width ink) (.height ink))
+             33
+             attrs
+             (nil))
+        (msg i64
+             (.text ink)
+             (sel c"drawAtPoint:withAttributes:")
+             [CGPoint (ptr i8)]
+             (CGPoint :x (.x ink) :y (.y ink))
+             attrs))
+    (release attrs))
+  0)
+
+;;; Rasterize sheet geometry once. Lighting reads these buffers without mutation.
+(defn rasterize [] (-> i64)
+  (let [s (scene)
+        c (.color-context s)
+        h (.height-context s)
+        m (.material-context s)
+        bounds (cgrect 0.0 0.0 (/ (cast f64 (.width s)) (.scale s)) (/ (cast f64 (.height s)) (.scale s)))
+        ink-count (al/al-len [Ink] (.inks s))
+        (mut ink-index) 0]
+    (fill c (.background s))
+    (CGContextFillRect c bounds)
+    (CGContextSetGrayFillColor h 0.0 1.0)
+    (CGContextFillRect h bounds)
+    (CGContextSetRGBFillColor m 0.6 0.4 0.12 1.0)
+    (CGContextFillRect m bounds)
+    (msg i64 (class c"NSGraphicsContext") (sel c"saveGraphicsState") [])
+    (msg i64
+         (class c"NSGraphicsContext")
+         (sel c"setCurrentContext:")
+         [(ptr i8)]
+         (msg (ptr i8)
+              (class c"NSGraphicsContext")
+              (sel c"graphicsContextWithCGContext:flipped:")
+              [(ptr i8) bool]
+              c
+              true))
+    (for [i 0 (al/al-len [Sheet] (.sheets s))]
+      (let [sheet (al/al-get [Sheet] (.sheets s) i)]
+        (while (< (load ink-index) ink-count)
+          (let [ink (al/al-elem [Ink] (field s inks) (load ink-index))]
+            (if (or (< (.z ink) (.z sheet))
+                    (and (primitive/fcmp-eq (.z ink) (.z sheet)) (< (.order ink) (.order sheet))))
+                (do (paint-ink c (load ink)) (set! ink-index (+ (load ink-index) 1)))
+                (break))))
+        (fill c (.color sheet))
+        (CGContextAddPath c (.path sheet))
+        (CGContextEOFillPath c)
+        (CGContextSetGrayFillColor h (/ (clamp (.z sheet) 0.0 64.0) 64.0) 1.0)
+        (CGContextAddPath h (.path sheet))
+        (CGContextEOFillPath h)
+        (CGContextSaveGState h)
+        (CGContextAddPath h (.path sheet))
+        (CGContextEOClip h)
+        (CGContextSetGrayStrokeColor h (/ (clamp (- (.z sheet) 0.7) 0.0 64.0) 64.0) 1.0)
+        (CGContextSetLineWidth h 1.2)
+        (CGContextAddPath h (.path sheet))
+        (CGContextStrokePath h)
+        (CGContextRestoreGState h)
+        (CGContextSetRGBFillColor m (.rough sheet) (.fiber sheet) (.seed sheet) 1.0)
+        (CGContextAddPath m (.path sheet))
+        (CGContextEOFillPath m)))
+    (while (< (load ink-index) ink-count)
+      (paint-ink c (al/al-get [Ink] (.inks s) (load ink-index)))
+      (set! ink-index (+ (load ink-index) 1)))
+    (msg i64 (class c"NSGraphicsContext") (sel c"restoreGraphicsState") [])
+    (set! (.geometry-dirty s) false))
+  0)
+
+(defn paint-ink [(ctx (ptr i8)) (ink Ink)] (-> i64)
+  (CGContextSaveGState ctx)
+  (when (!= (.clip ink) (nil))
+    (CGContextAddPath ctx (.clip ink))
+    (CGContextEOClip ctx)
+    0)
+  (if (= (.kind ink) 1)
+      (do (fill ctx (.color ink)) (CGContextFillRect ctx (cgrect (.x ink) (.y ink) (.width ink) (.height ink))) 0)
+      (draw-ink ctx ink))
+  (CGContextRestoreGState ctx)
+  0)
+
+;;; Deterministic fibers use integer mixing, so material variation is stationary
+;;; under light movement and identical between screenshots and live rendering.
+(defn grain-hash [(x i64) (y i64) (seed i64)] (-> f64)
+  (let [a (^ (* x 374761393) (^ (* y 668265263) (* seed 1274126177)))
+        b (* (^ a (>> a 13)) 1274126177)]
+    (- (/ (cast f64 (& (^ b (>> b 16)) 65535)) 65535.0) 0.5)))
+
+(defn height-at [(data (ptr u8)) (x i64) (y i64) (w i64) (h i64)] (-> f64)
+  (if (or (< x 0) (< y 0) (>= x w) (>= y h))
+      0.0
+      (* (cast f64 (load (index data (+ (* y w) x)))) 0.25098039215686274)))
+
+(defn smooth-unit [(value f64)] (-> f64)
+  (let [v (clamp value 0.0 1.0)] (* (* v v) (- 3.0 (* 2.0 v)))))
+
+;;; Each worker exclusively owns an interleaved set of output rows. All scene
+;;; buffers are immutable until every worker has joined; no shared pixel writes.
+(defn shade-worker [(argument (ptr i8))] (-> (ptr i8))
+  (let [s (scene)
+        worker (cast i64 argument)
+        w (.width s)
+        h (.height s)
+        scale (.scale s)
+        depth (.depth s)
+        grain (.grain s)
+        heights (CGBitmapContextGetData (.height-context s))
+        colors (CGBitmapContextGetData (.color-context s))
+        materials (CGBitmapContextGetData (.material-context s))
+        output (CGBitmapContextGetData (.output-context s))
+        (mut y) worker]
+    (while (< (load y) h)
+      (for [x 0 w]
+        (let [y0 (load y)
+              pos (+ (* y0 w) x)
+              rgba (* pos 4)
+              z (* (height-at heights x y0 w h) depth)
+              lx (- (.light-x s) (/ (cast f64 x) scale))
+              ly (- (.light-y s) (/ (cast f64 y0) scale))
+              horizontal (sqrt (+ (+ (* lx lx) (* ly ly)) 0.001))
+              norm (sqrt (+ (* horizontal horizontal) (* (.elevation s) (.elevation s))))
+              ux (/ lx horizontal)
+              uy (/ ly horizontal)
+              slope (/ (.elevation s) horizontal)
+              reach (clamp (/ (* 64.0 depth) slope) 1.0 180.0)
+              (mut visibility) 1.0]
+          (for [step 1 33]
+            (let [d (+ 0.6 (* reach (/ (cast f64 (* step step)) 1024.0)))
+                  sx (cast i64 (+ (cast f64 x) (* (* ux d) scale)))
+                  sy (cast i64 (+ (cast f64 y0) (* (* uy d) scale)))
+                  obstacle (* (height-at heights sx sy w h) depth)
+                  gap (- (+ z (* d slope)) obstacle)
+                  penumbra (+ 0.5 (* d 0.19))
+                  v (smooth-unit (/ (+ gap penumbra) (* 2.0 penumbra)))]
+              (when (and (> obstacle (+ z 0.125)) (< v (load visibility))) (set! visibility v))))
+          (let [dx (* (- (height-at heights (+ x 1) y0 w h) (height-at heights (- x 1) y0 w h)) depth)
+                dy (* (- (height-at heights x (+ y0 1) w h) (height-at heights x (- y0 1) w h)) depth)
+                n (sqrt (+ 1.0 (+ (* dx dx) (* dy dy))))
+                diffuse
+                  (+ 0.80 (* 0.20 (clamp (/ (+ (- 0.0 (+ (* dx lx) (* dy ly))) (.elevation s)) (* n norm)) 0.0 1.0)))
+                rough (* grain (/ (cast f64 (load (index materials rgba))) 255.0))
+                fiber (/ (cast f64 (load (index materials (+ rgba 1)))) 255.0)
+                seed (cast i64 (load (index materials (+ rgba 2))))
+                pulp (grain-hash x y0 seed)
+                strands (grain-hash (/ x 7) y0 seed)
+                cloud (grain-hash (/ x 37) (/ y0 37) seed)
+                texture (* rough (+ (* pulp 0.10) (+ (* strands (* fiber 0.07)) (* cloud 0.018))))
+                shade (* 1.07 (+ (* diffuse (+ 0.53 (* 0.47 (load visibility)))) texture))]
+            (for [channel 0 3]
+              (set! (index output (+ rgba channel))
+                    (cast u8 (clamp (* (cast f64 (load (index colors (+ rgba channel)))) shade) 0.0 255.0))))
+            (set! (index output (+ rgba 3)) (cast u8 255)))))
+      (set! y (+ (load y) 8))))
+  (nil))
+
+(defn render [] (-> i64)
+  (when (.geometry-dirty (scene)) (rasterize))
+  (let [(mut threads) (zeroed (array thread/Thread 8))
+        (mut started) (zeroed (array bool 8))]
+    (for [i 0 8]
+      (let [status (thread/thread-spawn (index threads i) (fnptr-of shade-worker) (cast (ptr i8) i))]
+        (set! (index started i) (= status (cast i32 0)))
+        (when (!= status (cast i32 0)) (shade-worker (cast (ptr i8) i)) 0)))
+    (for [i 0 8] (when (load (index started i)) (thread/thread-join (index threads i)) 0)))
+  (set! (.dirty (scene)) false)
+  0)
+
+(defn snapshot [(path (ptr i8))] (-> i64)
+  (let [url (msg (ptr i8) (class c"NSURL") (sel c"fileURLWithPath:") [(ptr i8)] (ns path))
+        dest (CGImageDestinationCreateWithURL url (ns c"public.png") 1 (nil))]
+    (if (= dest (nil))
+        1
+        (let [image (CGBitmapContextCreateImage (.output-context (scene)))]
+          (CGImageDestinationAddImage dest image (nil))
+          (let [ok (CGImageDestinationFinalize dest)]
+            (CGImageRelease image)
+            (CFRelease dest)
+            (if ok 0 1))))))

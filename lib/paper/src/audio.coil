@@ -1,0 +1,59 @@
+(module paper.audio)
+(import "coil.primitive" :as primitive)
+(import "paper.objc" :use *)
+(import "paper.ffi" :use [sin])
+
+(defstruct Transport [(player (ptr i8)) (track i64)])
+
+(defn transport [] (-> (ptr Transport))
+  (primitive/alloc-static Transport))
+
+(defn word! [(bytes (ptr u8)) (offset i64) (value i64) (width i64)] (-> i64)
+  (for [i 0 width] (set! (index bytes (+ offset i)) (cast u8 (& (>> value (* i 8)) 255))))
+  0)
+
+;;; Generate original, loopable PCM in Coil. AVAudioPlayer handles device output;
+;;; neither an audio callback in another language nor external media is needed.
+(defn composition [(track i64)] (-> (ptr i8))
+  (let [frames 529200
+        data (msg (ptr i8) (class c"NSMutableData") (sel c"dataWithLength:") [u64] (cast u64 (+ 44 (* frames 2))))
+        bytes (cast (ptr u8) (msg (ptr i8) data (sel c"mutableBytes") []))
+        root (case track 0 130.8128 1 146.8324 174.6141)]
+    (word! bytes 0 0x46464952 4)
+    (word! bytes 4 (+ 36 (* frames 2)) 4)
+    (word! bytes 8 0x45564157 4)
+    (word! bytes 12 0x20746d66 4)
+    (word! bytes 16 16 4)
+    (word! bytes 20 1 2)
+    (word! bytes 22 1 2)
+    (word! bytes 24 44100 4)
+    (word! bytes 28 88200 4)
+    (word! bytes 32 2 2)
+    (word! bytes 34 16 2)
+    (word! bytes 36 0x61746164 4)
+    (word! bytes 40 (* frames 2) 4)
+    (for [i 0 frames]
+      (let [t (/ (cast f64 i) 44100.0)
+            phase (* (* t root) 6.28318530718)
+            fade (sin (* (/ (cast f64 i) (cast f64 frames)) 3.14159265359))
+            chord (+ (sin phase) (+ (* 0.5 (sin (* phase 1.5))) (* 0.3 (sin (* phase 2.002)))))
+            sample (cast i64 (* (* (* chord fade) fade) 9000.0))]
+        (word! bytes (+ 44 (* i 2)) sample 2)))
+    data))
+
+(defn play [(playing bool) (track i64) (volume f64)] (-> i64)
+  (let [s (transport)]
+    (when (or (= (.player s) (nil)) (!= (.track s) track))
+      (when (!= (.player s) (nil)) (msg i64 (.player s) (sel c"stop") []) (release (.player s)))
+      (let [(mut error) (nil)]
+        (set! (.player s)
+              (msg (ptr i8)
+                   (msg (ptr i8) (class c"AVAudioPlayer") (sel c"alloc") [])
+                   (sel c"initWithData:error:")
+                   [(ptr i8) (mut (ptr i8))]
+                   (composition track)
+                   (mut error))))
+      (set! (.track s) track)
+      (msg i64 (.player s) (sel c"setNumberOfLoops:") [i64] -1))
+    (msg i64 (.player s) (sel c"setVolume:") [f32] (cast f32 volume))
+    (if playing (do (msg bool (.player s) (sel c"play") []) 0) (do (msg i64 (.player s) (sel c"pause") []) 0))))

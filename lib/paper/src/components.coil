@@ -1,0 +1,112 @@
+(module paper.components)
+(import "paper.platform" :as host)
+(import "paper.geometry" :use [Rect rect clamp])
+(import "paper.surface" :use *)
+(import "paper.material" :use *)
+
+;;; Enable/disable a component subtree. An inner scope cannot enable a control
+;;; disabled by its parent. Disabled controls remain readable to accessibility.
+(defn with-enabled [(enabled Code) & (body Code)] (-> Code)
+  `(let [previous-enabled (host/paper_enabled)]
+     (host/paper_set_enabled (and previous-enabled ~enabled))
+     (let [result (do ~@body)]
+       (host/paper_set_enabled previous-enabled)
+       result)))
+
+(defn control-stock [(id i64) (material Material)] (-> Material)
+  (cond (not (host/paper_enabled)) (tint material 0xbab9ac 0.55)
+        (host/paper_pressed id) (tint material 0x344032 0.08)
+        (host/paper_hovered id) (tint material 0xf5eddd 0.16)
+        :else material))
+
+(defn control-ink [] (-> u32)
+  (if (host/paper_enabled) 0x283329 0x777e70))
+
+;;; Text is pigment printed onto the visible surface. Fonts: 0 sans, 1 serif,
+;;; 2 monospace, 3 medium sans. The host copies the UTF-8 string immediately.
+(defn label [(x f64) (y f64) (size f64) (color u32) (font i64) (text (ptr i8))] (-> i64)
+  (host/paper_ink x y size color font text)
+  0)
+
+;;; Typeset wrapped text inside a rectangle and truncate the last visible line.
+(defn text-box [(r Rect) (size f64) (color u32) (font i64) (text (ptr i8))] (-> i64)
+  (host/paper_text_box (.x r) (.y r) (.w r) (.h r) size color font text))
+
+(defn number [(x f64) (y f64) (size f64) (color u32) (n i64)] (-> i64)
+  (host/number x y size color n))
+
+(defn rule [(x f64) (y f64) (width f64) (color u32)] (-> i64)
+  (host/paper_rule x y width 0.65 color)
+  0)
+
+(defn hit [(id i64) (r Rect) (name (ptr i8))] (-> i64)
+  (host/paper_hit id (.x r) (.y r) (.w r) (.h r) name 0 0.0)
+  0)
+
+;;; IDs are application-owned and stable across frames. Input is mouse, keyboard,
+;;; and accessibility enabled. Applications respond to release events (kind 3).
+(defn button [(id i64) (r Rect) (name (ptr i8)) (selected bool) (material Material)] (-> i64)
+  (let [z (if (and (host/paper_enabled) (host/paper_pressed id)) 26.0 (if selected 28.0 34.0))]
+    (when (< z 34.0)
+      (begin-sheet)
+      (rounded-path r 11.0)
+      (cut-through (- z 0.1)))
+    (panel r 11.0 z (control-stock id material))
+    (label (+ (.x r) 15.0) (+ (.y r) 11.0) 14.0 (control-ink) 3 name)
+    (hit id r name)))
+
+(defn badge [(x f64) (y f64) (name (ptr i8)) (material Material)] (-> i64)
+  (disc x (+ y 4.0) 9.0 35.0 material)
+  (label (+ x 16.0) y 12.0 0x56604e 0 name))
+
+(defn slider [(id i64) (r Rect) (name (ptr i8)) (value f64) (material Material)] (-> i64)
+  (let [x (.x r)
+        y (.y r)
+        w (.w r)
+        v (clamp value 0.0 1.0)]
+    (panel (rect x (+ y 9.0) w 6.0) 3.0 20.0 (ink-stock))
+    (panel (rect x (+ y 9.0) (* w v) 6.0) 3.0 24.0 (control-stock id material))
+    (disc (- (+ x (* w v)) 10.0) (+ y 1.0) 22.0 34.0 (control-stock id (cream)))
+    (host/paper_hit id x y w 27.0 name 1 v)
+    0))
+
+(defn toggle [(id i64) (x f64) (y f64) (name (ptr i8)) (on bool) (material Material)] (-> i64)
+  (panel (rect x y 43.0 24.0) 12.0 22.0 (control-stock id (if on material (linen 0xb5b2a5))))
+  (disc (+ x (if on 21.0 3.0)) (+ y 3.0) 18.0 32.0 (control-stock id (cream)))
+  (host/paper_hit id x y 43.0 24.0 name 2 (if on 1.0 0.0))
+  0)
+
+(defn checkbox [(id i64) (x f64) (y f64) (name (ptr i8)) (checked bool) (material Material)] (-> i64)
+  (well (rect x y 25.0 25.0) 7.0 31.0 (control-stock id (cream)) material (control-stock id material))
+  (when checked (label (+ x 5.0) (+ y 1.0) 18.0 0xf7f0e0 3 c"✓"))
+  (label (+ x 37.0) (+ y 3.0) 14.0 (control-ink) 0 name)
+  (host/paper_hit id x y 245.0 29.0 name 2 (if checked 1.0 0.0))
+  0)
+
+(defn input [(id i64) (r Rect) (placeholder (ptr i8))] (-> i64)
+  (well r 13.0 30.0 (cream) (cotton 0xd1c6af) (cotton 0xe5dbc7))
+  (host/paper_input id
+                    (+ (.x r) 15.0)
+                    (+ (.y r) 11.0)
+                    (- (.w r) 28.0)
+                    (- (.h r) 15.0)
+                    placeholder)
+  (when (= (host/paper_arg_snapshot) 1)
+    (label (+ (load (field r x)) 15.0) (+ (load (field r y)) 11.0) 14.0 0x747366 0 placeholder))
+  0)
+
+;;; A metric is a carved, three-level component rather than an embossed flat card.
+(defn metric [(r Rect) (title (ptr i8)) (value (ptr i8)) (detail (ptr i8)) (material Material)] (-> i64)
+  (well r 22.0 30.0 material material material)
+  (let [x (+ (.x r) 22.0)
+        y (+ (.y r) 21.0)]
+    (label x y 12.0 0x2b3529 3 title)
+    (label x (+ y 27.0) 37.0 0x253026 0 value)
+    (label x (+ y 82.0) 11.0 0x3c4434 0 detail)))
+
+(defn progress [(r Rect) (value f64) (material Material)] (-> i64)
+  (panel r 5.0 20.0 (cotton 0xc9c5b1))
+  (panel (rect (.x r) (.y r) (* (.w r) (clamp value 0.0 1.0)) (.h r))
+         5.0
+         25.0
+         material))

@@ -1,0 +1,158 @@
+(module papercut.render-test)
+(import "paper.scene" :as scene)
+(import "paper.render" :as render)
+(import "paper.platform" :as host)
+(import "paper.surface" :use *)
+(import "paper.material" :use *)
+(import "paper.geometry" :use [rect])
+(import "paper.ffi" :use [CGBitmapContextGetData])
+(import "paper.objc" :as objc)
+(import "paper.components" :use [button])
+
+(defn small-scene [] (-> i64)
+  (scene/init)
+  (set! (.width (scene/scene)) 180)
+  (set! (.height (scene/scene)) 160)
+  (set! (.scale (scene/scene)) 1.0)
+  (render/setup)
+  (host/paper_begin 0xeeeeee))
+
+(defn height [(x i64) (y i64)] (-> f64)
+  (render/height-at (CGBitmapContextGetData (.height-context (scene/scene))) x y 180 160))
+
+(defn brightness [(x i64) (y i64)] (-> i64)
+  (cast i64 (load (index (CGBitmapContextGetData (.output-context (scene/scene))) (* (+ (* y 180) x) 4)))))
+
+(deftest a-cut-exposes-the-lower-sheet
+         (small-scene)
+         (panel (rect 20.0 20.0 120.0 100.0) 0.0 10.0 (clay))
+         (panel (rect 20.0 20.0 120.0 100.0) 0.0 30.0 (cream))
+         (begin-sheet)
+         (oval-path (rect 50.0 40.0 60.0 60.0))
+         (cut-through 10.0)
+         (render/rasterize)
+         (assert (< (height 80 70) 10.3))
+         (assert (> (height 80 70) 9.7))
+         (assert (> (height 30 30) 29.7)))
+
+(deftest cutting-across-an-edge-does-not-create-phantom-paper
+         (small-scene)
+         (panel (rect 20.0 20.0 90.0 90.0) 0.0 30.0 (cream))
+         (begin-sheet)
+         (oval-path (rect 70.0 40.0 80.0 80.0))
+         (cut-through 0.0)
+         (render/rasterize)
+         (assert (< (height 105 80) 0.1))
+         (assert (< (height 140 80) 0.1))
+         (assert (> (height 35 80) 29.7)))
+
+(deftest raised-edges-cast-shadows-toward-the-opposite-side-of-the-light
+         (small-scene)
+         (panel (rect 55.0 40.0 50.0 70.0) 0.0 20.0 (cream))
+         (host/paper_light -150.0 80.0 150.0 1.0 0.0)
+         (render/render)
+         (let [left-lit (brightness 40 75)
+               right-shadow (brightness 120 75)]
+           (host/paper_light 310.0 80.0 150.0 1.0 0.0)
+           (render/render)
+           (assert (> left-lit (+ (brightness 40 75) 20)))
+           (assert (> (brightness 120 75) (+ right-shadow 20)))))
+
+(deftest zero-depth-removes-cast-shadow
+         (small-scene)
+         (panel (rect 55.0 40.0 50.0 70.0) 0.0 20.0 (cream))
+         (host/paper_light -150.0 80.0 150.0 0.0 0.0)
+         (render/render)
+         (assert (> (brightness 120 75) 220)))
+
+(deftest higher-paper-obscures-printed-ink
+         (small-scene)
+         (panel (rect 20.0 20.0 120.0 100.0) 0.0 10.0 (cream))
+         (host/paper_rule 30.0 30.0 100.0 80.0 0x000000)
+         (panel (rect 60.0 20.0 80.0 100.0) 0.0 20.0 (cream))
+         (host/paper_light 90.0 80.0 680.0 0.0 0.0)
+         (render/render)
+         (assert (< (brightness 40 60) 5))
+         (assert (> (brightness 100 60) 200)))
+
+(deftest elevation-scopes-nest-and-restore-ink-depth
+         (small-scene)
+         (ink-height 6.0)
+         (with-elevation 10.0
+                         (with-elevation 5.0
+                                         (panel (rect 20.0 20.0 120.0 100.0) 0.0 12.0 (cream))))
+         (render/rasterize)
+         (assert (> (height 40 40) 26.7))
+         (assert (< (height 40 40) 27.3))
+         (assert (< (host/paper_offset) 0.01))
+         (assert (> (host/paper_ink_offset) 5.99))
+         (assert (< (host/paper_ink_offset) 6.01)))
+
+(deftest carving-removes-ink-with-the-paper
+         (small-scene)
+         (panel (rect 10.0 10.0 150.0 140.0) 0.0 10.0 (cream))
+         (panel (rect 10.0 10.0 150.0 140.0) 0.0 30.0 (cream))
+         (host/paper_rule 20.0 20.0 130.0 110.0 0x000000)
+         (begin-sheet)
+         (oval-path (rect 30.0 30.0 50.0 50.0))
+         (cut-through 10.0)
+         (begin-sheet)
+         (oval-path (rect 95.0 85.0 70.0 70.0))
+         (cut-through 10.0)
+         (host/paper_light 90.0 80.0 680.0 0.0 0.0)
+         (render/render)
+         (assert (> (brightness 55 55) 200))
+         (assert (> (brightness 120 110) 200))
+         (assert (< (brightness 100 30) 5)))
+
+(deftest carving-preserves-floor-ink-and-later-printing
+         (small-scene)
+         (panel (rect 10.0 10.0 150.0 140.0) 0.0 10.0 (cream))
+         (host/paper_rule 30.0 30.0 40.0 40.0 0x000000)
+         (panel (rect 10.0 10.0 150.0 140.0) 0.0 30.0 (cream))
+         (begin-sheet)
+         (oval-path (rect 20.0 20.0 60.0 60.0))
+         (cut-through 10.0)
+         (host/paper_rule 90.0 90.0 40.0 40.0 0x000000)
+         (host/paper_light 90.0 80.0 680.0 0.0 0.0)
+         (render/render)
+         (assert (< (brightness 50 50) 5))
+         (assert (< (brightness 110 110) 5))
+         (assert (> (brightness 100 30) 200)))
+
+(defn count-dark-ink [] (-> i64)
+  (let [pixels (CGBitmapContextGetData (.color-context (scene/scene)))
+        (mut count) 0]
+    (for [y 10 75]
+      (for [x 10 140]
+        (when (< (load (index pixels (* (+ (* y 180) x) 4))) (cast u8 80))
+          (set! count (+ (load count) 1)))))
+    (load count)))
+
+(deftest carving-clips-native-typeset-glyphs
+         (let [pool (objc/new c"NSAutoreleasePool")]
+           (small-scene)
+           (panel (rect 0.0 0.0 180.0 160.0) 0.0 10.0 (cream))
+           (ink-height 30.0)
+           (host/paper_ink 20.0 20.0 25.0 0x000000 2 c"PAPERCUT")
+           (render/rasterize)
+           (assert (> (count-dark-ink) 100))
+           (begin-sheet)
+           (rounded-path (rect 5.0 5.0 140.0 75.0) 0.0)
+           (cut-through 10.0)
+           (render/rasterize)
+           (assert (= (count-dark-ink) 0))
+           (objc/release pool)))
+
+(deftest a-pressed-button-carves-its-parent-instead-of-disappearing
+         (let [pool (objc/new c"NSAutoreleasePool")]
+           (small-scene)
+           (panel (rect 10.0 10.0 150.0 130.0) 0.0 32.0 (cream))
+           (set! (.drag (host/host)) 1)
+           (set! (.hover (host/host)) 1)
+           (button 1 (rect 30.0 30.0 100.0 50.0) c"Pressed" false (clay))
+           (render/rasterize)
+           (assert (> (height 75 70) 25.7))
+           (assert (< (height 75 70) 26.3))
+           (assert (> (height 20 20) 31.7))
+           (objc/release pool)))

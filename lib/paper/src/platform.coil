@@ -1,0 +1,840 @@
+(module paper.platform)
+(import "coil.primitive" :as primitive)
+(import "coil.alloc" :as alloc)
+(import "coil.arraylist" :as al)
+(import "paper.objc" :use *)
+(import "paper.ffi" :use * :reexport)
+(import "paper.scene" :use *)
+(import "paper.render" :as render)
+(import "paper.geometry" :use [clamp])
+
+(defstruct Input [(id i64) (view (ptr i8)) (previous (ptr i8)) (live bool)])
+
+(defstruct Host
+  [(app (ptr i8))
+   (window (ptr i8))
+   (view (ptr i8))
+   (layer (ptr i8))
+   (inputs (al/ArrayList Input))
+   (draw (fnptr c [] i64))
+   (event (fnptr c [i64 i64 f64 f64] i64))
+   (headless bool)
+   (app-index i64)
+   (snapshot (ptr i8))
+   (focus i64)
+   (requested-focus i64)
+   (drag i64)
+   (hover i64)
+   (window-w f64)
+   (window-h f64)
+   (last-tick f64)
+   (ax-class (ptr i8))
+   (ax-slider-class (ptr i8))
+   (ax-elements (ptr i8))
+   (logical-w f64)
+   (logical-h f64)
+   (title (ptr i8))])
+
+(defn host [] (-> (ptr Host))
+  (primitive/alloc-static Host))
+
+(defn logical-width [] (-> f64)
+  (if (> (.logical-w (host)) 0.0) (.logical-w (host)) 1480.0))
+
+(defn logical-height [] (-> f64)
+  (if (> (.logical-h (host)) 0.0) (.logical-h (host)) 960.0))
+
+;;; Configure the logical design canvas before paper_run. The view scales and
+;;; hit-tests in the same coordinates at every native window size.
+(defn paper_configure [(title (ptr i8)) (width f64) (height f64)] (-> i64)
+  (assert (and (>= width 320.0) (>= height 240.0) (<= width 4000.0) (<= height 4000.0)))
+  (set! (.title (host)) title)
+  (set! (.logical-w (host)) width)
+  (set! (.logical-h (host)) height)
+  0)
+
+(defn paper_arg_app [] (-> i64)
+  (.app-index (host)))
+
+(defn paper_arg_snapshot [] (-> i64)
+  (if (.headless (host)) 1 0))
+
+(defn dispatch [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
+  (call-ptr (.event (host)) kind id x y))
+
+(defn paper_begin [(color u32)] (-> i64)
+  (clear color))
+
+(defn paper_path_begin [] (-> i64)
+  (let [s (scene)]
+    (when (!= (.path s) (nil)) (CGPathRelease (.path s)) 0)
+    (set! (.path s) (CGPathCreateMutable)))
+  0)
+
+(defn paper_move [(x f64) (y f64)] (-> i64)
+  (CGPathMoveToPoint (.path (scene)) (cast (ptr CGAffine) 0) x y)
+  0)
+
+(defn paper_line [(x f64) (y f64)] (-> i64)
+  (CGPathAddLineToPoint (.path (scene)) (cast (ptr CGAffine) 0) x y)
+  0)
+
+(defn paper_curve [(a f64) (b f64) (c f64) (d f64) (e f64) (f f64)] (-> i64)
+  (CGPathAddCurveToPoint (.path (scene)) (cast (ptr CGAffine) 0) a b c d e f)
+  0)
+
+(defn paper_close [] (-> i64)
+  (CGPathCloseSubpath (.path (scene)))
+  0)
+
+(defn paper_round_rect [(x f64) (y f64) (w f64) (h f64) (r f64)] (-> i64)
+  (when (and (> w 0.0) (> h 0.0))
+    (let [radius (clamp r 0.0 (* 0.5 (if (< w h) w h)))]
+      (CGPathAddRoundedRect (.path (scene)) (cast (ptr CGAffine) 0) (cgrect x y w h) radius radius))
+    0)
+  0)
+
+(defn paper_ellipse [(x f64) (y f64) (w f64) (h f64)] (-> i64)
+  (when (and (> w 0.0) (> h 0.0))
+    (CGPathAddEllipseInRect (.path (scene)) (cast (ptr CGAffine) 0) (cgrect x y w h))
+    0)
+  0)
+
+(defn paper_sheet [(z f64) (color u32) (rough f64) (fiber f64) (seed f64)] (-> i64)
+  (set! (.paint-z (scene)) (clamp (+ z (.offset (scene))) 0.0 64.0))
+  (add-sheet (Sheet
+               :path (CGPathCreateCopy (.path (scene)))
+               :z (.paint-z (scene))
+               :order (next-order)
+               :color color
+               :rough (clamp rough 0.0 1.0)
+               :fiber (clamp fiber 0.0 1.0)
+               :seed (clamp seed 0.0 1.0))))
+
+;;; Remove the current aperture from every already-submitted sheet above floor.
+;;; Boolean subtraction also handles apertures crossing a sheet's outside edge.
+(defn paper_cut [(floor f64)] (-> i64)
+  (let [s (scene)]
+    (for [i 0 (al/al-len [Sheet] (.sheets s))]
+      (let [sheet (al/al-elem [Sheet] (field s sheets) i)]
+        (when (> (.z sheet) (+ floor (.offset s)))
+          (let [cut (CGPathCreateCopyBySubtractingPath (.path sheet) (.path s) true)]
+            (assert (!= cut (nil)))
+            (CGPathRelease (.path sheet))
+            (set! (.path sheet) cut)))))
+    (for [i 0 (al/al-len [Ink] (.inks s))]
+      (let [ink (al/al-elem [Ink] (field s inks) i)]
+        (when (> (.z ink) (+ floor (.offset s)))
+          (when (= (.clip ink) (nil))
+            (set! (.clip ink) (CGPathCreateMutable))
+            (CGPathAddRoundedRect (.clip ink)
+                                  (cast (ptr CGAffine) 0)
+                                  (cgrect 0.0
+                                          0.0
+                                          (/ (cast f64 (.width s)) (.scale s))
+                                          (/ (cast f64 (.height s)) (.scale s)))
+                                  0.0
+                                  0.0)
+            0)
+          (let [cut (CGPathCreateCopyBySubtractingPath (.clip ink) (.path s) true)]
+            (assert (!= cut (nil)))
+            (CGPathRelease (.clip ink))
+            (set! (.clip ink) cut)))))
+    (let [(mut i) (- (al/al-len [Hit] (.hits s)) 1)]
+      (while (>= (load i) 0)
+        (let [hit (al/al-elem [Hit] (field s hits) (load i))]
+          (when (> (.z hit) (+ floor (.offset s)))
+            (let [cut (CGPathCreateCopyBySubtractingPath (.path hit) (.path s) true)]
+              (assert (!= cut (nil)))
+              (CGPathRelease (.path hit))
+              (set! (.path hit) cut)
+              (when (CGPathIsEmpty cut)
+                (when (= (.focus (host)) (.id hit)) (set! (.focus (host)) 0))
+                (remove-hit (load i))))))
+        (set! i (- (load i) 1)))))
+  0)
+
+(defn paper_ink [(x f64) (y f64) (size f64) (color u32) (font i64) (text (ptr i8))] (-> i64)
+  (add-ink (Ink
+             :x x
+             :y y
+             :width 0.0
+             :height 0.0
+             :size size
+             :color color
+             :font font
+             :text (retain (ns text))
+             :z (.paint-z (scene))
+             :order (next-order)
+             :kind 0
+             :clip (nil))))
+
+(defn paper_text_box [(x f64) (y f64) (width f64) (height f64) (size f64) (color u32) (font i64) (text (ptr i8))] (-> i64)
+  (add-ink (Ink
+             :x x
+             :y y
+             :width width
+             :height height
+             :size size
+             :color color
+             :font font
+             :text (retain (ns text))
+             :z (.paint-z (scene))
+             :order (next-order)
+             :kind 0
+             :clip (nil))))
+
+(defn paper_rule [(x f64) (y f64) (w f64) (h f64) (color u32)] (-> i64)
+  (add-ink (Ink
+             :x x
+             :y y
+             :width w
+             :height h
+             :size 0.0
+             :color color
+             :font 0
+             :text (nil)
+             :z (.paint-z (scene))
+             :order (next-order)
+             :kind 1
+             :clip (nil))))
+
+;;; Set the depth where subsequent text is printed, relative to the current layer.
+(defn paper_ink_height [(z f64)] (-> i64)
+  (set! (.paint-z (scene)) (+ z (.offset (scene))))
+  0)
+
+(defn paper_offset [] (-> f64)
+  (.offset (scene)))
+
+(defn paper_ink_offset [] (-> f64)
+  (- (.paint-z (scene)) (.offset (scene))))
+
+(defn paper_set_offset [(z f64)] (-> i64)
+  (set! (.offset (scene)) z)
+  0)
+
+(defn paper_hit [(id i64) (x f64) (y f64) (w f64) (h f64) (name (ptr i8)) (role i64) (value f64)] (-> i64)
+  (when (.enabled (scene)) (register-focus id false))
+  (let [path (CGPathCreateMutable)]
+    (CGPathAddRoundedRect path (cast (ptr CGAffine) 0) (cgrect x y w h) 0.0 0.0)
+    (al/al-push! [Hit]
+                 (mut (.hits (scene)))
+                 (Hit
+                   :id id
+                   :bounds (cgrect x y w h)
+                   :label (retain (ns name))
+                   :role role
+                   :value value
+                   :z (.paint-z (scene))
+                   :path path
+                   :enabled (.enabled (scene)) :group 0)))
+  (when (and (.enabled (scene)) (= id (.focus (host)))) (paper_rule x (+ y (- h 2.0)) w 2.0 0x9c774c))
+  0)
+
+(defn paper_enabled [] (-> bool)
+  (.enabled (scene)))
+
+(defn paper_selection_hit [(group i64) (id i64) (x f64) (y f64) (w f64) (h f64)
+                          (name (ptr i8)) (selected bool)] (-> i64)
+  (paper_hit id x y w h name 3 (if selected 1.0 0.0))
+  (set! (.group (al/al-elem [Hit] (field (scene) hits) (- (al/al-len [Hit] (.hits (scene))) 1))) group)
+  0)
+
+(defn paper_set_enabled [(enabled bool)] (-> i64)
+  (set! (.enabled (scene)) enabled)
+  0)
+
+(defn paper_hovered [(id i64)] (-> bool)
+  (= (.hover (host)) id))
+
+(defn paper_pressed [(id i64)] (-> bool)
+  (and (= (.drag (host)) id) (= (.hover (host)) id)))
+
+(defn paper_light [(x f64) (y f64) (elevation f64) (depth f64) (grain f64)] (-> i64)
+  (let [s (scene)]
+    (set! (.light-x s) x)
+    (set! (.light-y s) y)
+    (set! (.elevation s) (clamp elevation 80.0 2000.0))
+    (set! (.depth s) (clamp depth 0.0 2.0))
+    (set! (.grain s) (clamp grain 0.0 2.0)))
+  0)
+
+(defn paper_redraw [] (-> i64)
+  (set! (.dirty (scene)) true)
+  0)
+
+;;; Request focus for a control submitted by the next draw, such as a new dialog.
+(defn paper_focus [(id i64)] (-> i64)
+  (set! (.requested-focus (host)) id)
+  (paper_redraw))
+
+(defn number [(x f64) (y f64) (size f64) (color u32) (value i64)] (-> i64)
+  (let [(mut bytes) (zeroed (array i8 64))]
+    (snprintf (index bytes 0) 64 c"%lld" value)
+    (paper_ink x y size color 0 (index bytes 0))))
+
+(defn input-index [(id i64)] (-> i64)
+  (let [(mut found) -1]
+    (for [i 0 (al/al-len [Input] (.inputs (host)))]
+      (when (= (.id (al/al-elem [Input] (field (host) inputs) i)) id) (set! found i)))
+    (load found)))
+
+(defn input-view [(id i64)] (-> (ptr i8))
+  (let [i (input-index id)] (if (< i 0) (nil) (.view (al/al-elem [Input] (field (host) inputs) i)))))
+
+(defn paper_input_value [(id i64)] (-> (ptr i8))
+  (let [view (input-view id)]
+    (if (= view (nil)) c"" (utf8 (msg (ptr i8) view (sel c"stringValue") [])))))
+
+(defn paper_input_clear [(id i64)] (-> i64)
+  (msg i64 (input-view id) (sel c"setStringValue:") [(ptr i8)] (ns c""))
+  0)
+
+(defn paper_input [(id i64) (x f64) (y f64) (w f64) (h f64) (placeholder (ptr i8))] (-> i64)
+  (when (.enabled (scene)) (register-focus id true))
+  (when (not (.headless (host)))
+    (let [app (host)
+          (mut i) (input-index id)]
+      (when (< (load i) 0)
+        (let [field (new c"NSTextField")]
+          (msg i64 field (sel c"setBordered:") [bool] false)
+          (msg i64 field (sel c"setDrawsBackground:") [bool] false)
+          (msg i64
+               field
+               (sel c"setFont:")
+               [(ptr i8)]
+               (msg (ptr i8) (class c"NSFont") (sel c"systemFontOfSize:") [f64] 14.0))
+          (msg i64
+               field
+               (sel c"setTextColor:")
+               [(ptr i8)]
+               (msg (ptr i8) (class c"NSColor") (sel c"colorWithWhite:alpha:") [f64 f64] 0.22 1.0))
+          (msg i64 (.view app) (sel c"addSubview:") [(ptr i8)] field)
+          (set! i (al/al-len [Input] (.inputs app)))
+          (al/al-push! [Input]
+                       (mut (.inputs app))
+                       (Input
+                         :id id
+                         :view field
+                         :previous (retain (ns c""))
+                         :live true))))
+      (let [item (al/al-elem [Input] (field app inputs) (load i))
+            sx (/ (.window-w app) (logical-width))
+            sy (/ (.window-h app) (logical-height))]
+        (set! (.live item) true)
+        (msg i64 (.view item) (sel c"setEnabled:") [bool] (.enabled (scene)))
+        (msg i64 (.view item) (sel c"setHidden:") [bool] false)
+        (msg i64
+             (.view item)
+             (sel c"setFrame:")
+             [CGRect]
+             (cgrect (* x sx) (* (- (logical-height) (+ y h)) sy) (* w sx) (* h sy)))
+        (msg i64
+             (.view item)
+             (sel c"setFont:")
+             [(ptr i8)]
+             (msg (ptr i8) (class c"NSFont") (sel c"systemFontOfSize:") [f64] (* 14.0 sx)))
+        (msg i64 (.view item) (sel c"setPlaceholderString:") [(ptr i8)] (ns placeholder))
+        (msg i64 (.view item) (sel c"setAccessibilityLabel:") [(ptr i8)] (ns placeholder)))))
+  0)
+
+(defn paper_pref_get [(key (ptr i8)) (fallback i64)] (-> i64)
+  (if (.headless (host))
+      fallback
+      (let [defaults (msg (ptr i8) (class c"NSUserDefaults") (sel c"standardUserDefaults") [])
+            name (msg (ptr i8) (ns c"studio.papercut.") (sel c"stringByAppendingString:") [(ptr i8)] (ns key))]
+        (if (= (msg (ptr i8) defaults (sel c"objectForKey:") [(ptr i8)] name) (nil))
+            fallback
+            (msg i64 defaults (sel c"integerForKey:") [(ptr i8)] name)))))
+
+(defn paper_pref_set [(key (ptr i8)) (value i64)] (-> i64)
+  (when (not (.headless (host)))
+    (msg i64
+         (msg (ptr i8) (class c"NSUserDefaults") (sel c"standardUserDefaults") [])
+         (sel c"setInteger:forKey:")
+         [i64 (ptr i8)]
+         value
+         (msg (ptr i8) (ns c"studio.papercut.") (sel c"stringByAppendingString:") [(ptr i8)] (ns key))))
+  0)
+
+(defn paper_pref_text [(key (ptr i8)) (fallback (ptr i8))] (-> (ptr i8))
+  (if (.headless (host))
+      fallback
+      (let [defaults (msg (ptr i8) (class c"NSUserDefaults") (sel c"standardUserDefaults") [])
+            name (msg (ptr i8) (ns c"studio.papercut.") (sel c"stringByAppendingString:") [(ptr i8)] (ns key))
+            value (msg (ptr i8) defaults (sel c"stringForKey:") [(ptr i8)] name)]
+        (if (= value (nil)) fallback (utf8 value)))))
+
+(defn paper_pref_text_set [(key (ptr i8)) (value (ptr i8))] (-> i64)
+  (when (not (.headless (host)))
+    (msg i64
+         (msg (ptr i8) (class c"NSUserDefaults") (sel c"standardUserDefaults") [])
+         (sel c"setObject:forKey:")
+         [(ptr i8) (ptr i8)]
+         (ns value)
+         (msg (ptr i8) (ns c"studio.papercut.") (sel c"stringByAppendingString:") [(ptr i8)] (ns key))))
+  0)
+
+;;; Return an owned mutable copy of a persisted property-list array.
+(defn paper_pref_array [(key (ptr i8))] (-> (ptr i8))
+  (let [defaults (msg (ptr i8) (class c"NSUserDefaults") (sel c"standardUserDefaults") [])
+        name (msg (ptr i8) (ns c"studio.papercut.") (sel c"stringByAppendingString:") [(ptr i8)] (ns key))
+        saved (if (.headless (host)) (nil) (msg (ptr i8) defaults (sel c"arrayForKey:") [(ptr i8)] name))]
+    (if (= saved (nil)) (new c"NSMutableArray") (msg (ptr i8) saved (sel c"mutableCopy") []))))
+
+(defn paper_pref_array_set [(key (ptr i8)) (value (ptr i8))] (-> i64)
+  (when (not (.headless (host)))
+    (msg i64
+         (msg (ptr i8) (class c"NSUserDefaults") (sel c"standardUserDefaults") [])
+         (sel c"setObject:forKey:")
+         [(ptr i8) (ptr i8)]
+         value
+         (msg (ptr i8) (ns c"studio.papercut.") (sel c"stringByAppendingString:") [(ptr i8)] (ns key))))
+  0)
+
+;;; Begin a modal interaction scope. Background controls and native text fields
+;;; stop accepting input; draw the dialog's controls afterward.
+(defn paper_modal_scope [] (-> i64)
+  (let [s (scene)
+        app (host)]
+    (clear-hits)
+    (for [i 0 (al/al-len [Input] (.inputs app))]
+      (set! (.live (al/al-elem [Input] (field app inputs) i)) false)))
+  0)
+
+(defn refresh [] (-> i64)
+  (let [app (host)
+        editor (editing-input)]
+    (for [i 0 (al/al-len [Input] (.inputs app))]
+      (set! (.live (al/al-elem [Input] (field app inputs) i)) false))
+    (call-ptr (.draw app))
+    (when (or (and (> (.focus app) 0) (< (focus-index (.focus app)) 0))
+              (and (> editor 0) (< (focus-index editor) 0)))
+      (set! (.focus app) 0)
+      (when (not (.headless app))
+        (msg bool (.window app) (sel c"makeFirstResponder:") [(ptr i8)] (nil))
+        0))
+    (when (> (.requested-focus app) 0)
+      (when (not (.headless app)) (focus-control (.requested-focus app)) 0)
+      (set! (.requested-focus app) 0))
+    (render/render)
+    (when (not (.headless app))
+      (for [i 0 (al/al-len [Input] (.inputs app))]
+        (let [item (al/al-get [Input] (.inputs app) i)]
+          (msg i64 (.view item) (sel c"setHidden:") [bool] (not (.live item)))))
+      (let [image (CGBitmapContextCreateImage (.output-context (scene)))]
+        (msg i64 (class c"CATransaction") (sel c"begin") [])
+        (msg i64 (class c"CATransaction") (sel c"setDisableActions:") [bool] true)
+        (msg i64 (.layer app) (sel c"setContents:") [(ptr i8)] image)
+        (msg i64 (class c"CATransaction") (sel c"commit") [])
+        (CGImageRelease image)
+        0)
+      (accessibility-refresh)))
+  0)
+
+(defn hit-test [(x f64) (y f64)] (-> i64)
+  (let [(mut result) 0
+        (mut height) -1.0]
+    (for [i 0 (al/al-len [Hit] (.hits (scene)))]
+      (let [hit (al/al-get [Hit] (.hits (scene)) i)
+            r (.bounds hit)]
+        (when (and (>= x (.x r))
+                   (>= y (.y r))
+                   (< x (+ (.x r) (.w r)))
+                   (< y (+ (.y r) (.h r)))
+                   (>= (.z hit) (load height))
+                   (CGPathContainsPoint (.path hit) (cast (ptr CGAffine) 0) (CGPoint :x x :y y) true))
+          (set! result (if (.enabled hit) (.id hit) 0))
+          (set! height (.z hit)))))
+    (load result)))
+
+(defn pointer-event [(event (ptr i8)) (kind i64)] (-> i64)
+  (let [app (host)
+        p (msg CGPoint event (sel c"locationInWindow") [])
+        x (* (/ (.x p) (.window-w app)) (logical-width))
+        y (* (- 1.0 (/ (.y p) (.window-h app))) (logical-height))]
+    (update-hover x y)
+    (when (= kind 1)
+      (set! (.drag app) (hit-test x y))
+      (set! (.focus app) (.drag app))
+      (when (> (.drag app) 0) (msg bool (.window app) (sel c"makeFirstResponder:") [(ptr i8)] (nil)) 0))
+    (when (and (> (.drag app) 0) (or (!= kind 3) (= (.drag app) (hit-test x y))))
+      (dispatch kind (.drag app) x y))
+    (when (= kind 3) (set! (.drag app) 0)))
+  (paper_redraw)
+  0)
+
+(defn update-hover [(x f64) (y f64)] (-> i64)
+  (let [hover (hit-test x y)]
+    (when (!= hover (.hover (host)))
+      (set! (.hover (host)) hover)
+      (paper_redraw)))
+  0)
+
+;;; Polling also observes pointer exit and app deactivation without keeping a
+;;; tracking rectangle tied to a stale window size.
+(defn poll-pointer [] (-> i64)
+  (let [app (host)]
+    (if (msg bool (.window app) (sel c"isKeyWindow") [])
+        (let [p (msg CGPoint (.window app) (sel c"mouseLocationOutsideOfEventStream") [])]
+          (update-hover (* (/ (.x p) (.window-w app)) (logical-width))
+                        (* (- 1.0 (/ (.y p) (.window-h app))) (logical-height))))
+        (update-hover -1.0 -1.0)))
+  0)
+
+(defn poll-inputs [] (-> i64)
+  (for [i 0 (al/al-len [Input] (.inputs (host)))]
+    (let [item (al/al-elem [Input] (field (host) inputs) i)
+          text (msg (ptr i8) (.view item) (sel c"stringValue") [])]
+      (when (and (.live item) (not (msg bool text (sel c"isEqualToString:") [(ptr i8)] (.previous item))))
+        (release (.previous item))
+        (set! (.previous item) (retain text))
+        (dispatch 5 (.id item) 0.0 0.0))))
+  0)
+
+(defn key-event [(event (ptr i8))] (-> bool)
+  (let [app (host)
+        key (msg i64 event (sel c"keyCode") [])
+        flags (msg i64 event (sel c"modifierFlags") [])
+        editor (editing-input)]
+    (when (> editor 0) (set! (.focus app) editor))
+    (cond (and (= key 12) (!= (& flags 1048576) 0)) (do (msg i64 (.window app) (sel c"close") []) true)
+          (= key 48)
+            (let [next (next-control (.focus app) (!= (& flags 131072) 0))]
+              (when (> next 0)
+                (focus-control next)
+                0)
+              true)
+          (> editor 0) (do (dispatch 4 key 0.0 0.0) false)
+          (and (>= key 123) (<= key 126) (> (.focus app) 0))
+            (let [backward (or (= key 123) (= key 125))
+                  next (selection-target (.focus app) (selection-backward? key) false)]
+              (if (> next 0) (select-control next)
+                (adjust-control (.focus app) (if backward -0.05 0.05))))
+          (and (or (= key 115) (= key 119)) (> (.focus app) 0))
+            (select-control (selection-target (.focus app) (= key 115) true))
+          (and (or (= key 36) (= key 49)) (> (.focus app) 0)) (activate-control (.focus app))
+          :else (do (dispatch 4 key 0.0 0.0) false))))
+
+(defn ax-id [(obj (ptr i8))] (-> i64)
+  (msg i64 (msg (ptr i8) obj (sel c"accessibilityIdentifier") []) (sel c"longLongValue") []))
+
+;;; Arrow keys wrap within one selection group and skip disabled choices.
+;;; Home/End select an endpoint. Native fields do not enter this routing path.
+(defn selection-backward? [(key i64)] (-> bool)
+  (or (= key 123) (= key 126)))
+
+(defn selection-target [(current i64) (backward bool) (edge bool)] (-> i64)
+  (let [hits (.hits (scene)) count (al/al-len [Hit] hits)
+        (mut group) 0 (mut first) 0 (mut last) 0
+        (mut neighbor) 0 (mut seen) false]
+    (for [i 0 count]
+      (let [hit (al/al-get [Hit] hits i)]
+        (when (and (= (.id hit) current) (= (.role hit) 3) (.enabled hit))
+          (set! group (.group hit)))))
+    (when (> (load group) 0)
+      (for [i 0 count]
+        (let [hit (al/al-get [Hit] hits i)]
+          (when (and (= (.group hit) (load group)) (.enabled hit))
+            (when (= (load first) 0) (set! first (.id hit)))
+            (when (= (.id hit) current)
+              (when backward (set! neighbor (load last)))
+              (set! seen true))
+            (when (and (not backward) (load seen) (!= (.id hit) current) (= (load neighbor) 0))
+              (set! neighbor (.id hit)))
+            (set! last (.id hit))))))
+    (if edge (if backward (load first) (load last))
+      (if (> (load neighbor) 0) (load neighbor) (if backward (load last) (load first))))))
+
+(defn select-control [(id i64)] (-> bool)
+  (if (and (> id 0) (activate-control id))
+    (do (paper_focus id) true) false))
+
+(defn ax-press [(obj (ptr i8)) (selector (ptr i8))] (-> bool)
+  (activate-control (ax-id obj)))
+
+;;; Resolve against the current scene, including cuts and modal scopes. A stale
+;;; accessibility element must not reactivate an absent background control.
+(defn activate-control [(id i64)] (-> bool)
+  (let [(mut active) false]
+    (for [i 0 (al/al-len [Hit] (.hits (scene)))]
+      (let [hit (al/al-elem [Hit] (field (scene) hits) i)]
+        (when (and (.enabled hit) (= id (.id hit)) (!= (.role hit) 1)) (set! active true))))
+    (when (load active) (dispatch 1 id 0.0 0.0) (dispatch 3 id 0.0 0.0))
+    (load active)))
+
+(defn next-control [(current i64) (backward bool)] (-> i64)
+  (let [count (al/al-len [FocusTarget] (.focus-targets (scene)))
+        found (focus-index current)]
+    (if (= count 0)
+        0
+        (.id (al/al-elem [FocusTarget]
+                         (field (scene) focus-targets)
+                         (if (< found 0)
+                             (if backward (- count 1) 0)
+                             (% (+ found (if backward (- count 1) 1)) count)))))))
+
+;;; Cocoa shares one field editor between text fields. Resolve its owning input
+;;; before routing keys, including a field focused by mouse or accessibility.
+(defn editing-input [] (-> i64)
+  (let [app (host)
+        responder (msg (ptr i8) (.window app) (sel c"firstResponder") [])
+        (mut result) 0]
+    (when (!= responder (nil))
+      (for [i 0 (al/al-len [Input] (.inputs app))]
+        (let [item (al/al-elem [Input] (field app inputs) i)]
+          (when (and (.live item)
+                     (or (= responder (.view item))
+                         (= responder (msg (ptr i8) (.view item) (sel c"currentEditor") []))))
+            (set! result (.id item))))))
+    (load result)))
+
+;;; Programmatic and Tab focus share the same native first-responder transition.
+(defn focus-control [(id i64)] (-> bool)
+  (let [index (focus-index id)
+        app (host)]
+    (if (< index 0)
+        false
+        (let [target (al/al-elem [FocusTarget] (field (scene) focus-targets) index)
+              view (if (.native target) (input-view id) (nil))]
+          (if (and (.native target) (= view (nil)))
+              false
+              (let [accepted (msg bool (.window app) (sel c"makeFirstResponder:") [(ptr i8)] view)]
+                (when accepted
+                  (set! (.focus app) id)
+                  (when (.native target) (msg i64 view (sel c"selectText:") [(ptr i8)] (nil)))
+                  (paper_redraw))
+                accepted))))))
+
+(defn adjust-control [(id i64) (delta f64)] (-> bool)
+  (for [i 0 (al/al-len [Hit] (.hits (scene)))]
+    (let [hit (al/al-elem [Hit] (field (scene) hits) i)]
+      (when (and (.enabled hit) (= (.id hit) id) (= (.role hit) 1))
+        (let [r (.bounds hit)
+              v (clamp (+ (.value hit) delta) 0.0 1.0)]
+          (dispatch 1 (.id hit) (+ (.x r) (* (.w r) v)) (+ (.y r) 10.0))
+          (dispatch 3 (.id hit) (+ (.x r) (* (.w r) v)) (+ (.y r) 10.0))))))
+  true)
+
+(defn ax-increment [(obj (ptr i8)) (selector (ptr i8))] (-> bool)
+  (adjust-control (ax-id obj) 0.05))
+
+(defn ax-decrement [(obj (ptr i8)) (selector (ptr i8))] (-> bool)
+  (adjust-control (ax-id obj) -0.05))
+
+(defn accessibility-init [] (-> i64)
+  (let [cls (objc_allocateClassPair (class c"NSAccessibilityElement") c"CoilPaperControl" 0)
+        slider (objc_allocateClassPair (class c"NSAccessibilityElement") c"CoilPaperSlider" 0)]
+    (class_addMethod cls (sel c"accessibilityPerformPress") (cast (ptr i8) (fnptr-of ax-press)) c"B@:")
+    (class_addMethod slider (sel c"accessibilityPerformIncrement") (cast (ptr i8) (fnptr-of ax-increment)) c"B@:")
+    (class_addMethod slider (sel c"accessibilityPerformDecrement") (cast (ptr i8) (fnptr-of ax-decrement)) c"B@:")
+    (objc_registerClassPair cls)
+    (objc_registerClassPair slider)
+    (set! (.ax-class (host)) cls)
+    (set! (.ax-slider-class (host)) slider)
+    (set! (.ax-elements (host)) (new c"NSMutableDictionary")))
+  0)
+
+(defn accessibility-refresh [] (-> i64)
+  (let [app (host)
+        children (new c"NSMutableArray")]
+    (for [i 0 (al/al-len [Hit] (.hits (scene)))]
+      (let [hit (al/al-elem [Hit] (field (scene) hits) i)
+            r (.bounds hit)
+            id-number (msg (ptr i8) (class c"NSNumber") (sel c"numberWithLongLong:") [i64] (.id hit))
+            (mut element) (msg (ptr i8) (.ax-elements app) (sel c"objectForKey:") [(ptr i8)] id-number)
+            sx (/ (.window-w app) (logical-width))
+            sy (/ (.window-h app) (logical-height))
+            screen-rect
+              (msg CGRect
+                   (.window app)
+                   (sel c"convertRectToScreen:")
+                   [CGRect]
+                   (cgrect (* (.x r) sx) (* (- (logical-height) (+ (.y r) (.h r))) sy) (* (.w r) sx) (* (.h r) sy)))]
+        (when (= (load element) (nil))
+          (set! element (msg (ptr i8) (if (= (.role hit) 1) (.ax-slider-class app) (.ax-class app)) (sel c"new") []))
+          (msg i64 (.ax-elements app) (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] (load element) id-number)
+          (release (load element)))
+        (msg i64 (load element) (sel c"setAccessibilityParent:") [(ptr i8)] (.view app))
+        (msg i64 element (sel c"setAccessibilityEnabled:") [bool] (.enabled hit))
+        (msg i64
+             element
+             (sel c"setAccessibilityRole:")
+             [(ptr i8)]
+             (ns (case (.role hit) 1 c"AXSlider" 2 c"AXCheckBox" 3 c"AXRadioButton" c"AXButton")))
+        (msg i64 element (sel c"setAccessibilityLabel:") [(ptr i8)] (.label hit))
+        (msg i64
+             element
+             (sel c"setAccessibilityIdentifier:")
+             [(ptr i8)]
+             (msg (ptr i8) id-number (sel c"stringValue") []))
+        (msg i64
+             element
+             (sel c"setAccessibilityValue:")
+             [(ptr i8)]
+             (msg (ptr i8) (class c"NSNumber") (sel c"numberWithDouble:") [f64] (.value hit)))
+        (msg i64 element (sel c"setAccessibilityFrame:") [CGRect] screen-rect)
+        (msg i64 children (sel c"addObject:") [(ptr i8)] (load element))))
+    (for [i 0 (al/al-len [Input] (.inputs app))]
+      (let [input (al/al-elem [Input] (field app inputs) i)]
+        (when (.live input) (msg i64 children (sel c"addObject:") [(ptr i8)] (.view input)))))
+    (msg i64 (.view app) (sel c"setAccessibilityChildren:") [(ptr i8)] children)
+    (release children))
+  0)
+
+(defn paper_run [(draw (fnptr c [] i64)) (event (fnptr c [i64 i64 f64 f64] i64))] (-> i64)
+  (let [pool (new c"NSAutoreleasePool")
+        app (host)]
+    (init)
+    (set! (.draw app) draw)
+    (set! (.event app) event)
+    (set! (.inputs app) (al/al-new [Input] (alloc/malloc-allocator)))
+    (set! (.app app) (msg (ptr i8) (class c"NSApplication") (sel c"sharedApplication") []))
+    (let [args (msg (ptr i8) (msg (ptr i8) (class c"NSProcessInfo") (sel c"processInfo") []) (sel c"arguments") [])
+          count (msg i64 args (sel c"count") [])
+          (mut i) 1]
+      (while (< (+ (load i) 1) count)
+        (let [arg (utf8 (msg (ptr i8) args (sel c"objectAtIndex:") [i64] (load i)))
+              value (msg (ptr i8) args (sel c"objectAtIndex:") [i64] (+ (load i) 1))]
+          (cond (= (strcmp arg c"--snapshot") 0) (do (set! (.headless app) true) (set! (.snapshot app) value))
+                (= (strcmp arg c"--app") 0) (set! (.app-index app) (msg i64 value (sel c"integerValue") []))
+                :else 0))
+        (set! i (+ (load i) 2))))
+    (set! (.width (scene)) (cast i64 (* (logical-width) 2.0)))
+    (set! (.height (scene)) (cast i64 (* (logical-height) 2.0)))
+    (render/setup)
+    (dispatch 0 (.app-index app) 0.0 0.0)
+    (if (.headless app)
+        (do (refresh) (let [status (render/snapshot (utf8 (.snapshot app)))] (release pool) status))
+        (let [screen (msg CGRect (msg (ptr i8) (class c"NSScreen") (sel c"mainScreen") []) (sel c"visibleFrame") [])
+              max-height-scale (/ (- (.h screen) 80.0) (logical-height))
+              max-width-scale (/ (- (.w screen) 60.0) (logical-width))
+              scale (clamp (if (< max-height-scale max-width-scale) max-height-scale max-width-scale) 0.3 1.0)
+              w (* (logical-width) scale)
+              h (* (logical-height) scale)
+              window
+                (msg (ptr i8)
+                     (msg (ptr i8) (class c"NSWindow") (sel c"alloc") [])
+                     (sel c"initWithContentRect:styleMask:backing:defer:")
+                     [CGRect u64 u64 bool]
+                     (cgrect 0.0 0.0 w h)
+                     15
+                     2
+                     false)
+              view (msg (ptr i8) window (sel c"contentView") [])]
+          (set! (.window app) window)
+          (set! (.view app) view)
+          (set! (.window-w app) w)
+          (set! (.window-h app) h)
+          (msg i64 window (sel c"setReleasedWhenClosed:") [bool] false)
+          (msg i64
+               window
+               (sel c"setTitle:")
+               [(ptr i8)]
+               (ns (if (= (.title app) (nil)) c"Papercut Studio — made with Coil" (.title app))))
+          (msg i64 window (sel c"setContentAspectRatio:") [CGSize] (CGSize :w (logical-width) :h (logical-height)))
+          (msg i64
+               window
+               (sel c"setContentMinSize:")
+               [CGSize]
+               (CGSize :w (* (logical-width) 0.6) :h (* (logical-height) 0.6)))
+          (msg i64 view (sel c"setWantsLayer:") [bool] true)
+          (msg i64
+               view
+               (sel c"setAppearance:")
+               [(ptr i8)]
+               (msg (ptr i8) (class c"NSAppearance") (sel c"appearanceNamed:") [(ptr i8)] (ns c"NSAppearanceNameAqua")))
+          (set! (.layer app) (msg (ptr i8) view (sel c"layer") []))
+          (msg i64 (.layer app) (sel c"setContentsGravity:") [(ptr i8)] (ns c"resize"))
+          (msg i64 (.app app) (sel c"setActivationPolicy:") [i64] 0)
+          (native-menus)
+          (msg i64 (.app app) (sel c"finishLaunching") [])
+          (msg i64 window (sel c"center") [])
+          (msg i64 window (sel c"makeKeyAndOrderFront:") [(ptr i8)] (nil))
+          (msg i64 (.app app) (sel c"activateIgnoringOtherApps:") [bool] true)
+          (accessibility-init)
+          (refresh)
+          (while (msg bool window (sel c"isVisible") [])
+            (let [iteration-pool (new c"NSAutoreleasePool")
+                  deadline (msg (ptr i8) (class c"NSDate") (sel c"dateWithTimeIntervalSinceNow:") [f64] 0.04)
+                  ev
+                    (msg (ptr i8)
+                         (.app app)
+                         (sel c"nextEventMatchingMask:untilDate:inMode:dequeue:")
+                         [u64 (ptr i8) (ptr i8) bool]
+                         (cast u64 -1)
+                         deadline
+                         (ns c"kCFRunLoopDefaultMode")
+                         true)]
+              (when (!= ev (nil))
+                (let [kind (msg i64 ev (sel c"type") [])
+                      (mut consumed) false]
+                  (cond (= kind 1) (pointer-event ev 1)
+                        (= kind 6) (pointer-event ev 2)
+                        (= kind 2) (pointer-event ev 3)
+                        (= kind 10) (set! consumed (key-event ev))
+                        :else 0)
+                  (when (not (load consumed)) (msg i64 (.app app) (sel c"sendEvent:") [(ptr i8)] ev))))
+              (poll-inputs)
+              (poll-pointer)
+              (let [bounds (msg CGRect view (sel c"bounds") [])
+                    now (CACurrentMediaTime)]
+                (when (or (primitive/fcmp-ne (.w bounds) (.window-w app))
+                          (primitive/fcmp-ne (.h bounds) (.window-h app)))
+                  (set! (.window-w app) (.w bounds))
+                  (set! (.window-h app) (.h bounds))
+                  (paper_redraw))
+                (when (> (- now (.last-tick app)) 1.0) (set! (.last-tick app) now) (dispatch 6 0 now 0.0)))
+              (when (.dirty (scene)) (refresh))
+              (release iteration-pool)))
+          (release pool)
+          0))))
+
+(defn native-menu-item [(title (ptr i8)) (action (ptr i8)) (key (ptr i8))] (-> (ptr i8))
+  (msg (ptr i8)
+       (msg (ptr i8) (class c"NSMenuItem") (sel c"alloc") [])
+       (sel c"initWithTitle:action:keyEquivalent:")
+       [(ptr i8) (ptr i8) (ptr i8)]
+       (ns title)
+       action
+       (ns key)))
+
+;;; Cocoa dispatches editing shortcuts through the responder chain and validates
+;;; their enabled state. No application-specific text editing is intercepted.
+(defn native-menus [] (-> i64)
+  (let [bar (new c"NSMenu")
+        app-menu (new c"NSMenu")
+        edit (new c"NSMenu")
+        app-item (native-menu-item c"Papercut" (nil) c"")
+        edit-item (native-menu-item c"Edit" (nil) c"")
+        quit (native-menu-item c"Quit" (sel c"terminate:") c"q")]
+    (msg i64 app-menu (sel c"addItem:") [(ptr i8)] quit)
+    (msg i64 app-item (sel c"setSubmenu:") [(ptr i8)] app-menu)
+    (msg i64 edit (sel c"setTitle:") [(ptr i8)] (ns c"Edit"))
+    (for [i 0 6]
+      (let [item
+              (native-menu-item (case i 0 c"Undo" 1 c"Redo" 2 c"Cut" 3 c"Copy" 4 c"Paste" c"Select All")
+                                (sel (case i 0 c"undo:" 1 c"redo:" 2 c"cut:" 3 c"copy:" 4 c"paste:" c"selectAll:"))
+                                (case i 0 c"z" 1 c"z" 2 c"x" 3 c"c" 4 c"v" c"a"))]
+        (when (= i 1)
+          (msg i64 item (sel c"setKeyEquivalentModifierMask:") [u64] (cast u64 1179648)))
+        (when (= i 2)
+          (msg i64
+               edit
+               (sel c"addItem:")
+               [(ptr i8)]
+               (msg (ptr i8) (class c"NSMenuItem") (sel c"separatorItem") [])))
+        (msg i64 edit (sel c"addItem:") [(ptr i8)] item)
+        (release item)))
+    (msg i64 edit-item (sel c"setSubmenu:") [(ptr i8)] edit)
+    (msg i64 bar (sel c"addItem:") [(ptr i8)] app-item)
+    (msg i64 bar (sel c"addItem:") [(ptr i8)] edit-item)
+    (msg i64 (.app (host)) (sel c"setMainMenu:") [(ptr i8)] bar)
+    (release quit)
+    (release app-menu)
+    (release edit)
+    (release app-item)
+    (release edit-item)
+    (release bar))
+  0)
