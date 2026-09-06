@@ -2,6 +2,9 @@
 name = "paper"
 source-roots = ["src"]
 
+[dependencies]
+layout = { path = "../layout" }
+
 [link]
 frameworks = ["AppKit", "QuartzCore", "CoreGraphics", "CoreText", "ImageIO", "CoreFoundation", "AVFoundation", "Metal"]
 libs = ["objc"]

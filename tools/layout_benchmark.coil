@@ -1,0 +1,59 @@
+(module papercut.layout-benchmark)
+(import "layout.core" :use *)
+(import "coil.alloc" :as alloc)
+(import "coil.time" :as time)
+
+(extern printf :cc c [(ptr i8) ...] (-> i32))
+
+(defn now [] (-> f64)
+  (let [(mut t) (zeroed time/Timespec)]
+    (time/clock_gettime (time/monotonic-clock-id) t)
+    (+ (cast f64 (.sec t)) (* 0.000000001 (cast f64 (.nsec t))))))
+
+(defn build-tree [(ctx (ptr Layout)) (count i64) (scenario i64)] (-> i64)
+  (reset ctx)
+  (add ctx -1 (row (grow 1.0) (grow 1.0) 1.0))
+  (for [i 1 count]
+    (let [parent (if (= scenario 2) (- i 1) 0)
+          width
+            (if (or (= scenario 1) (= scenario 3))
+                (bounded (grow (if (= scenario 3) (+ 1.0 (cast f64 (% i 7))) 1.0)) 1.0 (+ 5.0 (cast f64 (% i 17))))
+                (grow 1.0))]
+      (add ctx parent (row width (grow 1.0) 1.0))))
+  0)
+
+(defn main [] (-> i64)
+  (printf c"scenario,nodes,sample,iterations,build_solve_us,solve_us,bytes,checksum\n")
+  (for [scenario 0 4]
+    (for [size 0 3]
+      (let [count (case size 0 100 1 1000 10000)
+            iterations (case size 0 1000 1 100 10)
+            memory (alloc/alloc [Node] (alloc/malloc-allocator) count)]
+        (match memory
+          (Some [storage]
+                (let [(mut ctx) (layout (alloc/alloc-slice-data storage) count)
+                      (mut checksum) 0.0]
+                  (for [sample 0 22]
+                    (let [start (now)]
+                      (for [i 0 iterations]
+                        (build-tree ctx count scenario)
+                        (solve ctx (rect 0.0 0.0 (+ (* (cast f64 count) 8.0) (cast f64 (% i 2))) 800.0))
+                        (let [r (bounds ctx (- count 1))] (set! checksum (+ (load checksum) (.x r)))))
+                      (let [built (now)]
+                        (for [i 0 iterations]
+                          (solve ctx (rect 0.0 0.0 (+ (* (cast f64 count) 8.0) (cast f64 (% i 2))) 800.0))
+                          (let [r (bounds ctx (- count 1))] (set! checksum (+ (load checksum) (.w r)))))
+                        (let [done (now)]
+                          (when (>= sample 2)
+                            (printf c"%s,%lld,%lld,%lld,%.6f,%.6f,%lld,%.3f\n"
+                                    (case scenario 0 c"wide" 1 c"bounded" 2 c"deep" c"weighted")
+                                    count
+                                    (- sample 2)
+                                    iterations
+                                    (/ (* 1000000.0 (- built start)) (cast f64 iterations))
+                                    (/ (* 1000000.0 (- done built)) (cast f64 iterations))
+                                    (* count (sizeof Node))
+                                    (load checksum)))))))
+                  (alloc/free [Node] (alloc/malloc-allocator) storage)))
+          (None [] (alloc/oom))))))
+  0)

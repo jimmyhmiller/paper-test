@@ -1,0 +1,62 @@
+(module calculator.lettering)
+(import "paper.flow" :use *)
+(import "paper.ffi" :use *)
+(import "paper.objc" :use *)
+(import "paper.scene" :use [scene])
+
+(extern CTFontCreateWithName :cc c [(ptr i8) f64 (ptr CGAffine)] (-> (ptr i8)))
+
+(extern CTFontGetGlyphsForCharacters :cc c [(ptr i8) (ptr u16) (ptr u16) i64] (-> bool))
+
+(extern CTFontGetAdvancesForGlyphs :cc c [(ptr i8) u32 (ptr u16) (ptr CGSize) i64] (-> f64))
+
+(extern CTFontCreatePathForGlyph :cc c [(ptr i8) u16 (ptr CGAffine)] (-> (ptr i8)))
+
+(extern CGPathAddPath :cc c [(ptr i8) (ptr CGAffine) (ptr i8)] (-> void))
+
+(defstruct FontRange [(location i64) (length i64)])
+
+(extern CTFontCreateForString :cc c [(ptr i8) (ptr i8) FontRange] (-> (ptr i8)))
+
+;;; Real outline apertures share the paper renderer's material and lighting.
+;;; CoreText selects fallback fonts for symbols and provides their native advances.
+(defn carved [(r Rect) (text (ptr i8)) (size f64) (z f64) (right bool)] (-> i64)
+  (let [font (CTFontCreateWithName (ns c"HelveticaNeue-Medium") size (cast (ptr CGAffine) 0))
+        string (ns text)
+        count (msg i64 string (sel c"length") [])
+        (mut width) 0.0]
+    (for [i 0 count]
+      (let [face (CTFontCreateForString font string (FontRange :location i :length 1))
+            (mut ch) (msg u16 string (sel c"characterAtIndex:") [u64] (cast u64 i))
+            (mut glyph) (cast u16 0)]
+        (CTFontGetGlyphsForCharacters face ch glyph 1)
+        (set! width (+ (load width) (CTFontGetAdvancesForGlyphs face 0 glyph (cast (ptr CGSize) 0) 1)))
+        (CFRelease face)))
+    (let [scale (if (> (load width) (.w r)) (/ (.w r) (load width)) 1.0)
+          (mut x) (+ (.x r) (if right (- (.w r) (* (load width) scale)) (* 0.5 (- (.w r) (* (load width) scale)))))
+          baseline (+ (.y r) (* 0.5 (+ (.h r) (* (* size scale) 0.72))))]
+      (begin-sheet)
+      (for [i 0 count]
+        (let [face (CTFontCreateForString font string (FontRange :location i :length 1))
+              (mut ch) (msg u16 string (sel c"characterAtIndex:") [u64] (cast u64 i))
+              (mut glyph) (cast u16 0)]
+          (CTFontGetGlyphsForCharacters face ch glyph 1)
+          (let [(mut transform)
+                  (load (CGAffine
+                          :a scale
+                          :b 0.0
+                          :c 0.0
+                          :d (- 0.0 scale)
+                          :tx (load x)
+                          :ty baseline))
+                path (CTFontCreatePathForGlyph face (load glyph) transform)]
+            (when (!= path (nil))
+              (CGPathAddPath (.path (scene)) (cast (ptr CGAffine) 0) path)
+              (CGPathRelease path)
+              0)
+            (set! x (+ (load x) (* scale (CTFontGetAdvancesForGlyphs face 0 glyph (cast (ptr CGSize) 0) 1))))
+            (CFRelease face))))
+      (cut-through (- z 3.8))
+      (finish-sheet (- z 3.8) (cotton 0x30281b)))
+    (CFRelease font))
+  0)

@@ -6,37 +6,77 @@
 (import "paper.material" :use *)
 (import "paper.components" :use *)
 
-;;; Treatment 0: unpainted rows with carved selection; 1: raised paper tiles.
+;;; Treatment 0: carved selection; 1: raised tiles; 2: flat selected stock.
 ;;; Text and surface styling are independent of the application selection state.
 (defstruct SelectionStyle
-  [(paper Material) (active Material) (edge Material)
-   (ink u32) (active-ink u32) (secondary u32)
-   (font i64) (size f64) (detail-size f64)
-   (radius f64) (z f64) (padding f64) (leading f64) (treatment i64)])
+  [(paper Material)
+   (active Material)
+   (edge Material)
+   (ink u32)
+   (active-ink u32)
+   (secondary u32)
+   (font i64)
+   (size f64)
+   (detail-size f64)
+   (radius f64)
+   (z f64)
+   (padding f64)
+   (leading f64)
+   (treatment i64)])
 
 (defstruct Choice [(id i64) (title (ptr i8)) (detail (ptr i8)) (enabled bool)])
 
 (defn choice [(id i64) (title (ptr i8)) (detail (ptr i8))] (-> Choice)
-  (Choice :id id :title title :detail detail :enabled true))
+  (Choice
+    :id id
+    :title title
+    :detail detail
+    :enabled true))
 
 (defn selection-style [(paper Material) (active Material) (edge Material)] (-> SelectionStyle)
-  (SelectionStyle :paper paper :active active :edge edge
-    :ink 0x34452d :active-ink 0x34452d :secondary 0x6e7c5b
-    :font 0 :size 14.0 :detail-size 11.0
-    :radius 12.0 :z 30.0 :padding 15.0 :leading 0.0 :treatment 0))
+  (SelectionStyle
+    :paper paper
+    :active active
+    :edge edge
+    :ink 0x34452d
+    :active-ink 0x34452d
+    :secondary 0x6e7c5b
+    :font 0
+    :size 14.0
+    :detail-size 11.0
+    :radius 12.0
+    :z 30.0
+    :padding 15.0
+    :leading 0.0
+    :treatment 0))
 
 ;;; Use this surface beneath custom row contents such as icons or multiple values.
 ;;; Positive group IDs connect arrow/Home/End navigation across sibling choices.
-(defn selection-surface [(group i64) (id i64) (bounds Rect) (name (ptr i8))
-                        (selected bool) (style SelectionStyle)] (-> i64)
+(defn selection-surface [(group i64)
+                         (id i64)
+                         (bounds Rect)
+                         (name (ptr i8))
+                         (selected bool)
+                         (style SelectionStyle)] (-> i64)
   (assert (> group 0))
-  (if (= (.treatment style) 1)
-    (panel bounds (.radius style)
-      (+ (.z style) (if selected 8.0 0.0))
-      (control-stock id (if selected (.active style) (.paper style))))
-    (when (or selected (host/paper_pressed id))
-      (well bounds (.radius style) (.z style) (.paper style) (.edge style)
-        (control-stock id (.active style)))))
+  (case (.treatment style) 1
+        (panel bounds
+               (.radius style)
+               (+ (.z style) (if selected 8.0 (if (and (host/paper_enabled) (host/paper_hovered id)) 2.0 0.0)))
+               (control-stock id (if selected (.active style) (.paper style))))
+          2
+        (when (or selected (host/paper_pressed id) (host/paper_hovered id))
+          (panel bounds
+                 (.radius style)
+                 (.z style)
+                 (control-stock id (if selected (.active style) (.paper style)))))
+          (when (or selected (host/paper_pressed id))
+            (well bounds
+                  (.radius style)
+                  (.z style)
+                  (.paper style)
+                  (.edge style)
+                  (control-stock id (.active style)))))
   (when (and (= (.treatment style) 0) (not selected) (host/paper_hovered id))
     (panel bounds (.radius style) (.z style) (control-stock id (.paper style))))
   (ink-height (+ (.z style) (if (= (.treatment style) 1) 8.0 0.0)))
@@ -44,35 +84,49 @@
 
 ;;; A title and optional subtitle, bounded and vertically centered in the row.
 ;;; leading reserves space for an application-drawn icon without hardcoded icons.
-(defn selection-row [(group i64) (item Choice) (bounds Rect) (selected bool)
-                    (style SelectionStyle)] (-> i64)
+(defn selection-row [(group i64)
+                     (item Choice)
+                     (bounds Rect)
+                     (selected bool)
+                     (style SelectionStyle)] (-> i64)
   (with-enabled (.enabled item)
-    (selection-surface group (.id item) bounds (.title item) selected style)
-    (let [detail (> (host/strlen (.detail item)) (cast u64 0))
-          title-height (* (.size style) 1.4)
-          detail-height (if detail (* (.detail-size style) 1.4) 0.0)
-          gap (if detail 5.0 0.0)
-          top (+ (.y bounds) (/ (- (.h bounds) (+ title-height (+ detail-height gap))) 2.0))
-          left (+ (.x bounds) (+ (.padding style) (.leading style)))
-          width (- (.w bounds) (+ (* 2.0 (.padding style)) (.leading style)))
-          ink (if (not (host/paper_enabled)) 0x777e70 (if selected (.active-ink style) (.ink style)))]
-      (assert (and (> width 0.0) (>= top (.y bounds))))
-      (text-box (rect left top width title-height) (.size style) ink (.font style) (.title item))
-      (when detail
-        (text-box (rect left (+ top (+ title-height gap)) width detail-height)
-          (.detail-size style) (.secondary style) 0 (.detail item)))))
+                (selection-surface group (.id item) bounds (.title item) selected style)
+                (let [detail (> (host/strlen (.detail item)) (cast u64 0))
+                      title-height (* (.size style) 1.4)
+                      detail-height (if detail (* (.detail-size style) 1.4) 0.0)
+                      gap (if detail 5.0 0.0)
+                      top (+ (.y bounds) (/ (- (.h bounds) (+ title-height (+ detail-height gap))) 2.0))
+                      left (+ (.x bounds) (+ (.padding style) (.leading style)))
+                      width (- (.w bounds) (+ (* 2.0 (.padding style)) (.leading style)))
+                      ink (if (not (host/paper_enabled)) 0x777e70 (if selected (.active-ink style) (.ink style)))]
+                  (assert (and (> width 0.0) (>= top (.y bounds))))
+                  (text-box (rect left top width title-height) (.size style) ink (.font style) (.title item))
+                  (when detail
+                    (text-box (rect left (+ top (+ title-height gap)) width detail-height)
+                              (.detail-size style)
+                              (.secondary style)
+                              0
+                              (.detail item)))))
   0)
 
 ;;; Empty lists render no rows. Selection is an item ID, not a mutable row index.
-(defn choice-list [(group i64) (bounds Rect) (items (slice Choice)) (selected i64)
-                  (gap f64) (style SelectionStyle)] (-> i64)
+(defn choice-list [(group i64)
+                   (bounds Rect)
+                   (items (slice Choice))
+                   (selected i64)
+                   (gap f64)
+                   (style SelectionStyle)] (-> i64)
   (for [i 0 (len items)]
     (let [item (get items i)]
       (selection-row group item (column-cell bounds (len items) gap i) (= selected (.id item)) style)))
   0)
 
-(defn tab-strip [(group i64) (bounds Rect) (items (slice Choice)) (selected i64)
-                (gap f64) (style SelectionStyle)] (-> i64)
+(defn tab-strip [(group i64)
+                 (bounds Rect)
+                 (items (slice Choice))
+                 (selected i64)
+                 (gap f64)
+                 (style SelectionStyle)] (-> i64)
   (for [i 0 (len items)]
     (let [item (get items i)]
       (selection-row group item (row-cell bounds (len items) gap i) (= selected (.id item)) style)))
@@ -94,11 +148,17 @@
   (let [remaining (- count (page-start page count size))]
     (if (< remaining size) remaining size)))
 
-(defn pager [(previous-id i64) (next-id i64) (bounds Rect) (page i64)
-             (count i64) (size i64) (material Material)] (-> i64)
-  (let [current (page-index page count size) pages (page-count count size)]
+(defn pager [(previous-id i64)
+             (next-id i64)
+             (bounds Rect)
+             (page i64)
+             (count i64)
+             (size i64)
+             (material Material)] (-> i64)
+  (let [current (page-index page count size)
+        pages (page-count count size)]
     (with-enabled (> current 0)
-      (button previous-id (row-cell bounds 2 12.0 0) c"‹ Back" false material))
+                  (button previous-id (row-cell bounds 2 12.0 0) c"‹ Back" false material))
     (with-enabled (< (+ current 1) pages)
-      (button next-id (row-cell bounds 2 12.0 1) c"Next ›" false material)))
+                  (button next-id (row-cell bounds 2 12.0 1) c"Next ›" false material)))
   0)

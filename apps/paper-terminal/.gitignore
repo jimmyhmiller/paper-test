@@ -1,0 +1,5 @@
+/build/
+/.coil/
+/.worktrees/
+
+__pycache__/

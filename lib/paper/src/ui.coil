@@ -1,5 +1,4 @@
 (module paper.ui)
-(import "paper.geometry" :use * :reexport)
 (import "paper.material" :use * :reexport)
 (import "paper.surface" :use * :reexport)
 (import "paper.components" :use * :reexport)

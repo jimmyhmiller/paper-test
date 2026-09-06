@@ -1,134 +1,204 @@
 (module papercut.main)
 (import "coil.primitive" :as primitive)
 (import "paper.platform" :as host)
-(import "paper.surface" :use *)
-(import "paper.material" :use *)
-(import "paper.geometry" :use [rect])
-(import "paper.components" :use *)
-(import "paper.navigation" :use *)
-(import "paper.charts" :use [contour-path])
-(import "paper.geometry" :use [fraction clamp])
+(import "paper.flow" :use *)
 (import "paper.audio" :as audio)
 (import "papercut.state" :use *)
 (import "papercut.agenthub" :as agents)
 (import "papercut.botanical" :as plants)
 (import "papercut.listening" :as music)
 (import "papercut.atlas" :as atlas)
+(import "paper.lighting" :as light)
 
-(defn toolbar [] (-> i64)
-  (label 29.0 23.0 25.0 0xe8dfca 1 c"papercut")
-  (label 140.0 33.0 10.0 0x9eaa98 2 c"STUDIO / 01")
-  (let [(mut style) (selection-style (linen 0x424a40) (cream) (moss))]
-    (set! (.treatment style) 1)
-    (set! (.z style) 14.0)
-    (set! (.ink style) 0xbfc7b3)
-    (set! (.active-ink style) 0x374632)
-    (set! (.font style) 3)
-    (set! (.size style) 12.0)
-    (set! (.padding style) 12.0)
-    (tab-strip 1
-               (rect 400.0 19.0 646.0 40.0)
-               (: [(choice 1 c"01  AgentHub" c"")
-                   (choice 2 c"02  Herbarium" c"")
-                   (choice 3 c"03  Listening room" c"")
-                   (choice 4 c"04  Elsewhere" c"")]
-                  (slice Choice))
-               (+ (.app (state)) 1)
-               10.0
-               (load style)))
-  (label 1270.0 31.0 11.0 0xb0b9a4 2 c"CRAFTED IN COIL")
+(defn lighting [] (-> (ptr light/Lighting))
+  (primitive/alloc-static light/Lighting))
+
+(defn toolbar [(bounds Rect)] (-> i64)
+  (arrange bounds
+           [root
+            (aligned (row (grow 1.0) (grow 1.0) 24.0) 0.5 0.0)
+            [brand (box (fixed (text-width c"papercut" 25.0 1)) (fixed 36.0))]
+            [edition (box (fixed 110.0) (fixed 18.0))]
+            [space (box (grow 1.0) (grow 1.0))]
+            [tabs (box (fixed 646.0) (fixed 40.0))]
+            [end-space (box (grow 1.0) (grow 1.0))]]
+           (caption brand 25.0 0xe8dfca 1 c"papercut")
+           (caption edition 10.0 0x9eaa98 2 c"STUDIO / 01")
+           (let [(mut style) (selection-style (linen 0x424a40) (cream) (moss))]
+             (set! (.treatment style) 1)
+             (set! (.z style) 14.0)
+             (set! (.ink style) 0xbfc7b3)
+             (set! (.active-ink style) 0x374632)
+             (set! (.font style) 3)
+             (set! (.size style) 12.0)
+             (set! (.padding style) 12.0)
+             (tab-strip 1
+                        tabs
+                        (: [(choice 1 c"01  AgentHub" c"")
+                            (choice 2 c"02  Herbarium" c"")
+                            (choice 3 c"03  Listening room" c"")
+                            (choice 4 c"04  Elsewhere" c"")]
+                           (slice Choice))
+                        (+ (.app (state)) 1)
+                        10.0
+                        (load style)))
+           0)
   0)
 
-(defn workbench [] (-> i64)
+(defn light-well [(bounds Rect)] (-> i64)
   (let [s (state)
-        paper (case (.stock s) 0 (cream) 1 (linen 0xdac7b0) (recycled 0xc9d3b2))]
-    (panel (rect 1203.0 97.0 254.0 801.0) 23.0 10.0 (cotton 0xbcb79f))
-    (panel (rect 1203.0 92.0 254.0 801.0) 23.0 22.0 (cream))
-    (label 1227.0 115.0 10.0 0x8d8c76 3 c"THE MATERIAL WORKBENCH")
-    (label 1226.0 142.0 26.0 0x3e4c36 1 c"Make it your own.")
-    (label 1228.0 181.0 12.0 0x7c816b 0 c"A little light changes everything.")
-    (label 1228.0 218.0 10.0 0x69735d 3 c"LIGHT POSITION")
-    (well (rect 1227.0 244.0 207.0 139.0) 18.0 30.0 (cream) (cotton 0xbdbda5) (linen 0xd9d8bd))
+        inner (inset bounds 10.0)]
+    (well bounds 18.0 30.0 (cream) (cotton 0xbdbda5) (linen 0xd9d8bd))
     (for [i 1 4]
-      (host/paper_rule (+ 1227.0 (* 51.75 (cast f64 i))) 254.0 0.5 119.0 0xbabd9f)
-      (rule 1236.0 (+ 244.0 (* 34.75 (cast f64 i))) 189.0 0xbabd9f))
-    (disc (+ 1227.0 (* (fraction (.light-x s) -800.0 3000.0) 207.0))
-          (+ 238.0 (* (fraction (.light-y s) -800.0 2400.0) 139.0))
+      (host/paper_rule (+ (.x bounds) (* (.w bounds) (/ (cast f64 i) 4.0))) (.y inner) 0.5 (.h inner) 0xbabd9f)
+      (rule (.x inner) (+ (.y bounds) (* (.h bounds) (/ (cast f64 i) 4.0))) (.w inner) 0xbabd9f))
+    (disc (- (+ (.x bounds) (* (fraction (.light-x s) -800.0 3000.0) (.w bounds))) 10.5)
+          (- (+ (.y bounds) (* (fraction (.light-y s) -800.0 2400.0) (.h bounds))) 10.5)
           21.0
           40.0
           (ochre))
-    (hit 10 (rect 1227.0 244.0 207.0 139.0) c"Drag the light source")
-    (label 1228.0 397.0 10.0 0x92927c 0 c"Drag the golden point to move the light.")
-    (label 1228.0 432.0 11.0 0x626f55 3 c"LIGHT HEIGHT")
-    (slider 11 (rect 1236.0 456.0 189.0 25.0) c"Light height" (fraction (.elevation s) 150.0 1100.0) (ochre))
-    (label 1228.0 502.0 11.0 0x626f55 3 c"PAPER DEPTH")
-    (slider 12 (rect 1236.0 526.0 189.0 25.0) c"Paper depth" (/ (.depth s) 1.8) (sage))
-    (label 1228.0 572.0 11.0 0x626f55 3 c"FIBER & GRAIN")
-    (slider 13 (rect 1236.0 596.0 189.0 25.0) c"Fiber and grain" (/ (.grain s) 2.0) (clay))
-    (rule 1227.0 643.0 205.0 0xc9c9b1)
-    (label 1228.0 662.0 10.0 0x69735d 3 c"TRY A CUT · DRAG THE APERTURE")
-    (for [i 0 3]
-      (button (+ 15 i)
-              (rect (+ 1228.0 (* 70.0 (cast f64 i))) 686.0 63.0 33.0)
-              (case i 0 c"Soft" 1 c"Oval" c"Free")
-              (= i (.shape s))
-              (if (= i (.shape s)) (sage) (cream))))
+    (hit 10 bounds c"Drag the light source"))
+  0)
+
+(defn aperture [(bounds Rect) (paper Material)] (-> i64)
+  (let [s (state)
+        x (+ (.x bounds) (* (.hole-x s) (.w bounds)))
+        y (+ (.y bounds) (* (.hole-y s) (.h bounds)))]
     (begin-sheet)
-    (rounded-path (rect 1227.0 735.0 207.0 98.0) 18.0)
+    (rounded-path bounds 18.0)
     (cut-through 17.0)
-    (panel (rect 1227.0 735.0 207.0 98.0) 18.0 18.0 (clay))
+    (panel bounds 18.0 18.0 (clay))
     (for [i 0 3]
-      (let [shrink (* 7.0 (cast f64 i))]
+      (let [shrink (* 7.0 (cast f64 i))
+            rx (- 43.0 shrink)
+            ry (- 30.0 shrink)]
         (begin-sheet)
-        (rounded-path (rect 1227.0 735.0 207.0 98.0) 18.0)
+        (rounded-path bounds 18.0)
         (case (.shape s) 0
-              (rounded-path (rect (- (.hole-x s) (- 43.0 shrink))
-                                  (- (.hole-y s) (- 30.0 shrink))
-                                  (* 2.0 (- 43.0 shrink))
-                                  (* 2.0 (- 30.0 shrink)))
-                            16.0)
-                1
-              (oval-path (rect (- (.hole-x s) (- 43.0 shrink))
-                               (- (.hole-y s) (- 30.0 shrink))
-                               (* 2.0 (- 43.0 shrink))
-                               (* 2.0 (- 30.0 shrink))))
-                (contour-path (.hole-x s) (.hole-y s) (- 42.0 shrink) (- 27.0 shrink) 1.0))
+              (rounded-path (rect (- x rx) (- y ry) (* 2.0 rx) (* 2.0 ry)) 16.0) 1
+              (oval-path (rect (- x rx) (- y ry) (* 2.0 rx) (* 2.0 ry))) (contour-path x y (- rx 1.0) (- ry 3.0) 1.0))
         (finish-sheet (- 40.0 (* 6.0 (cast f64 i))) (case i 0 paper 1 (sage) (ochre)))))
-    (hit 18 (rect 1227.0 735.0 207.0 98.0) c"Move the carved aperture")
-    (button 19 (rect 1228.0 848.0 104.0 30.0) c"Stock ↻" false paper)
-    (button 20 (rect 1343.0 848.0 91.0 30.0) c"Reset" false (cream)))
+    (hit 18 bounds c"Move the carved aperture"))
+  0)
+
+(defn workbench [(bounds Rect)] (-> i64)
+  (let [s (state)
+        paper (case (.stock s) 0 (cream) 1 (linen 0xdac7b0) (recycled 0xc9d3b2))]
+    (arrange bounds
+             [root
+              (padded (column (grow 1.0) (grow 1.0) 12.0) (padding 20.0))
+              [eyebrow (box (grow 1.0) (fixed 16.0))]
+              [heading (box (grow 1.0) (fixed 36.0))]
+              [subtitle (box (grow 1.0) (fixed 20.0))]
+              [light-label (box (grow 1.0) (fixed 16.0))]
+              [light (box (grow 1.0) (bounded (grow 1.0) 80.0 139.0))]
+              [hint (box (grow 1.0) (fixed 18.0))]
+              [sliders (box (grow 1.0) (fixed 185.0))]
+              [line (box (grow 1.0) (fixed 1.0))]
+              [cut-label (box (grow 1.0) (fixed 16.0))]
+              [shapes (box (grow 1.0) (fixed 33.0))]
+              [cut (box (grow 1.0) (fixed 98.0))]
+              [buttons
+               (row (grow 1.0) (fixed 30.0) 12.0)
+               [stock (box (grow 1.15) (grow 1.0))]
+               [reset (box (grow 1.0) (grow 1.0))]]]
+             (panel (shifted root 0.0 5.0) 23.0 10.0 (cotton 0xbcb79f))
+             (panel root 23.0 22.0 (cream))
+             (caption eyebrow 10.0 0x8d8c76 3 c"THE MATERIAL WORKBENCH")
+             (caption heading 26.0 0x3e4c36 1 c"Make it your own.")
+             (caption subtitle 12.0 0x7c816b 0 c"A little light changes everything.")
+             (caption light-label 10.0 0x69735d 3 c"LIGHT POSITION")
+             (light-well light)
+             (caption hint 10.0 0x92927c 0 c"Drag the golden point to move the light.")
+             (for [i 0 3]
+               (arrange (column-cell sliders 3 16.0 i)
+                        [control
+                         (column (grow 1.0) (grow 1.0) 8.0)
+                         [title (box (grow 1.0) (fixed 18.0))]
+                         [track (box (grow 1.0) (fixed 25.0))]]
+                        (caption title 11.0 0x626f55 3 (case i 0 c"LIGHT HEIGHT" 1 c"PAPER DEPTH" c"FIBER & GRAIN"))
+                        (slider (+ 11 i)
+                                track
+                                (case i 0 c"Light height" 1 c"Paper depth" c"Fiber and grain")
+                                (case i 0
+                                      (fraction (.elevation s) 150.0 1100.0) 1
+                                      (/ (.depth s) 1.8) (/ (.grain s) 2.0))
+                                (case i 0 (ochre) 1 (sage) (clay)))))
+             (separator line 0xc9c9b1)
+             (caption cut-label 10.0 0x69735d 3 c"TRY A CUT · DRAG THE APERTURE")
+             (for [i 0 3]
+               (button (+ 15 i)
+                       (row-cell shapes 3 7.0 i)
+                       (case i 0 c"Soft" 1 c"Oval" c"Free")
+                       (= i (.shape s))
+                       (if (= i (.shape s)) (sage) (cream))))
+             (aperture cut paper)
+             (button 19 stock c"Stock ↻" false paper)
+             (button 20 reset c"Reset" false (cream))))
   0)
 
 (defn draw [] (-> i64)
   (let [s (state)]
     (host/paper_begin (case (.app s) 0 0x2f362e 1 0x354035 2 0x493b34 0x293d3d))
-    (host/paper_light (.light-x s) (.light-y s) (.elevation s) (.depth s) (.grain s))
-    (toolbar)
-    (case (.app s) 0 (agents/draw) 1 (plants/draw) 2 (music/draw) (atlas/draw))
-    (workbench)
-    (label 30.0 923.0 11.0 0x9eaa96 0 c"Real cutouts. Layered fibers. Light you can touch.")
-    (label 1055.0 923.0 10.0 0x9eaa96 2 c"FOUR SMALL WORLDS / ONE PAPER LIBRARY")
-    (when (.agent-editor s) (agents/new-agent-dialog)))
+    (set! (.x (lighting)) (/ (.light-x s) (host/logical-width)))
+    (set! (.y (lighting)) (/ (.light-y s) (host/logical-height)))
+    (set! (.height (lighting)) (.elevation s))
+    (set! (.depth (lighting)) (.depth s))
+    (set! (.grain (lighting)) (.grain s))
+    (light/apply-light (lighting) (rect 0.0 0.0 (host/logical-width) (host/logical-height)))
+    (arrange (rect 0.0 0.0 (host/logical-width) (host/logical-height))
+             [studio
+              (padded (column (grow 1.0) (grow 1.0) 24.0) (edges 24.0 40.0 24.0 24.0))
+              [header (box (grow 1.0) (fixed 44.0))]
+              [body
+               (row (grow 1.0) (grow 1.0) 20.0)
+               [app (box (grow 1.0) (grow 1.0))]
+               [materials (box (fixed 254.0) (grow 1.0))]]
+              [motto (box (grow 1.0) (fixed 20.0))]]
+             (host/paper_drag_area (rect 0.0 0.0 (host/logical-width) (+ (.y header) (.h header))))
+             (toolbar header)
+             (case (.app s) 0 (agents/draw app) 1 (plants/draw app) 2 (music/draw app) (atlas/draw app))
+             (workbench materials)
+             (caption motto 11.0 0x9eaa96 0 c"Real cutouts. Layered fibers. Light you can touch.")
+
+             (when (.agent-editor s) (agents/new-agent-dialog app)))
+    (when (not (.agent-editor s))
+      (light/popover (lighting) 800 (rect (- (host/logical-width) 62.0) 43.0 34.0 34.0))))
   0)
 
 (defn event [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
   (let [s (state)]
-    (cond (= kind 0) (initialize id)
+    (cond (= kind 0)
+            (do
+              (initialize id)
+              (store! (lighting)
+                      (light/lighting (/ 200.0 (host/logical-width)) (/ -160.0 (host/logical-height)) 680.0 0.82 1.0))
+              0)
+          (light/handle (lighting) 800 kind id x y)
+            (do
+              (set! (.light-x s) (* (.x (lighting)) (host/logical-width)))
+              (set! (.light-y s) (* (.y (lighting)) (host/logical-height)))
+              (set! (.elevation s) (.height (lighting)))
+              (set! (.depth s) (.depth (lighting)))
+              0)
           (and (or (= kind 1) (= kind 2)) (>= id 10) (<= id 18) (> x 0.0))
             (do
               (case id 10
                     (do
-                      (set! (.light-x s) (+ -800.0 (* 3000.0 (fraction x 1227.0 207.0))))
-                      (set! (.light-y s) (+ -800.0 (* 2400.0 (fraction y 244.0 139.0)))))
+                      (set! (.light-x s) (+ -800.0 (* 3000.0 (host/control-fraction id x false))))
+                      (set! (.light-y s) (+ -800.0 (* 2400.0 (host/control-fraction id y true)))))
                       11
-                    (set! (.elevation s) (+ 150.0 (* 1100.0 (fraction x 1236.0 189.0)))) 12
-                    (set! (.depth s) (* 1.8 (fraction x 1236.0 189.0))) 13
-                    (set! (.grain s) (* 2.0 (fraction x 1236.0 189.0))) 18
-                    (do (set! (.hole-x s) (clamp x 1276.0 1385.0)) (set! (.hole-y s) (clamp y 768.0 800.0))) 0)
+                    (set! (.elevation s) (+ 150.0 (* 1100.0 (host/control-fraction id x false)))) 12
+                    (set! (.depth s) (* 1.8 (host/control-fraction id x false))) 13
+                    (set! (.grain s) (* 2.0 (host/control-fraction id x false))) 18
+                    (do
+                      (set! (.hole-x s) (clamp (host/control-fraction id x false) 0.24 0.76))
+                      (set! (.hole-y s) (clamp (host/control-fraction id y true) 0.34 0.66)))
+                      0)
               (host/paper_redraw))
           (and (= id 304) (or (= kind 1) (= kind 2)) (> x 0.0))
             (do
-              (set! (.volume s) (fraction x 735.0 332.0))
+              (set! (.volume s) (host/control-fraction id x false))
               (audio/play (.playing s) (.track s) (.volume s))
               (host/paper_redraw))
           (= kind 3)
@@ -143,8 +213,8 @@
                         (set! (.elevation s) 680.0)
                         (set! (.depth s) 0.82)
                         (set! (.grain s) 1.0)
-                        (set! (.hole-x s) 1332.0)
-                        (set! (.hole-y s) 784.0))
+                        (set! (.hole-x s) 0.5)
+                        (set! (.hole-y s) 0.5))
                     (and (>= id 100) (<= id 104)) (set! (.agent-nav s) (- id 100))
                     (and (>= id 110) (<= id 113)) (set! (.project s) (- id 110))
                     (= id 120) (do (set! (.agent-editor s) true) (set! (.agent-error s) false) (host/paper_focus 151))

@@ -1,0 +1,11 @@
+(module folio.abi-test)
+(import "folio.ghostty" :as g)
+(import "coil.primitive" :as p)
+
+(deftest coil-records-match-pinned-c-abi
+         (assert (= (p/sizeof g/SurfaceConfig) 88))
+         (assert (= (p/sizeof g/Key) 32))
+         (assert (= (p/sizeof g/Runtime) 64))
+         (assert (= (p/sizeof g/Target) 16))
+         (assert (= (p/sizeof g/Action) 32))
+         (assert (= (p/sizeof g/SurfaceSize) 20)))

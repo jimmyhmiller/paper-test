@@ -1,0 +1,258 @@
+(module folio.integration)
+(import "paper.lighting" :as light)
+(import "folio.main" :as app)
+(import "folio.terminal" :as term)
+(import "folio.ghostty" :as g)
+(import "folio.native" :as n)
+(import "folio.snapshot" :as snapshot)
+(import "paper.objc" :as o)
+(import "paper.platform" :as host)
+(import "paper.scene" :as scene)
+(import "coil.primitive" :as p)
+
+(defn send [(terminal (ptr term/Terminal)) (text (ptr i8))] (-> i64)
+  ; Text input is paste-aware: bracketed-paste shells require a real Return key.
+  (let [length (host/strlen text)
+        newline (and (> length 0) (= (load (p/index text (cast i64 (- length 1)))) (cast i8 10)))]
+    (g/ghostty_surface_text (.surface terminal) text (if newline (- length 1) length))
+    (when newline
+      (let [(mut key) (zeroed g/Key)]
+        (set! (.action key) 1)
+        (set! (.keycode key) 36)
+        (set! (.unshifted key) 13)
+        (g/ghostty_surface_key (.surface terminal) (load key))
+        0)))
+  0)
+
+(defn content [(terminal (ptr term/Terminal))] (-> (ptr i8))
+  (term/accessibility-value (.view terminal) (o/nil)))
+
+(defn until-text [(terminal (ptr term/Terminal)) (text (ptr i8))] (-> i64)
+  (let [deadline (+ (host/CACurrentMediaTime) 10.0)]
+    (while (not (o/msg bool (content terminal) (o/sel c"containsString:") [(ptr i8)] (o/ns text)))
+      (assert (< (host/CACurrentMediaTime) deadline))
+      (let [pool (o/new c"NSAutoreleasePool")] (app/pump) (o/release pool))))
+  0)
+
+(defn settle [] (-> i64)
+  (let [deadline (+ (host/CACurrentMediaTime) 0.3)]
+    (while (< (host/CACurrentMediaTime) deadline) (app/pump)))
+  0)
+
+(defn until-frame-changes [(view (ptr i8)) (signature i64)] (-> i64)
+  (let [deadline (+ (host/CACurrentMediaTime) 5.0)
+        (mut after) (snapshot/sample view)]
+    (while (= (.signature after) signature)
+      (assert (< (host/CACurrentMediaTime) deadline))
+      (app/pump)
+      (set! after (snapshot/sample view)))
+    (assert (= (.premultiplication-errors after) 0)))
+  0)
+
+(defn generated-material [] (-> (ptr i8))
+  (o/msg (ptr i8)
+         (o/class c"NSString")
+         (o/sel c"stringWithContentsOfFile:encoding:error:")
+         [(ptr i8) u64 (ptr i8)]
+         (o/msg (ptr i8)
+                (.material-directory (app/app))
+                (o/sel c"stringByAppendingPathComponent:")
+                [(ptr i8)]
+                (o/ns (if (= (.material-slot (app/app)) 0)
+                          c"paper-terminal-material-a.glsl"
+                          c"paper-terminal-material-b.glsl")))
+         (cast u64 4)
+         (o/nil)))
+
+(defn mouse-event [(x f64) (y f64)] (-> (ptr i8))
+  (o/msg (ptr i8)
+         (o/class c"NSEvent")
+         (o/sel c"mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:")
+         [u64 host/CGPoint u64 f64 i64 (ptr i8) i64 i64 f32]
+         (cast u64 1)
+         (host/CGPoint :x x :y (- (.window-h (host/host)) y))
+         (cast u64 0)
+         (host/CACurrentMediaTime)
+         (o/msg i64 (.window (host/host)) (o/sel c"windowNumber") [])
+         (o/nil)
+         0
+         1
+         (cast f32 1.0)))
+
+(defn main [] (-> i64)
+  (let [pool (o/new c"NSAutoreleasePool")]
+    (app/initialize true)
+    (let [first (app/current)]
+      (send first
+            c"printf '\\033[2J\\033[H%s_%s\\n' PAPER PTY_A; printf '%s%s\\n' UNICODE: 'café λ 日本語'; printf '\\033]2;First sheet\\007'\n")
+      (until-text first c"PAPER_PTY_A")
+      (until-text first c"UNICODE:café λ 日本語")
+      (settle)
+      (assert (o/msg bool (.title first) (o/sel c"isEqualToString:") [(ptr i8)] (o/ns c"First sheet")))
+      ; A material gesture must change the frame Ghostty actually published.
+      ; Source-string assertions alone missed the former broken controls.
+      (let [before (snapshot/sample (.view first))
+            saved (o/retain (content first))]
+        (assert (= (.premultiplication-errors before) 0))
+        (app/event 3 207 0.0 0.0)
+        (let [deadline (+ (host/CACurrentMediaTime) 5.0)
+              (mut after) (snapshot/sample (.view first))]
+          (while (= (.signature after) (.signature before))
+            (assert (< (host/CACurrentMediaTime) deadline))
+            (app/pump)
+            (set! after (snapshot/sample (.view first))))
+          (assert (= (.premultiplication-errors after) 0)))
+        (assert (o/msg bool (content first) (o/sel c"isEqualToString:") [(ptr i8)] saved))
+        (app/event 3 208 0.0 0.0)
+        (settle)
+        (o/release saved))
+      ; A drag changes the Paper light and the completed Ghostty frame before
+      ; mouse-up. Check world coordinates and height in the generated shader.
+      (app/event 3 4 0.0 0.0)
+      (app/event 3 210 0.0 0.0)
+      (app/refresh)
+      (settle)
+      (let [before (snapshot/sample (.view first))
+            map (app/light-map-bounds (.lab-bounds (app/app)))
+            viewport (.viewport (app/app))
+            event (mouse-event (+ (.x map) (* (.w map) 0.9)) (+ (.y map) (* (.h map) 0.9)))]
+        (assert (= (o/msg (ptr i8) (.window (host/host)) (o/sel c"firstResponder") []) (.view first)))
+        (app/paper-pointer event 1)
+        (assert (= (o/msg (ptr i8) (.window (host/host)) (o/sel c"firstResponder") []) (.view first)))
+        (until-frame-changes (.view first) (.signature before))
+        (let [shader (generated-material)]
+          (assert (o/msg bool
+                         shader
+                         (o/sel c"containsString:")
+                         [(ptr i8)]
+                         (app/constant-line c"LIGHT_X" (* (.w viewport) 1.3))))
+          (assert (o/msg bool
+                         shader
+                         (o/sel c"containsString:")
+                         [(ptr i8)]
+                         (app/constant-line c"LIGHT_Y" (* (.h viewport) 1.3)))))
+        (assert (> (.light-x (scene/scene)) (.w viewport)))
+        (assert (> (.light-y (scene/scene)) (.h viewport)))
+        (app/paper-pointer event 3))
+      (let [before (snapshot/sample (.view first))
+            track (app/light-height-track (.lab-bounds (app/app)))]
+        (app/event 2 212 (+ (.x track) (* (.w track) 0.25)) (.y track))
+        (until-frame-changes (.view first) (.signature before))
+        (assert (o/msg bool
+                       (generated-material)
+                       (o/sel c"containsString:")
+                       [(ptr i8)]
+                       (o/ns c"LIGHT_HEIGHT = 550.0000;"))))
+      (app/event 3 213 0.0 0.0)
+      (app/event 3 299 0.0 0.0)
+      (app/refresh)
+      (settle)
+      (app/event 3 500 0.0 0.0)
+      (app/refresh)
+      (settle)
+      (assert (.open (app/lighting)))
+      (assert (<= (+ (.x (.terminal-bounds (app/app))) (.w (.terminal-bounds (app/app)))) (.x (.bounds (app/lighting)))))
+      (let [before (snapshot/sample (.view first))
+            map (light/map-bounds (app/lighting))
+            gesture (mouse-event (+ (.x map) (* (.w map) 0.8)) (+ (.y map) (* (.h map) 0.8)))]
+        (app/paper-pointer gesture 1)
+        (assert (= (o/msg (ptr i8) (.window (host/host)) (o/sel c"firstResponder") []) (.view first)))
+        (until-frame-changes (.view first) (.signature before))
+        (app/paper-pointer gesture 3))
+      (app/event 3 504 0.0 0.0)
+      (app/event 3 500 0.0 0.0)
+      (app/refresh)
+      (settle)
+      (assert (not (.open (app/lighting))))
+      (assert (app/new-tab c"/bin/sh -i"))
+      (let [second (app/current)]
+        (send second c"printf '\\033[2J\\033[H%s_%s\\n' PAPER PTY_B\n")
+        (until-text second c"PAPER_PTY_B")
+        (assert (not (o/msg bool (content second) (o/sel c"containsString:") [(ptr i8)] (o/ns c"PAPER_PTY_A"))))
+        (assert (o/msg bool (.view first) (o/sel c"isHidden") []))
+        (app/focus-tab 0)
+        (assert (not (o/msg bool (.view first) (o/sel c"isHidden") [])))
+        (until-text first c"PAPER_PTY_A")
+        (let [before (g/ghostty_surface_size (.surface first))]
+          (o/msg i64 (.window (host/host)) (o/sel c"setContentSize:") [host/CGSize] (host/CGSize :w 880.0 :h 640.0))
+          (settle)
+          (let [after (g/ghostty_surface_size (.surface first))]
+            (assert (< (.columns after) (.columns before)))
+            (assert (< (.rows after) (.rows before)))))
+        (send first c"printf '\\033[?1049h%s_%s\\n' ALT SCREEN_OK\n")
+        (until-text first c"ALT_SCREEN_OK")
+        (send first c"printf '\\033[?1049l'\n")
+        (until-text first c"PAPER_PTY_A")
+        (send first c"sleep 20\n")
+        (settle)
+        (let [(mut key) (zeroed g/Key)]
+          (set! (.action key) 1)
+          (set! (.mods key) 2)
+          (set! (.keycode key) 8)
+          (set! (.unshifted key) 99)
+          (g/ghostty_surface_key (.surface first) (load key)))
+        (send first c"printf '%s_%s\\n' INTERRUPT OK\n")
+        (until-text first c"INTERRUPT_OK")
+        (app/remove-tab 1)
+        (assert (= (app/tab-count) 1))
+        (assert (= (app/current) first))
+        (send first c"printf '%s_%s\\n' SURVIVING SHELL_OK\n")
+        (until-text first c"SURVIVING_SHELL_OK")))
+    ; Exercise the actual Objective-C text input selectors and by-value NSRange ABI.
+    (let [first (app/current)
+          range (n/Range :location 0 :length 1)]
+      (o/msg i64
+             (.view first)
+             (o/sel c"setMarkedText:selectedRange:replacementRange:")
+             [(ptr i8) n/Range n/Range]
+             (o/ns c"日")
+             range
+             range)
+      (assert (o/msg bool (.view first) (o/sel c"hasMarkedText") []))
+      (o/msg i64
+             (.view first)
+             (o/sel c"insertText:replacementRange:")
+             [(ptr i8) n/Range]
+             (o/ns c"printf '%s_%s\\n' IME COMMITTED\n")
+             range)
+      (until-text first c"IME_COMMITTED")
+      (assert (not (o/msg bool (.view first) (o/sel c"hasMarkedText") [])))
+      ; The production path uses the account's login shell and bundled shell integration.
+      (assert (app/new-tab (o/nil)))
+      (send (app/current) c"printf '%s_%s\\n' LOGIN SHELL_OK\n")
+      (until-text (app/current) c"LOGIN_SHELL_OK")
+      (send (app/current) c"cd /tmp; printf '\\033]7;file://localhost/tmp\\007'; printf '%s_%s\\n' DIRECTORY READY\n")
+      (until-text (app/current) c"DIRECTORY_READY")
+      (settle)
+      (assert (app/new-tab (o/nil)))
+      (send (app/current) c"printf '%s:' INHERITED; pwd\n")
+      (until-text (app/current) c"INHERITED:/")
+      (assert (or (o/msg bool (content (app/current)) (o/sel c"containsString:") [(ptr i8)] (o/ns c"INHERITED:/tmp"))
+                  (o/msg bool
+                         (content (app/current))
+                         (o/sel c"containsString:")
+                         [(ptr i8)]
+                         (o/ns c"INHERITED:/private/tmp"))))
+      ; Ghostty preserves sessions that exit within its 250ms startup-failure window.
+      (settle)
+      (send (app/current) c"exit\n")
+      (let [deadline (+ (host/CACurrentMediaTime) 10.0)]
+        (while (= (app/tab-count) 3)
+          (when (>= (host/CACurrentMediaTime) deadline)
+            (n/printf c"WAITING FOR EXIT: %s\n" (o/utf8 (content (app/current)))))
+          (assert (< (host/CACurrentMediaTime) deadline))
+          (app/pump)))
+      (assert (= (app/tab-count) 2))
+      (app/remove-tab 0)
+      (send (app/current) c"exit\n")
+      (let [deadline (+ (host/CACurrentMediaTime) 10.0)]
+        (while (not (.quitting (app/app)))
+          (when (>= (host/CACurrentMediaTime) deadline)
+            (n/printf c"WAITING FOR EXIT: %s\n" (o/utf8 (content (app/current)))))
+          (assert (< (host/CACurrentMediaTime) deadline))
+          (app/pump)))
+      (assert (= (app/tab-count) 0))
+      (app/shutdown)
+      (o/release pool))
+    (println "PASS: real PTYs, Unicode, title updates, independent tabs, focus, resize, alternate screen, Ctrl-C, IME bridge, login shell, inherited directory, shell exit, close lifecycle")
+    0))

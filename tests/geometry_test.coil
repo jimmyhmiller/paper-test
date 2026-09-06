@@ -1,5 +1,4 @@
 (module papercut.geometry-test)
-(import "paper.geometry" :use *)
 (import "papercut.state" :use [selected-bit? flip-bit])
 (import "paper.layout" :use *)
 

@@ -128,3 +128,5 @@
 (extern CGPathCreateCopyByTransformingPath :cc c [(ptr i8) (ref CGAffine)] (-> (ptr i8)))
 
 (extern CGContextSetRGBStrokeColor :cc c [(ptr i8) f64 f64 f64 f64] (-> void))
+
+(extern CGPathCreateCopyByIntersectingPath :cc c [(ptr i8) (ptr i8) bool] (-> (ptr i8)))

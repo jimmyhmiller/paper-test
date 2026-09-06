@@ -1,10 +1,5 @@
 (module papercut.botanical)
-(import "paper.surface" :use *)
-(import "paper.material" :use *)
-(import "paper.geometry" :use [rect])
-(import "paper.components" :use *)
-(import "paper.navigation" :use *)
-(import "paper.charts" :use *)
+(import "paper.flow" :use *)
 (import "papercut.state" :use *)
 (import "paper.platform" :as host)
 
@@ -20,100 +15,217 @@
   (close-path)
   (finish-sheet 29.0 (recycled 0x526945)))
 
-(defn illustration [] (-> i64)
-  (let [s (state)
-        green (case (.plant s) 0 (recycled 0x4f7154) 1 (smooth 0x52614c) (cotton 0x72906b))]
-    (well (rect 328.0 253.0 445.0 480.0) 160.0 28.0 (cotton 0xe4dfc8) (linen 0xc8d0b1) (cotton 0xb8c4a2))
-    (disc 424.0 299.0 262.0 21.0 (cotton 0xd9daba))
-    (stem 544.0 640.0 275.0)
-    (leaf 552.0 567.0 -140.0 112.0 32.0 green)
-    (leaf 551.0 528.0 131.0 126.0 34.0 (recycled 0x8da578))
-    (leaf 550.0 461.0 -100.0 115.0 33.0 (recycled 0x7a936a))
-    (leaf 555.0 407.0 89.0 91.0 35.0 green)
-    (leaf 551.0 600.0 144.0 90.0 35.0 green)
-    (begin-sheet)
-    (move-to 492.0 616.0)
-    (line-to 611.0 616.0)
-    (line-to 596.0 698.0)
-    (curve-to 580.0 710.0 521.0 710.0 507.0 698.0)
-    (close-path)
-    (finish-sheet 37.0 (recycled 0xbe7960))
-    (panel (rect 484.0 609.0 136.0 18.0) 5.0 42.0 (cotton 0xd69a79))
-    (label 516.0 653.0 10.0 0x794d3d 2 c"GROW SLOW")
-    (label 355.0 296.0 10.0 0x6e7a59 2 c"FIG. 0")
-    (number 400.0 296.0 10.0 0x6e7a59 (+ (.plant s) 1))
-    (label 349.0 690.0 10.0 0x6e7a59 2 c"PRESSED & PRESERVED"))
+(defn illustration [(bounds Rect)] (-> i64)
+  (let [space (art-space bounds (rect 328.0 253.0 445.0 480.0))]
+    (let [s (state)
+          green (case (.plant s) 0 (recycled 0x4f7154) 1 (smooth 0x52614c) (cotton 0x72906b))]
+      (well (rect (art-x space 328.0) (art-y space 253.0) (art-length space 445.0) (art-length space 480.0))
+            (art-length space 160.0)
+            28.0
+            (cotton 0xe4dfc8)
+            (linen 0xc8d0b1)
+            (cotton 0xb8c4a2))
+      (disc (art-x space 424.0) (art-y space 299.0) (art-length space 262.0) 21.0 (cotton 0xd9daba))
+      (stem (art-x space 544.0) (art-y space 640.0) (art-length space 275.0))
+      (leaf (art-x space 552.0) (art-y space 567.0) (art-length space -140.0) (art-length space 112.0) 32.0 green)
+      (leaf (art-x space 551.0)
+            (art-y space 528.0)
+            (art-length space 131.0)
+            (art-length space 126.0)
+            34.0
+            (recycled 0x8da578))
+      (leaf (art-x space 550.0)
+            (art-y space 461.0)
+            (art-length space -100.0)
+            (art-length space 115.0)
+            33.0
+            (recycled 0x7a936a))
+      (leaf (art-x space 555.0) (art-y space 407.0) (art-length space 89.0) (art-length space 91.0) 35.0 green)
+      (leaf (art-x space 551.0) (art-y space 600.0) (art-length space 144.0) (art-length space 90.0) 35.0 green)
+      (begin-sheet)
+      (move-to (art-x space 492.0) (art-y space 616.0))
+      (line-to (art-x space 611.0) (art-y space 616.0))
+      (line-to (art-x space 596.0) (art-y space 698.0))
+      (curve-to (art-x space 580.0)
+                (art-y space 710.0)
+                (art-x space 521.0)
+                (art-y space 710.0)
+                (art-x space 507.0)
+                (art-y space 698.0))
+      (close-path)
+      (finish-sheet 37.0 (recycled 0xbe7960))
+      (panel (rect (art-x space 484.0) (art-y space 609.0) (art-length space 136.0) (art-length space 18.0))
+             (art-length space 5.0)
+             42.0
+             (cotton 0xd69a79))
+      (label (art-x space 516.0) (art-y space 653.0) (art-length space 10.0) 0x794d3d 2 c"GROW SLOW")
+      (label (art-x space 355.0) (art-y space 296.0) (art-length space 10.0) 0x6e7a59 2 c"FIG. 0")
+      (number (art-x space 400.0) (art-y space 296.0) (art-length space 10.0) 0x6e7a59 (+ (.plant s) 1))
+      (label (art-x space 349.0) (art-y space 690.0) (art-length space 10.0) 0x6e7a59 2 c"PRESSED & PRESERVED"))
+    0))
+
+(defn sidebar [(bounds Rect)] (-> i64)
+  (arrange bounds
+           [sidebar
+            (padded (column (grow 1.0) (grow 1.0) 12.0) (padding 17.0))
+            [heading (box (grow 1.0) (fixed 41.0))]
+            [motto (box (grow 1.0) (fixed 18.0))]
+            [line (box (grow 1.0) (fixed 1.0))]
+            [eyebrow (box (grow 1.0) (fixed 18.0))]
+            [plants (box (grow 1.0) (fixed 254.0))]
+            [space (box (grow 1.0) (grow 1.0))]
+            [reminder (box (grow 1.0) (fixed 20.0))]
+            [quote (box (grow 1.0) (fixed 55.0))]
+            [credit (box (grow 1.0) (fixed 18.0))]
+            [decoration (box (grow 1.0) (fixed 86.0))]]
+           (panel sidebar 23.0 23.0 (linen 0xd6dcc0))
+           (caption heading 31.0 0x3c5135 1 c"herbarium")
+           (caption motto 10.0 0x657452 3 c"A JOURNAL OF GROWING THINGS")
+           (separator line 0xaab697)
+           (caption eyebrow 11.0 0x627151 3 c"ON YOUR WINDOWSILL")
+           (let [(mut style) (selection-style (linen 0xd5dbc1) (recycled 0xb0bd97) (recycled 0x8c9d77))]
+             (set! (.leading style) 34.0)
+             (set! (.font style) 3)
+             (set! (.size style) 13.0)
+             (set! (.radius style) 17.0)
+             (set! (.ink style) 0x344b30)
+             (set! (.active-ink style) 0x344b30)
+             (for [i 0 3]
+               (let [cell (column-cell plants 3 13.0 i)]
+                 (selection-row 200
+                                (choice (+ 200 i)
+                                        (case i 0 c"Monstera" 1 c"Rubber plant" c"Chinese money plant")
+                                        (case i 0
+                                              c"Living room · 2 years" 1
+                                              c"Bedroom · 8 months" c"Kitchen · 5 months"))
+                                cell
+                                (= i (.plant (state)))
+                                (load style))
+                 (leaf (+ (.x cell) 22.0) (+ (.y cell) 38.0) 18.0 29.0 33.0 (moss)))))
+           (caption reminder 12.0 0x576b48 3 c"A gentle reminder")
+           (caption quote 13.0 0x5f7152 1 c"“To plant a garden is\nto believe in tomorrow.”")
+           (caption credit 10.0 0x7f886c 0 c"— Audrey Hepburn")
+           (leaf (+ (.x decoration) (* (.w decoration) 0.65))
+                 (+ (.y decoration) 78.0)
+                 -47.0
+                 65.0
+                 28.0
+                 (recycled 0x9da985))
+           (leaf (+ (.x decoration) (* (.w decoration) 0.67))
+                 (+ (.y decoration) 52.0)
+                 38.0
+                 60.0
+                 29.0
+                 (recycled 0xaab592)))
   0)
 
-(defn draw [] (-> i64)
-  (let [s (state)
-        stock (recycled 0xe9e5ce)]
-    (panel (rect 25.0 101.0 1160.0 802.0) 30.0 6.0 (recycled 0xc3b89b))
-    (panel (rect 24.0 92.0 1160.0 802.0) 30.0 15.0 stock)
-    (panel (rect 42.0 110.0 228.0 765.0) 23.0 23.0 (linen 0xd6dcc0))
-    (label 68.0 142.0 31.0 0x3c5135 1 c"herbarium")
-    (label 69.0 183.0 10.0 0x657452 3 c"A JOURNAL OF GROWING THINGS")
-    (rule 67.0 218.0 179.0 0xaab697)
-    (label 70.0 247.0 11.0 0x627151 3 c"ON YOUR WINDOWSILL")
-    (let [(mut style) (selection-style (linen 0xd5dbc1) (recycled 0xb0bd97) (recycled 0x8c9d77))]
-      (set! (.leading style) 34.0)
-      (set! (.font style) 3)
-      (set! (.size style) 13.0)
-      (set! (.radius style) 17.0)
-      (set! (.ink style) 0x344b30)
-      (set! (.active-ink style) 0x344b30)
-      (for [i 0 3]
-        (let [y (+ 282.0 (* 89.0 (cast f64 i)))]
-          (selection-row 200
-                         (choice (+ 200 i)
-                                 (case i 0 c"Monstera" 1 c"Rubber plant" c"Chinese money plant")
-                                 (case i 0 c"Living room · 2 years" 1 c"Bedroom · 8 months" c"Kitchen · 5 months"))
-                         (rect 59.0 (- y 8.0) 196.0 76.0)
-                         (= i (.plant s))
-                         (load style))
-          (leaf 81.0 (+ y 30.0) 18.0 29.0 33.0 (moss)))))
-    (label 69.0 609.0 12.0 0x576b48 3 c"A gentle reminder")
-    (label 69.0 639.0 13.0 0x5f7152 1 c"“To plant a garden is")
-    (label 69.0 663.0 13.0 0x5f7152 1 c"to believe in tomorrow.”")
-    (label 69.0 699.0 10.0 0x7f886c 0 c"— Audrey Hepburn")
-    (leaf 183.0 845.0 -47.0 65.0 28.0 (recycled 0x9da985))
-    (leaf 187.0 819.0 38.0 60.0 29.0 (recycled 0xaab592))
-    (label 318.0 132.0 10.0 0x7b8169 3 c"YOUR COLLECTION / FIELD NOTES")
-    (label 318.0 167.0 34.0 0x354d32 1 (plant-name (.plant s)))
-    (label 319.0 216.0 13.0 0x737f62 0 c"Room to grow. Time to notice the small things.")
-    (button 210 (rect 968.0 158.0 185.0 43.0) c"+  Log an observation" false (cotton 0xe4d2a6))
-    (illustration)
-    (label 823.0 263.0 10.0 0x7d866d 3 c"TODAY’S CARE")
-    (label 822.0 293.0 26.0 0x3e5538 1 c"Looking a little thirsty.")
-    (panel (rect 813.0 343.0 338.0 114.0) 22.0 25.0 (cotton 0xdde0c5))
-    (label 836.0 365.0 13.0 0x526948 3 c"WATERING")
-    (label 836.0
-           390.0
-           15.0
-           0x3b5137
-           0
-           (if (selected-bit? (.watered s) (.plant s)) c"Watered today. Thank you." c"The top two inches feel dry."))
-    (label 836.0 420.0 11.0 0x748266 0 c"About 250 ml · room-temperature water")
-    (checkbox 211 826.0 484.0 c"Water and let the soil drain" (selected-bit? (.watered s) (.plant s)) (moss))
-    (checkbox 212 826.0 531.0 c"Turn toward the morning light" (selected-bit? (.watered s) (+ (.plant s) 3)) (moss))
-    (checkbox 213 826.0 578.0 c"Wipe the leaves, gently" (selected-bit? (.watered s) (+ (.plant s) 6)) (moss))
-    (rule 822.0 634.0 322.0 0xc8cfb3)
-    (badge 827.0 659.0 c"Bright, indirect light" (ochre))
-    (badge 827.0 689.0 c"18–27°C feels just right" (moss))
-    (panel (rect 317.0 754.0 836.0 105.0) 21.0 25.0 (cotton 0xf0e9d4))
-    (if (.journal-edit s)
-        (do
-          (label 342.0 770.0 10.0 0x8e8b72 3 c"WHAT DID YOU NOTICE TODAY?")
-          (input 220 (rect 340.0 796.0 546.0 42.0) c"A new leaf, a little more light…")
-          (button 214 (rect 900.0 797.0 76.0 40.0) c"Save" false (sage))
-          (button 215 (rect 987.0 797.0 77.0 40.0) c"Cancel" false (cream)))
-        (do
-          (label 342.0 773.0 10.0 0x8e8b72 3 c"LATEST OBSERVATION")
-          (text-box (rect 342.0 800.0 706.0 46.0)
-                    18.0
-                    0x4e6243
-                    1
-                    (host/paper_pref_text c"journal-note" c"A new leaf, slowly finding its shape."))))
-    (number 1090.0 782.0 28.0 0x7d8f6a (+ 12 (.journal s)))
-    (label 1081.0 821.0 10.0 0x7d8f6a 0 c"entries"))
+(defn care [(bounds Rect)] (-> i64)
+  (let [s (state)]
+    (arrange bounds
+             [root
+              (column (grow 1.0) (grow 1.0) 8.0)
+              [eyebrow (box (grow 1.0) (fixed 18.0))]
+              [heading (box (grow 1.0) (fixed 38.0))]
+              [water
+               (padded (column (grow 1.0) (fixed 120.0) 10.0) (padding 20.0))
+               [water-title (box (grow 1.0) (fixed 18.0))]
+               [water-state (box (grow 1.0) (fixed 22.0))]
+               [water-detail (box (grow 1.0) (fixed 18.0))]]
+              [tasks (box (grow 1.0) (fixed 123.0))]
+              [space (box (grow 1.0) (grow 1.0))]
+              [line (box (grow 1.0) (fixed 1.0))]
+              [light (box (grow 1.0) (fixed 18.0))]
+              [temperature (box (grow 1.0) (fixed 18.0))]]
+             (caption eyebrow 10.0 0x7d866d 3 c"TODAY’S CARE")
+             (caption heading 26.0 0x3e5538 1 c"Looking a little thirsty.")
+             (panel water 22.0 25.0 (cotton 0xdde0c5))
+             (caption water-title 13.0 0x526948 3 c"WATERING")
+             (caption water-state
+                      15.0
+                      0x3b5137
+                      0
+                      (if (selected-bit? (.watered s) (.plant s))
+                          c"Watered today. Thank you."
+                          c"The top two inches feel dry."))
+             (caption water-detail 11.0 0x748266 0 c"About 250 ml · room-temperature water")
+             (for [i 0 3]
+               (check (+ 211 i)
+                      (column-cell tasks 3 18.0 i)
+                      (case i 0
+                            c"Water and let the soil drain" 1
+                            c"Turn toward the morning light" c"Wipe the leaves, gently")
+                      (selected-bit? (.watered s) (+ (.plant s) (* i 3)))
+                      (moss)))
+             (separator line 0xc8cfb3)
+             (tag light c"Bright, indirect light" (ochre))
+             (tag temperature c"18–27°C feels just right" (moss))))
+  0)
+
+(defn journal [(bounds Rect)] (-> i64)
+  (let [s (state)]
+    (arrange bounds
+             [root
+              (padded (row (grow 1.0) (grow 1.0) 22.0) (padding 22.0))
+              [entry
+               (column (grow 1.0) (grow 1.0) 10.0)
+               [heading (box (grow 1.0) (fixed 16.0))]
+               [body
+                (row (grow 1.0) (grow 1.0) 12.0)
+                [note (box (grow 1.0) (grow 1.0))]
+                [save (box (fixed (if (.journal-edit s) 76.0 0.0)) (grow 1.0))]
+                [cancel (box (fixed (if (.journal-edit s) 77.0 0.0)) (grow 1.0))]]]
+              [count
+               (column (fixed 55.0) (grow 1.0) 6.0)
+               [total (box (grow 1.0) (fixed 36.0))]
+               [unit (box (grow 1.0) (fixed 16.0))]]]
+             (panel root 21.0 25.0 (cotton 0xf0e9d4))
+             (caption heading
+                      10.0
+                      0x8e8b72
+                      3
+                      (if (.journal-edit s) c"WHAT DID YOU NOTICE TODAY?" c"LATEST OBSERVATION"))
+             (if (.journal-edit s)
+                 (do
+                   (input 220 note c"A new leaf, a little more light…")
+                   (button 214 save c"Save" false (sage))
+                   (button 215 cancel c"Cancel" false (cream)))
+                 (caption body
+                          18.0
+                          0x4e6243
+                          1
+                          (host/paper_pref_text c"journal-note" c"A new leaf, slowly finding its shape.")))
+             (numeral total 28.0 0x7d8f6a (+ 12 (.journal s)))
+             (caption unit 10.0 0x7d8f6a 0 c"entries")))
+  0)
+
+(defn draw [(bounds Rect)] (-> i64)
+  (arrange bounds
+           [page
+            (padded (row (grow 1.0) (grow 1.0) 42.0) (padding 18.0))
+            [navigation (box (fixed 228.0) (grow 1.0))]
+            [main
+             (padded (column (grow 1.0) (grow 1.0) 22.0) (edges 0.0 18.0 14.0 16.0))
+             [header
+              (column (grow 1.0) (fixed 100.0) 14.0)
+              [eyebrow (box (grow 1.0) (fixed 16.0))]
+              [title-row
+               (row (grow 1.0) (fixed 44.0) 20.0)
+               [heading (box (grow 1.0) (grow 1.0))]
+               [log (box (fixed 185.0) (grow 1.0))]]
+              [subtitle (box (grow 1.0) (fixed 20.0))]]
+             [body
+              (row (grow 1.0) (grow 1.0) 40.0)
+              [art (box (grow 1.3) (grow 1.0))]
+              [today (box (grow 1.0) (grow 1.0))]]
+             [notes (box (grow 1.0) (fixed 116.0))]]]
+           (panel (shifted page 1.0 9.0) 30.0 6.0 (recycled 0xc3b89b))
+           (panel page 30.0 15.0 (recycled 0xe9e5ce))
+           (sidebar navigation)
+           (caption eyebrow 10.0 0x7b8169 3 c"YOUR COLLECTION / FIELD NOTES")
+           (caption heading 34.0 0x354d32 1 (plant-name (.plant (state))))
+           (caption subtitle 13.0 0x737f62 0 c"Room to grow. Time to notice the small things.")
+           (button 210 log c"+  Log an observation" false (cotton 0xe4d2a6))
+           (illustration art)
+           (care today)
+           (journal notes))
   0)

@@ -1,0 +1,242 @@
+(module papercut.layout-test)
+(import "layout.core" :use *)
+(import "layout.syntax" :use [arrange])
+(import "coil.primitive" :as p)
+
+(defn near [(actual f64) (expected f64)] (-> i64)
+  (assert (< (maximum (- actual expected) (- expected actual)) 0.00001))
+  0)
+
+(deftest weighted-layout-and-padding
+         (arrange (rect 10.0 20.0 400.0 200.0)
+                  [root
+                   (padded (row (grow 1.0) (grow 1.0) 10.0) (padding 20.0))
+                   [sidebar (box (fixed 80.0) (grow 1.0))]
+                   [content (box (grow 2.0) (grow 1.0))]
+                   [aside (box (grow 1.0) (fixed 30.0))]]
+                  (near (.x sidebar) 30.0)
+                  (near (.y sidebar) 40.0)
+                  (near (.w content) (/ 520.0 3.0))
+                  (near (.w aside) (/ 260.0 3.0))
+                  (near (+ (.x aside) (.w aside)) 390.0)
+                  (near (.h content) 160.0)))
+
+(deftest growth-redistributes-at-maximum
+         (arrange (rect 0.0 0.0 600.0 100.0)
+                  [root
+                   (row (grow 1.0) (grow 1.0) 0.0)
+                   [a (box (bounded (grow 1.0) 0.0 50.0) (grow 1.0))]
+                   [b (box (grow 1.0) (grow 1.0))]]
+                  (near (.w a) 50.0)
+                  (near (.w b) 550.0)))
+
+(defn measure-text [(data (ptr i8)) (width f64)] (-> Extent)
+  (Extent :width 200.0 :height (if (< width 100.0) 60.0 20.0)))
+
+(deftest wrapping-changes-parent-height-and-following-position
+         (let [(mut nodes) (zeroed (array Node 8))
+               (mut ctx) (layout (index nodes 0) 8)
+               root (add ctx -1 (column (grow 1.0) (grow 1.0) 5.0))
+               content (add ctx root (column (grow 1.0) (fit) 0.0))
+               text (measured ctx content (box (grow 1.0) (fit)) (p/fnptr-of measure-text) (cast (ptr i8) 0))
+               footer (add ctx root (box (grow 1.0) (fixed 10.0)))]
+           (solve ctx (rect 0.0 0.0 80.0 200.0))
+           (let [a (bounds ctx content)
+                 b (bounds ctx footer)]
+             (near (.h a) 60.0)
+             (near (.y b) 65.0))
+           (solve ctx (rect 0.0 0.0 300.0 200.0))
+           (let [a (bounds ctx content)
+                 b (bounds ctx footer)]
+             (near (.h a) 20.0)
+             (near (.y b) 25.0))))
+
+(deftest percentage-overlay-aspect-and-alignment
+         (arrange (rect 10.0 20.0 400.0 200.0)
+                  [root
+                   (aligned (stack (grow 1.0) (grow 1.0)) 0.5 0.5)
+                   [image (aspect (box (percent 0.5) (fit)) 2.0)]
+                   [badge (floating (box (fixed 40.0) (fixed 20.0)) 1.0 0.0 -5.0 5.0)]]
+                  (near (.w image) 200.0)
+                  (near (.h image) 100.0)
+                  (near (.x image) 110.0)
+                  (near (.y image) 70.0)
+                  (near (.x badge) 365.0)
+                  (near (.y badge) 25.0)))
+
+(deftest minimum-overflow-remains-explicit-and-clipped
+         (let [(mut nodes) (zeroed (array Node 4))
+               (mut ctx) (layout (index nodes 0) 4)
+               root (add ctx -1 (scrolled (row (grow 1.0) (grow 1.0) 0.0) 10.0 0.0))
+               a (add ctx root (box (bounded (grow 1.0) 150.0 200.0) (fixed 30.0)))
+               b (add ctx root (box (fixed 50.0) (fixed 30.0)))]
+           (solve ctx (rect 0.0 0.0 100.0 80.0))
+           (let [r (bounds ctx a)
+                 v (visible-bounds ctx a)]
+             (near (.w r) 150.0)
+             (near (.x r) -10.0)
+             (near (.w v) 100.0))
+           (assert (hit? ctx a 5.0 5.0))
+           (assert (not (hit? ctx a 105.0 5.0)))))
+
+(deftest fit-shrinks-but-fixed-and-minimums-do-not
+         (arrange (rect 0.0 0.0 120.0 100.0)
+                  [root
+                   (row (grow 1.0) (grow 1.0) 10.0)
+                   [fixed-child (box (fixed 50.0) (fixed 30.0))]
+                   [fit-child
+                    (box (bounded (fit) 20.0 500.0) (fit))
+                    [inside (box (fixed 200.0) (fixed 25.0))]]]
+                  (near (.w fixed-child) 50.0)
+                  (near (.w fit-child) 60.0)
+                  (near (.w inside) 200.0)
+                  (near (.h fit-child) 25.0)))
+
+(deftest percentages-use-inner-size-and-floating-does-not-affect-fit
+         (arrange (rect 0.0 0.0 500.0 300.0)
+                  [root
+                   (padded (column (grow 1.0) (grow 1.0) 0.0) (padding 20.0))
+                   [container
+                    (row (grow 1.0) (fit) 10.0)
+                    [half (box (percent 0.5) (fixed 30.0))]
+                    [rest (box (grow 1.0) (fixed 20.0))]
+                    [overlay (floating (box (fixed 300.0) (fixed 200.0)) 1.0 0.0 0.0 0.0)]]]
+                  (near (.w half) 230.0)
+                  (near (.w rest) 220.0)
+                  (near (.h container) 30.0)))
+
+(deftest between-aligns-edges-and-preserves-gap-under-overflow
+         (arrange (rect 10.0 20.0 200.0 100.0)
+                  [root
+                   (spaced (aligned (row (grow 1.0) (grow 1.0) 8.0) 1.0 0.0))
+                   [a (box (fixed 20.0) (fixed 30.0))]
+                   [b (box (fixed 30.0) (fixed 40.0))]]
+                  (near (.x a) 10.0)
+                  (near (.x b) 180.0)
+                  (near (.y a) 90.0)
+                  (near (.y b) 80.0)))
+
+(deftest zero-viewport-and-oversized-padding-are-finite
+         (arrange (rect 0.0 0.0 0.0 0.0)
+                  [root
+                   (padded (row (grow 1.0) (grow 1.0) 20.0) (padding 30.0))
+                   [a (box (grow 1.0) (grow 1.0))]
+                   [b (box (grow 1.0) (grow 1.0))]]
+                  (near (.w a) 0.0)
+                  (near (.h a) 0.0)
+                  (near (.x b) 50.0)))
+
+(deftest non-depth-first-insertion-resolves-parent-before-child
+         (let [(mut nodes) (zeroed (array Node 8))
+               (mut ctx) (layout (index nodes 0) 8)
+               root (add ctx -1 (row (grow 1.0) (grow 1.0) 10.0))
+               left (add ctx root (column (grow 1.0) (grow 1.0) 0.0))
+               right (add ctx root (column (grow 1.0) (grow 1.0) 0.0))
+               child (add ctx left (box (grow 1.0) (fixed 20.0)))]
+           (solve ctx (rect 0.0 0.0 210.0 100.0))
+           (let [a (bounds ctx child)
+                 b (bounds ctx right)]
+             (near (.w a) 100.0)
+             (near (.x b) 110.0))))
+
+(deftest nested-clips-and-scroll-preserve-content-coordinates
+         (let [(mut nodes) (zeroed (array Node 8))
+               (mut ctx) (layout (index nodes 0) 8)
+               root (add ctx -1 (scrolled (column (grow 1.0) (grow 1.0) 0.0) 0.0 40.0))
+               parent (add ctx root (scrolled (column (grow 1.0) (fixed 200.0) 0.0) 0.0 20.0))
+               child (add ctx parent (box (grow 1.0) (fixed 400.0)))]
+           (solve ctx (rect 10.0 10.0 100.0 100.0))
+           (let [r (bounds ctx child)
+                 v (visible-bounds ctx child)]
+             (near (.y r) -50.0)
+             (near (.y v) 10.0)
+             (near (.h v) 100.0))
+           (reset ctx)
+           (near (cast f64 (.count ctx)) 0.0)))
+
+(deftest constraint-distribution-conserves-space-across-varied-weights
+         (let [(mut nodes) (zeroed (array Node 129))
+               (mut ctx) (layout (index nodes 0) 129)]
+           (for [trial 0 40]
+             (reset ctx)
+             (let [root (add ctx -1 (row (grow 1.0) (grow 1.0) 2.0))]
+               (for [i 0 128]
+                 (add ctx
+                      root
+                      (box (bounded (grow (+ 1.0 (cast f64 (% (+ i trial) 11))))
+                                    3.0
+                                    (+ 20.0 (cast f64 (% (* (+ i 1) (+ trial 3)) 101))))
+                           (grow 1.0))))
+               (solve ctx (rect 0.0 0.0 2200.0 100.0))
+               (let [(mut total) 254.0]
+                 (for [id 1 129]
+                   (let [n (node ctx id)
+                         s (.width (.style n))
+                         r (bounds ctx id)]
+                     (assert (>= (.w r) (- (.min s) 0.00001)))
+                     (assert (<= (.w r) (+ (.max s) 0.00001)))
+                     (set! total (+ (load total) (.w r)))))
+                 (near (load total) 2200.0))))))
+
+(deftest arrange-measurement-and-body-run-once
+         (let [(mut draws) 0
+               (mut unused-data) 0]
+           (arrange (rect 0.0 0.0 80.0 200.0)
+                    [root
+                     (column (grow 1.0) (grow 1.0) 0.0)
+                     [text (box (grow 1.0) (fit)) :measure (p/fnptr-of measure-text) (measure-data [i64] unused-data)]]
+                    (near (.h text) 60.0)
+                    (set! draws (+ (load draws) 1)))
+           (assert-eq (load draws) 1)))
+
+(deftest adversarial-growth-breakpoints-use-bounded-work-and-conserve-space
+         (let [(mut storage) (zeroed (array Node 25))
+               (mut ctx) (layout (index storage 0) 25)
+               root (add ctx -1 (row (grow 1.0) (grow 1.0) 0.0))
+               (mut target) 0.0]
+           (for [i 0 24]
+             (let [weight (cast f64 (<< 1 (- 23 i)))
+                   limit (+ 1.0 (cast f64 i))
+                   cap (* weight limit)]
+               (add ctx root (box (bounded (grow weight) 0.0 cap) (fixed 20.0)))
+               (set! target (+ (load target) cap))))
+           (solve ctx (rect 0.0 0.0 (- (load target) 0.5) 100.0))
+           (let [(mut total) 0.0]
+             (for [id 1 25]
+               (let [r (bounds ctx id)] (set! total (+ (load total) (.w r)))))
+             (near (load total) (- (load target) 0.5)))
+           (let [last (bounds ctx 24)] (near (.w last) 23.5))))
+
+(deftest layered-content-reports-independent-scroll-axes
+         (let [(mut storage) (zeroed (array Node 3))
+               (mut ctx) (layout (index storage 0) 3)
+               root (add ctx -1 (stack (grow 1.0) (grow 1.0)))
+               a (add ctx root (box (fixed 250.0) (fixed 30.0)))
+               b (add ctx root (box (fixed 40.0) (fixed 300.0)))]
+           (solve ctx (rect 0.0 0.0 100.0 100.0))
+           (let [range (scroll-range ctx root)] (near (.width range) 150.0) (near (.height range) 200.0))))
+
+(deftest measured-padding-reduces-wrap-width-and-scroll-clamps-without-remeasurement
+         (let [(mut storage) (zeroed (array Node 3))
+               (mut ctx) (layout (index storage 0) 3)
+               root (add ctx -1 (column (grow 1.0) (grow 1.0) 0.0))
+               text
+                 (measured ctx
+                           root
+                           (padded (box (grow 1.0) (fit)) (padding 20.0))
+                           (p/fnptr-of measure-text)
+                           (cast (ptr i8) 0))
+               tail (add ctx root (box (grow 1.0) (fixed 200.0)))]
+           (solve ctx (rect 0.0 0.0 120.0 400.0))
+           (let [r (bounds ctx text)] (near (.h r) 100.0))
+           (let [r (bounds ctx tail)] (near (.y r) 100.0))
+           (set! (.height (.style (node ctx text))) (fixed 100.0))
+           (solve ctx (rect 0.0 0.0 120.0 150.0))
+           (let [offset (scroll-to ctx root -30.0 500.0)]
+             (near (.width offset) 0.0)
+             (near (.height offset) 150.0))
+           (let [r (bounds ctx tail)] (near (.y r) -50.0))
+           (let [r (visible-bounds ctx tail)] (near (.h r) 150.0))
+           (assert (not (hit? ctx text 10.0 10.0)))
+           (scroll-to ctx root 0.0 0.0)
+           (let [r (bounds ctx tail)] (near (.y r) 100.0))))

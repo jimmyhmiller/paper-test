@@ -1,0 +1,42 @@
+(module papercut.text-layout-test)
+(import "paper.text-layout" :use *)
+(import "paper.objc" :as o)
+(import "layout.core" :as l)
+(import "layout.syntax" :use [arrange])
+(import "coil.primitive" :as p)
+
+(deftest native-measurement-wraps-and-propagates-to-following-sibling
+         (let [pool (o/new c"NSAutoreleasePool")
+               (mut text) (text-measure c"A quiet afternoon with paper, light, and room to breathe." 18.0 1)]
+           (arrange (l/rect 0.0 0.0 140.0 400.0)
+                    [root
+                     (l/column (l/grow 1.0) (l/grow 1.0) 12.0)
+                     [paragraph (l/box (l/grow 1.0) (l/fit)) :measure (p/fnptr-of measure-text) (text-data text)]
+                     [button (l/box (l/grow 1.0) (l/fixed 40.0))]]
+                    (assert (> (.h paragraph) 50.0))
+                    (assert (< (.h paragraph) 160.0))
+                    (assert (> (.y button) (+ (.h paragraph) 11.99))))
+           (clear-text-cache)
+           (o/release pool)))
+
+(deftest text-cache-keys-content-font-size-and-offered-width
+         (let [pool (o/new c"NSAutoreleasePool")
+               (mut text) (text-measure c"Paper and light, a small study in quiet details." 16.0 0)
+               wide (measure-text (text-data text) 400.0)
+               narrow (measure-text (text-data text) 80.0)]
+           (assert (> (.height narrow) (.height wide)))
+           (set! (.size text) 24.0)
+           (let [large (measure-text (text-data text) 80.0)] (assert (> (.height large) (.height narrow))))
+           (set! (.text text) c"短い言葉 · café · 🌱")
+           (let [unicode (measure-text (text-data text) 400.0)]
+             (assert (> (.width unicode) 20.0))
+             (assert (> (.height unicode) 10.0)))
+           (let [(mut buffer) (: [80 97 112 101 114 0] (array i8 6))]
+             (set! text (text-measure (index buffer 0) 16.0 0))
+             (set! (.size text) 16.0)
+             (let [before (measure-text (text-data text) 400.0)]
+               (set! (index buffer 0) (cast i8 87))
+               (let [after (measure-text (text-data text) 400.0)]
+                 (assert (> (.width after) (.width before))))))
+           (clear-text-cache)
+           (o/release pool)))

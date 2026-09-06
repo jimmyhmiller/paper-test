@@ -1,0 +1,43 @@
+(module calculator.icon)
+(import "paper.flow" :use *)
+(import "paper.platform" :as host)
+(import "paper.scene" :as scene)
+(import "paper.render" :as render)
+(import "paper.objc" :as o)
+(import "paper.workers" :as workers)
+(import "calculator.lettering" :use [carved])
+
+(extern CGContextClearRect :cc c [(ptr i8) host/CGRect] (-> void))
+
+(defn main [] (-> i64)
+  (let [pool (o/new c"NSAutoreleasePool")]
+    (scene/init)
+    (set! (.width (scene/scene)) 1024)
+    (set! (.height (scene/scene)) 1024)
+    (set! (.scale (scene/scene)) 1.0)
+    (render/setup)
+    (host/paper_begin 0xf0d9b5)
+    (host/paper_light 220.0 -400.0 1500.0 0.55 1.0)
+    (panel (rect 32.0 32.0 960.0 960.0) 206.0 26.0 (cotton 0xf0d9b5))
+    (recess (rect 116.0 116.0 792.0 792.0) 134.0 26.0 15.0 2.0 (cotton 0xfbe8c9) (cotton 0x9d8b72))
+    (recess (rect 184.0 183.0 656.0 213.0) 60.0 11.0 7.0 1.0 (cotton 0xd6ccb0) (recycled 0xa3a783))
+    (carved (rect 220.0 215.0 580.0 144.0) c"1234" 145.0 4.0 true)
+    (for [row 0 2]
+      (for [col 0 3]
+        (let [r (rect (+ 188.0 (* (cast f64 col) 228.0)) (+ 451.0 (* (cast f64 row) 211.0)) 193.0 177.0)]
+          (panel r 39.0 35.0 (cotton (if (= col 2) 0xed7959 0xf0d9b5)))
+          (carved (inset r 18.0) (case (+ (* row 3) col) 0 c"7" 1 c"8" 2 c"÷" 3 c"1" 4 c"2" c"+") 112.0 35.0 false))))
+    (render/render)
+    (let [ctx (.output-context (scene/scene))]
+      (host/CGContextSaveGState ctx)
+      (begin-sheet)
+      (rounded-path (rect 0.0 0.0 1024.0 1024.0) 0.0)
+      (rounded-path (rect 32.0 32.0 960.0 960.0) 206.0)
+      (host/CGContextAddPath ctx (.path (scene/scene)))
+      (host/CGContextEOClip ctx)
+      (CGContextClearRect ctx (host/cgrect 0.0 0.0 1024.0 1024.0))
+      (host/CGContextRestoreGState ctx))
+    (assert (= (render/snapshot c"build/icon.png") 0))
+    (workers/stop)
+    (o/release pool))
+  0)

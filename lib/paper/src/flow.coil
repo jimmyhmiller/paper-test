@@ -1,0 +1,67 @@
+(module paper.flow)
+(import "paper.ui" :use * :reexport)
+(import "paper.platform" :as host)
+
+;;; Bounds-first typography and small controls use the same rectangles as layout.
+(defn caption [(r Rect) (size f64) (ink u32) (font i64) (text (ptr i8))] (-> i64)
+  (text-box r size ink font text))
+
+(defn numeral [(r Rect) (size f64) (ink u32) (value i64)] (-> i64)
+  (number (.x r) (.y r) size ink value))
+
+(defn separator [(r Rect) (ink u32)] (-> i64)
+  (rule (.x r) (.y r) (.w r) ink))
+
+(defn tag [(r Rect) (text (ptr i8)) (material Material)] (-> i64)
+  (disc (.x r) (+ (.y r) 4.0) 9.0 35.0 material)
+  (caption (rect (+ (.x r) 16.0) (.y r) (maximum 0.0 (- (.w r) 16.0)) (.h r))
+           12.0
+           0x56604e
+           0
+           text))
+
+(defn check [(id i64) (r Rect) (text (ptr i8)) (checked bool) (material Material)] (-> i64)
+  (well (rect (.x r) (.y r) 25.0 25.0)
+        7.0
+        31.0
+        (control-stock id (cream))
+        material
+        (control-stock id material))
+  (when checked (label (+ (.x r) 5.0) (+ (.y r) 1.0) 18.0 0xf7f0e0 3 c"✓"))
+  (caption (rect (+ (.x r) 37.0) (+ (.y r) 3.0) (maximum 0.0 (- (.w r) 37.0)) (maximum 0.0 (- (.h r) 3.0)))
+           14.0
+           (control-ink)
+           0
+           text)
+  (host/paper_hit id (.x r) (.y r) (.w r) (.h r) text 2 (if checked 1.0 0.0))
+  0)
+
+(defn shifted [(r Rect) (dx f64) (dy f64)] (-> Rect)
+  (rect (+ (.x r) dx) (+ (.y r) dy) (.w r) (.h r)))
+
+;;; Artwork has its own local view box. Uniform scaling preserves circles,
+;;; contour strokes and lettering; the layout rectangle controls placement.
+(defstruct ArtSpace [(x f64) (y f64) (scale f64) (source Rect)])
+
+(defn art-space [(viewport Rect) (source Rect)] (-> ArtSpace)
+  (assert (and (> (.w source) 0.0) (> (.h source) 0.0)))
+  (let [scale (minimum (/ (.w viewport) (.w source)) (/ (.h viewport) (.h source)))]
+    (ArtSpace
+      :x (+ (.x viewport) (* 0.5 (- (.w viewport) (* scale (.w source)))))
+      :y (+ (.y viewport) (* 0.5 (- (.h viewport) (* scale (.h source)))))
+      :scale scale
+      :source (load source))))
+
+(defn art-x [(space ArtSpace) (x f64)] (-> f64)
+  (+ (.x space) (* (- x (.x (.source space))) (.scale space))))
+
+(defn art-y [(space ArtSpace) (y f64)] (-> f64)
+  (+ (.y space) (* (- y (.y (.source space))) (.scale space))))
+
+(defn art-length [(space ArtSpace) (length f64)] (-> f64)
+  (* length (.scale space)))
+
+(defn art-rect [(space ArtSpace) (r Rect)] (-> Rect)
+  (rect (art-x space (.x r)) (art-y space (.y r)) (art-length space (.w r)) (art-length space (.h r))))
+
+(import "paper.text-layout" :use * :reexport)

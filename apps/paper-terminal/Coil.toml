@@ -1,0 +1,17 @@
+[package]
+name = "folio"
+entry = "src/main.coil"
+source-roots = ["src", "tests"]
+
+[dependencies]
+paper = { path = "../../lib/paper" }
+layout = { path = "../../lib/layout" }
+
+[link]
+frameworks = ["AppKit", "QuartzCore", "CoreGraphics", "CoreFoundation", "CoreText", "ImageIO", "Metal", "Carbon", "IOKit", "IOSurface", "Security", "UniformTypeIdentifiers"]
+libs = ["objc", "c++"]
+flags = ["build/ghostty/lib/libghostty-internal.a"]
+
+[test]
+roots = ["tests"]
+suffixes = ["_test.coil"]

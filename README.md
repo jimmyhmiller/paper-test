@@ -38,13 +38,23 @@ These are local example applications. Agent metrics and charts use fixtures; the
 
 The native application stores agent names, care selections, the latest observation, music favorites, and saved destinations with NSUserDefaults. Keys use the `studio.papercut.` prefix. Task checkmarks and trip length are session state. UI verification added a `PaperTester` agent and a sample observation to this machine's example workspace.
 
+## Standalone terminal
+
+[Paper Terminal](apps/paper-terminal/README.md) embeds real Ghostty sessions in the paper renderer: independent shell tabs, native terminal input, responsive layout, and a folded paper cursor. Its separate app bundle includes all runtime resources and does not depend on Sieve.
+
+## Standalone calculator and shared lighting
+
+[Paper Calculator](apps/paper-calculator/README.md) is a separate native app with carved numerals, basic and scientific modes, and keyboard input. Build it with `python3 apps/paper-calculator/scripts/build.py`.
+
+The sun control opens the same reusable lighting popover in Calculator, Terminal, and all four Studio apps. Drag the light position, adjust height and relief, or reset the app's defaults. See [the lighting component](lib/paper/LIGHTING.md) and `examples/minimal.coil` for adding it to another app.
+
 ## Build your own interface
 
-Start with [examples/minimal.coil](examples/minimal.coil), a complete 640 × 480 application. Import `paper.ui` for the public drawing and component API; import `paper.platform` for the application loop and native text input values.
+Start with [examples/minimal.coil](examples/minimal.coil), a complete 640 × 480 application. Import `paper.flow` for layout, drawing, components, and native text measurement; import `paper.platform` for the application loop and native text input values.
 
 Add a local `paper` dependency pointing to `lib/paper`. Copy the root manifest's `[link]` settings into your application manifest: the installed Coil compiler does not propagate all native linking settings from local dependencies. The library has no native source build step.
 
-Use logical coordinates with the origin at the top left. Call `paper_configure` before `paper_run` to choose your title and canvas dimensions. The native window maintains the canvas aspect ratio and maps pointer input into those coordinates.
+Use logical coordinates with the origin at the top left. Call `paper_configure` before `paper_run` to choose your title and canvas dimensions. The native window maintains the canvas aspect ratio and maps pointer input into those coordinates. Its material extends behind the native window controls with no separate title bar. Register a top drag region each frame with `paper_drag_area`; interactive controls retain their clicks. See [layout integration](LAYOUT.md).
 
 ### Sheets and cuts
 
@@ -68,7 +78,7 @@ Elevations span 0 to 64 logical paper points. The renderer clamps geometry outsi
 
 Use `cotton`, `linen`, `recycled`, or `smooth` with an RGB pigment. `stock` exposes roughness, fiber strength, and a deterministic texture seed. Presets include `cream`, `sage`, `moss`, `ochre`, `clay`, and `blue`. Texture stays attached to the paper as you move the light.
 
-The component API includes buttons, toggles, checkboxes, sliders, editable inputs, labels, wrapped text, badges, metrics, rules, and progress bars. Compose row, column, and grid cells through `paper.layout`. Use area curves, area bands, annular segments, leaves, and contour paths from `paper.charts` for custom visualizations.
+The component API includes buttons, toggles, checkboxes, sliders, editable inputs, labels, wrapped text, badges, metrics, rules, and progress bars. Compose named `arrange` trees through `paper.layout` or `paper.flow`; rows, columns, weighted growth, measured content, overlays, and clipping are documented in [the layout guide](lib/layout/README.md). Use area curves, area bands, annular segments, leaves, and contour paths from `paper.charts` for custom visualizations.
 
 Use `choice-list` for vertical navigation and `tab-strip` for horizontal choices. Pass a slice of `Choice` values, a positive group ID, the selected item ID, bounds, spacing, and a `SelectionStyle`. Customize stock, selected stock, ink, typography, padding, elevation, and carved or raised treatment. Use `selection-row` for individual rows or `selection-surface` beneath custom contents; `leading` reserves room for icons. Item IDs must remain unique across the scene. Group IDs connect sibling choices for keyboard navigation.
 
@@ -116,10 +126,10 @@ The default target is 60 Hz. On a compatible display, `PAPER_FPS=120 build/relea
 
 This is a top-down 2.5D height-field renderer. It supports stacked cutouts and depth-aware shadows, but not an orbiting camera, folded paper meshes, transparency, or multiple lights. Heights use eight bits; shadows use 32 samples with a bounded reach. Extreme low light angles can show sampling artifacts. Rendering redraws on demand, and native text fields remain above the paper image.
 
-The runtime currently owns one window and one global scene. It does not provide virtualized lists, general scroll containers, automatic content-driven reflow, application-level undo/redo, or a visual interface editor. Native text editing does support undo/redo. Designers compose interfaces in Coil.
+The runtime currently owns one window and one global scene. The layout package provides content measurement, reflow, scroll offsets, and clip geometry. The runtime does not provide virtualized lists, wheel/inertia policies, application-level undo/redo, or a visual interface editor. Native text editing does support undo/redo. Designers compose interfaces in Coil.
 
 ## Verification and project notes
 
-`coil verify` checks formatting, lint, compilation, and 41 tests. Performance regressions cover incremental/full-frame agreement, odd image dimensions, lighting invalidation, accumulated raster damage, worker-pool completion and restart, empty masks, cached readback, fractional mask placement, and viewport clipping. The accelerated GPU shadow result is compared byte-for-byte with all 32 original samples. Tests cover cutout pixels, cuts crossing outside edges, light reversal, zero-depth shadows, ink occlusion, nested elevation scopes, layout bounds, disabled controls, focus order, choice navigation, pagination boundaries, and native decoding of the three generated audio tracks. I also checked the four examples through the native UI and reviewed their rendered screenshots.
+`coil verify` checks formatting, lint, compilation, and the test suite. Performance regressions cover incremental/full-frame agreement, odd image dimensions, lighting invalidation, accumulated raster damage, worker-pool completion and restart, empty masks, cached readback, fractional mask placement, and viewport clipping. The accelerated GPU shadow result is compared byte-for-byte with all 32 original samples. Tests cover cutout pixels, cuts crossing outside edges, light reversal, zero-depth shadows, ink occlusion, nested elevation scopes, layout bounds, disabled controls, focus order, choice navigation, pagination boundaries, and native decoding of the three generated audio tracks. The original examples were checked through the native UI. The new layout pass adds rendered galleries at three logical viewport sizes; see [current validation and native UI limitations](LAYOUT.md).
 
-The project index is [paper-test](pad://paper-test). It links the implementation notes and screenshots. Compiler integration issues are recorded in [coil-bugs](pad://coil-bugs): local dependency native-link propagation and void-returning function-pointer casts. The Objective-C bridge follows the existing Jim rewrite's ignored-return convention for void selectors pending that compiler fix.
+The project index is [paper-test](pad://paper-test). It links the implementation notes and screenshots. Compiler integration issues are recorded in [coil-bugs](pad://coil-bugs): local dependency native-link propagation and void-returning function-pointer casts, and duplicate wildcard reexports. The Objective-C bridge follows the existing Jim rewrite's ignored-return convention for void selectors pending that compiler fix.

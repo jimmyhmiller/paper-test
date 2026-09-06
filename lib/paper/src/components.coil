@@ -1,8 +1,9 @@
 (module paper.components)
 (import "paper.platform" :as host)
-(import "paper.geometry" :use [Rect rect clamp])
+(import "paper.geometry" :use [Rect rect clamp inset])
 (import "paper.surface" :use *)
 (import "paper.material" :use *)
+(import "paper.text-layout" :as typography)
 
 ;;; Enable/disable a component subtree. An inner scope cannot enable a control
 ;;; disabled by its parent. Disabled controls remain readable to accessibility.
@@ -15,8 +16,8 @@
 
 (defn control-stock [(id i64) (material Material)] (-> Material)
   (cond (not (host/paper_enabled)) (tint material 0xbab9ac 0.55)
-        (host/paper_pressed id) (tint material 0x344032 0.08)
-        (host/paper_hovered id) (tint material 0xf5eddd 0.16)
+        (host/paper_pressed id) (tint material 0x344032 0.12)
+        (host/paper_hovered id) (tint material 0xfff6de 0.28)
         :else material))
 
 (defn control-ink [] (-> u32)
@@ -30,7 +31,9 @@
 
 ;;; Typeset wrapped text inside a rectangle and truncate the last visible line.
 (defn text-box [(r Rect) (size f64) (color u32) (font i64) (text (ptr i8))] (-> i64)
-  (host/paper_text_box (.x r) (.y r) (.w r) (.h r) size color font text))
+  (if (and (> (.w r) 0.0) (> (.h r) 0.0))
+      (host/paper_text_box (.x r) (.y r) (.w r) (.h r) size color font text)
+      0))
 
 (defn number [(x f64) (y f64) (size f64) (color u32) (n i64)] (-> i64)
   (host/number x y size color n))
@@ -46,13 +49,26 @@
 ;;; IDs are application-owned and stable across frames. Input is mouse, keyboard,
 ;;; and accessibility enabled. Applications respond to release events (kind 3).
 (defn button [(id i64) (r Rect) (name (ptr i8)) (selected bool) (material Material)] (-> i64)
-  (let [z (if (and (host/paper_enabled) (host/paper_pressed id)) 26.0 (if selected 28.0 34.0))]
+  (let [z
+          (if (and (host/paper_enabled) (host/paper_pressed id))
+              26.0
+              (if selected 28.0 (if (and (host/paper_enabled) (host/paper_hovered id)) 36.0 34.0)))]
     (when (< z 34.0)
       (begin-sheet)
       (rounded-path r 11.0)
       (cut-through (- z 0.1)))
     (panel r 11.0 z (control-stock id material))
-    (label (+ (.x r) 15.0) (+ (.y r) 11.0) 14.0 (control-ink) 3 name)
+    (let [(mut measure) (typography/text-measure name 14.0 3)
+          text (typography/measure-text (typography/text-data measure) 1.0e15)
+          width (clamp (.width text) 0.0 (clamp (- (.w r) 24.0) 0.0 1000000.0))]
+      (text-box (rect (+ (.x r) (* 0.5 (- (.w r) width)))
+                      (+ (.y r) (* 0.5 (- (.h r) (.height text))))
+                      width
+                      (.height text))
+                14.0
+                (control-ink)
+                3
+                name))
     (hit id r name)))
 
 (defn badge [(x f64) (y f64) (name (ptr i8)) (material Material)] (-> i64)
@@ -84,25 +100,35 @@
   0)
 
 (defn input [(id i64) (r Rect) (placeholder (ptr i8))] (-> i64)
-  (well r 13.0 30.0 (cream) (cotton 0xd1c6af) (cotton 0xe5dbc7))
-  (host/paper_input id
-                    (+ (.x r) 15.0)
-                    (+ (.y r) 11.0)
-                    (- (.w r) 28.0)
-                    (- (.h r) 15.0)
-                    placeholder)
-  (when (= (host/paper_arg_snapshot) 1)
-    (label (+ (load (field r x)) 15.0) (+ (load (field r y)) 11.0) 14.0 0x747366 0 placeholder))
+  (recess r 12.0 30.0 4.0 3.0 (cream) (cotton 0xe5dbc7))
+  (let [height 21.0
+        top (+ (.y r) (* 0.5 (- (.h r) height)))]
+    (host/paper_input id (+ (.x r) 14.0) top (- (.w r) 28.0) height placeholder)
+    (when (host/paper_input_focused id)
+      (frame (inset r 2.0) 10.0 1.1 30.1 (cotton 0x8a987a)))
+    (when (= (host/paper_arg_snapshot) 1)
+      (text-box (rect (+ (.x r) 14.0) top (- (.w r) 28.0) height) 14.0 0x747366 0 placeholder)))
   0)
 
 ;;; A metric is a carved, three-level component rather than an embossed flat card.
 (defn metric [(r Rect) (title (ptr i8)) (value (ptr i8)) (detail (ptr i8)) (material Material)] (-> i64)
-  (well r 22.0 30.0 material material material)
-  (let [x (+ (.x r) 22.0)
-        y (+ (.y r) 21.0)]
-    (label x y 12.0 0x2b3529 3 title)
-    (label x (+ y 27.0) 37.0 0x253026 0 value)
-    (label x (+ y 82.0) 11.0 0x3c4434 0 detail)))
+  (let [compact (< (.h r) 110.0)
+        inset-x (if compact 16.0 22.0)
+        x (+ (.x r) inset-x)
+        y (+ (.y r) (if compact 9.0 21.0))
+        width (- (.w r) (* inset-x 2.0))]
+    (if compact (panel r 12.0 30.0 material) (well r 22.0 30.0 material material material))
+    (text-box (rect x y width (if compact 13.0 20.0)) (if compact 10.0 12.0) 0x2b3529 3 title)
+    (text-box (rect x (+ y (if compact 14.0 27.0)) width (if compact 28.0 50.0))
+              (if compact 23.0 37.0)
+              0x253026
+              0
+              value)
+    (text-box (rect x (+ y (if compact 43.0 82.0)) width (if compact 12.0 20.0))
+              (if compact 9.0 11.0)
+              0x3c4434
+              0
+              detail)))
 
 (defn progress [(r Rect) (value f64) (material Material)] (-> i64)
   (panel r 5.0 20.0 (cotton 0xc9c5b1))

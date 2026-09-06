@@ -1,0 +1,17 @@
+(module folio.model)
+
+;;; A closing tab preserves the active session unless that session was closed.
+(defn after-close [(active i64) (closed i64) (count i64)] (-> i64)
+  (assert (and (> count 0) (>= active 0) (< active count) (>= closed 0) (< closed count)))
+  (cond (= count 1) -1
+        (< closed active) (- active 1)
+        (= closed active) (if (< active (- count 1)) active (- active 1))
+        :else active))
+
+(defn adjacent [(active i64) (delta i64) (count i64)] (-> i64)
+  (assert (> count 0))
+  (% (+ (+ active (% delta count)) count) count))
+
+(defn page-start [(active i64) (capacity i64)] (-> i64)
+  (assert (> capacity 0))
+  (* (/ active capacity) capacity))

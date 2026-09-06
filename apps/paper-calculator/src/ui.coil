@@ -1,0 +1,166 @@
+(module calculator.ui)
+(import "coil.primitive" :as p)
+(import "paper.flow" :use *)
+(import "paper.platform" :as host)
+(import "paper.objc" :use *)
+(import "calculator.model" :as model)
+(import "calculator.lettering" :use [carved])
+(import "paper.lighting" :as light)
+
+(defn lighting [] (-> (ptr light/Lighting))
+  (p/alloc-static light/Lighting))
+
+(defn state [] (-> (ptr model/Calculator))
+  (p/alloc-static model/Calculator))
+
+(defn key-name [(id i64)] (-> (ptr i8))
+  (case id 0
+        c"0" 1
+        c"1" 2
+        c"2" 3
+        c"3" 4
+        c"4" 5
+        c"5" 6
+        c"6" 7
+        c"7" 8
+        c"8" 9
+        c"9" 10
+        c"." 11
+        c"+" 12
+        c"−" 13
+        c"×" 14
+        c"÷" 15
+        c"=" 16
+        c"AC" 17
+        c"⌫" 18
+        c"±" 19
+        c"%" 20
+        c"sin" 21
+        c"cos" 22
+        c"tan" 23
+        c"ln" 24
+        c"log" 25
+        c"xʸ" 26
+        c"√" 27
+        c"x²" 28
+        c"1/x" 29
+        c"π" 30
+        c"Scientific" 31
+        c"DEG" c""))
+
+(defn key [(id i64) (r Rect) (size f64)] (-> i64)
+  (let [control (+ id 100)
+        z (if (host/paper_pressed control) 29.0 (if (host/paper_hovered control) 37.0 35.0))
+        material (control-stock control (cotton (if (and (>= id 11) (<= id 15)) 0xed7959 0xf0d9b5)))]
+    (panel r 18.0 z material)
+    (carved (inset r 9.0) (key-name id) size z false)
+    (when (and (> id 0) (= (.operation (state)) id))
+      (panel (rect (+ (.x r) 25.0) (- (+ (.y r) (.h r)) 9.0) (- (.w r) 50.0) 2.0) 1.0 z (cotton 0x633621)))
+    (hit control r (key-name id)))
+  0)
+
+(defn draw [] (-> i64)
+  (host/paper_begin 0xeed6b3)
+  (light/apply-light (lighting) (rect 0.0 0.0 620.0 790.0))
+  (host/paper_drag_area (rect 0.0 0.0 620.0 58.0))
+  (panel (rect 0.0 0.0 620.0 790.0) 0.0 1.0 (cotton 0xeed6b3))
+  (panel (rect 38.0 52.0 544.0 698.0) 78.0 26.0 (cotton 0xf0d9b5))
+  (recess (rect 67.0 82.0 486.0 638.0) 55.0 26.0 15.0 1.0 (cotton 0xfbe8c9) (cotton 0x9d8b72))
+  (recess (rect 100.0 122.0 420.0 119.0) 32.0 11.0 7.0 1.0 (cotton 0xd6ccb0) (recycled 0xa3a783))
+  (ink-height 4.0)
+  (label 121.0
+         135.0
+         10.0
+         0x42452f
+         3
+         (if (.error (state))
+             c"UNDEFINED RESULT · AC TO CLEAR"
+             (if (!= (.operation (state)) 0) (key-name (.operation (state))) c"PAPER / CALCULATOR")))
+  (carved (rect 121.0 158.0 376.0 63.0) (model/display (state)) 68.0 4.0 true)
+  (if (.scientific (state))
+      (do
+        (for [i 0 10]
+          (key (+ 20 i)
+               (rect (+ 100.0 (* (cast f64 (% i 5)) 86.0)) (+ 262.0 (* (cast f64 (/ i 5)) 45.0)) 76.0 37.0)
+               18.0))
+        (ink-height 4.0)
+        (label 459.0 136.0 10.0 0x42452f 3 (if (.degrees (state)) c"DEG" c"RAD"))
+        (hit 131 (rect 448.0 127.0 54.0 29.0) c"Toggle degrees / radians"))
+      0)
+  (let [top (if (.scientific (state)) 374.0 265.0)
+        step (if (.scientific (state)) 64.0 86.0)
+        height (if (.scientific (state)) 55.0 73.0)
+        size (if (.scientific (state)) 30.0 45.0)]
+    (for [i 0 4] (key (+ 16 i) (rect (+ 100.0 (* (cast f64 i) 108.0)) top 96.0 35.0) 19.0))
+    (for [row 0 3]
+      (for [col 0 4]
+        (key (if (= col 3) (- 14 row) (+ (- 7 (* row 3)) col))
+             (rect (+ 100.0 (* (cast f64 col) 108.0)) (+ (+ top 47.0) (* (cast f64 row) step)) 96.0 height)
+             size)))
+    (let [y (+ (+ top 47.0) (* step 3.0))]
+      (key 0 (rect 100.0 y 121.0 height) size)
+      (key 10 (rect 236.0 y 68.0 height) size)
+      (key 15 (rect 316.0 y 96.0 height) size)
+      (key 11 (rect 424.0 y 96.0 (+ height (if (.scientific (state)) 0.0 20.0))) size)))
+  (ink-height 26.0)
+  (label 112.0 732.0 9.0 0x6f604a 3 c"P A P E R")
+  (recess (rect 249.0 723.0 122.0 26.0) 13.0 26.0 2.5 0.7 (cotton 0xf9e5c5) (cotton 0xc2ad8d))
+  (panel (rect (if (.scientific (state)) 310.0 251.0) 725.0 59.0 22.0) 11.0 25.5 (cotton 0xeed6b3))
+  (ink-height 26.0)
+  (label 268.0 729.0 11.0 0x574932 3 c"123")
+  (label 332.0 727.0 14.0 0x574932 1 c"ƒx")
+  (hit 132 (rect 249.0 720.0 61.0 32.0) c"Basic calculator")
+  (hit 133 (rect 310.0 720.0 61.0 32.0) c"Scientific calculator")
+  (ink-height 4.0)
+  (label 430.0 131.0 18.0 0x42452f 0 c"☀")
+  (hit 500 (rect 424.0 126.0 27.0 29.0) c"Adjust lighting")
+  (light/popover-panel (lighting) 500 (rect 424.0 126.0 27.0 29.0))
+  0)
+
+(defn keyboard [(event (ptr i8))] (-> i64)
+  (let [flags (msg i64 event (sel c"modifierFlags") [])
+        chars (msg (ptr i8) event (sel c"characters") [])]
+    (when (and (= (& flags 1572864) 0) (> (msg i64 chars (sel c"length") []) 0))
+      (let [ch (cast i64 (msg u16 chars (sel c"characterAtIndex:") [u64] 0))
+            id
+              (cond (and (>= ch 48) (<= ch 57)) (- ch 48)
+                    :else
+                      (case ch 46
+                            10 43
+                            11 45
+                            12 42
+                            13 47
+                            14 61
+                            15 13
+                            15 3
+                            15 27
+                            16 99
+                            16 67
+                            16 127
+                            17 8
+                            17 37
+                            19 115
+                            30 83
+                            30 -1))]
+        (when (>= id 0) (model/press (state) id)))))
+  0)
+
+(defn event [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
+  (cond (= kind 0)
+          (do
+            (model/reset (state))
+            (store! (lighting) (light/lighting (/ 180.0 620.0) (/ -480.0 790.0) 1500.0 0.55 1.0))
+            (set! (.degrees (state)) true)
+            (when (= id 1) (set! (.scientific (state)) true))
+            0)
+        (light/handle (lighting) 500 kind id x y) 0
+        (= kind 3)
+          (do
+            (cond (= id 132) (set! (.scientific (state)) false)
+                  (= id 133) (set! (.scientific (state)) true)
+                  :else (model/press (state) (- id 100)))
+            (when (not (.keyboard-focus (host/host))) (set! (.focus (host/host)) 0))
+            (host/paper_redraw)
+            0)
+        (= kind 4) (do (keyboard (msg (ptr i8) (.app (host/host)) (sel c"currentEvent") [])) (host/paper_redraw) 0)
+        :else 0))

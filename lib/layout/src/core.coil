@@ -1,0 +1,531 @@
+(module layout.core)
+(import "coil.primitive" :as p)
+(import "layout.geometry" :use * :reexport)
+
+;;; Dimensions: fit content, fixed points, weighted growth, or parent fraction.
+;;; Bounds are hard constraints; overflow is explicit when minima cannot fit.
+(defstruct Size [(kind i64) (value f64) (min f64) (max f64)])
+
+(const unlimited f64 1.0e15)
+
+(defn fit [] (-> Size)
+  (Size
+    :kind 0
+    :value 0.0
+    :min 0.0
+    :max unlimited))
+
+(defn fixed [(points f64)] (-> Size)
+  (assert (and (>= points 0.0) (<= points unlimited)))
+  (Size
+    :kind 1
+    :value points
+    :min points
+    :max points))
+
+(defn grow [(weight f64)] (-> Size)
+  (assert (and (> weight 0.0) (<= weight unlimited)))
+  (Size
+    :kind 2
+    :value weight
+    :min 0.0
+    :max unlimited))
+
+(defn percent [(fraction f64)] (-> Size)
+  (assert (and (>= fraction 0.0) (<= fraction 1.0)))
+  (Size
+    :kind 3
+    :value fraction
+    :min 0.0
+    :max unlimited))
+
+(defn bounded [(size Size) (minimum f64) (maximum f64)] (-> Size)
+  (assert (and (>= minimum 0.0) (>= maximum minimum) (<= maximum unlimited)))
+  (Size
+    :kind (.kind size)
+    :value (.value size)
+    :min minimum
+    :max maximum))
+
+(defstruct Edges [(left f64) (top f64) (right f64) (bottom f64)])
+
+(defn edges [(left f64) (top f64) (right f64) (bottom f64)] (-> Edges)
+  (assert (and (>= left 0.0) (>= top 0.0) (>= right 0.0) (>= bottom 0.0)))
+  (Edges
+    :left left
+    :top top
+    :right right
+    :bottom bottom))
+
+(defn padding [(amount f64)] (-> Edges)
+  (edges amount amount amount amount))
+
+;;; Direction: row, column, or stack. Alignment is a fraction (0 start, .5 center,
+;;; 1 end); between distributes spare main-axis space between children.
+(defstruct Style
+  [(width Size)
+   (height Size)
+   (direction i64)
+   (padding Edges)
+   (gap f64)
+   (align f64)
+   (justify f64)
+   (between bool)
+   (clip bool)
+   (scroll-x f64)
+   (scroll-y f64)
+   (floating bool)
+   (anchor-x f64)
+   (anchor-y f64)
+   (offset-x f64)
+   (offset-y f64)
+   (aspect f64)])
+
+(defn box [(width Size) (height Size)] (-> Style)
+  (let [(mut s) (zeroed Style)]
+    (set! (.width s) width)
+    (set! (.height s) height)
+    (set! (.direction s) 1)
+    (load s)))
+
+(defn row [(width Size) (height Size) (gap f64)] (-> Style)
+  (assert (>= gap 0.0))
+  (let [(mut s) (box width height)] (set! (.direction s) 0) (set! (.gap s) gap) (load s)))
+
+(defn column [(width Size) (height Size) (gap f64)] (-> Style)
+  (assert (>= gap 0.0))
+  (let [(mut s) (box width height)] (set! (.gap s) gap) (load s)))
+
+(defn stack [(width Size) (height Size)] (-> Style)
+  (let [(mut s) (box width height)] (set! (.direction s) 2) (load s)))
+
+(defn padded [(style Style) (insets Edges)] (-> Style)
+  (let [(mut s) (load style)] (set! (.padding s) insets) (load s)))
+
+(defn aligned [(style Style) (cross f64) (main f64)] (-> Style)
+  (assert (and (>= cross 0.0) (<= cross 1.0) (>= main 0.0) (<= main 1.0)))
+  (let [(mut s) (load style)] (set! (.align s) cross) (set! (.justify s) main) (load s)))
+
+(defn spaced [(style Style)] (-> Style)
+  (let [(mut s) (load style)] (set! (.between s) true) (load s)))
+
+(defn scrolled [(style Style) (x f64) (y f64)] (-> Style)
+  (let [(mut s) (load style)]
+    (set! (.clip s) true)
+    (set! (.scroll-x s) x)
+    (set! (.scroll-y s) y)
+    (load s)))
+
+(defn floating [(style Style) (x f64) (y f64) (dx f64) (dy f64)] (-> Style)
+  (assert (and (>= x 0.0) (<= x 1.0) (>= y 0.0) (<= y 1.0)))
+  (let [(mut s) (load style)]
+    (set! (.floating s) true)
+    (set! (.anchor-x s) x)
+    (set! (.anchor-y s) y)
+    (set! (.offset-x s) dx)
+    (set! (.offset-y s) dy)
+    (load s)))
+
+;;; Aspect derives fit height from resolved width. Width always resolves first.
+(defn aspect [(style Style) (ratio f64)] (-> Style)
+  (assert (> ratio 0.0))
+  (let [(mut s) (load style)] (set! (.aspect s) ratio) (load s)))
+
+;;; Measurement returns intrinsic dimensions at the offered width. It runs once
+;;; at unlimited width, then once at resolved width. User data is borrowed until
+;;; solve returns. No renderer, text encoding, font system, or allocator is assumed.
+(defstruct Extent [(width f64) (height f64)])
+
+(defstruct Breakpoint [(limit f64) (weight f64)])
+
+(defstruct Node
+  [(style Style)
+   (parent i64)
+   (first i64)
+   (last i64)
+   (next i64)
+   (children i64)
+   (bounds Rect)
+   (clip Rect)
+   (intrinsic Extent)
+   (content Extent)
+   (measure (fnptr c [(ptr i8) f64] Extent))
+   (data (ptr i8))
+   (measured bool)
+   (scratch Breakpoint)])
+
+(defstruct Layout [(nodes (ptr Node)) (capacity i64) (count i64) (solved bool)])
+
+;;; Borrow caller-owned, initialized storage. Reuse it across frames with reset.
+(defn layout [(storage (ptr Node)) (capacity i64)] (-> Layout)
+  (assert (> capacity 0))
+  (Layout
+    :nodes storage
+    :capacity capacity
+    :count 0
+    :solved false))
+
+(defn reset [(ctx (ptr Layout))] (-> i64)
+  (set! (.count ctx) 0)
+  (set! (.solved ctx) false)
+  0)
+
+(defn node [(ctx (ptr Layout)) (id i64)] (-> (ptr Node))
+  (assert (and (>= id 0) (< id (.count ctx))))
+  (index (.nodes ctx) id))
+
+;;; Parents must precede children; insertion need not be depth first. Handles are
+;;; dense indices valid until reset. Capacity overflow asserts before any write.
+(defn add [(ctx (ptr Layout)) (parent i64) (style Style)] (-> i64)
+  (assert (< (.count ctx) (.capacity ctx)))
+  (assert (or (and (= (.count ctx) 0) (= parent -1)) (and (>= parent 0) (< parent (.count ctx)))))
+  (let [id (.count ctx)
+        n (index (.nodes ctx) id)]
+    (set! n (zeroed Node))
+    (set! (.style n) style)
+    (set! (.parent n) parent)
+    (set! (.first n) -1)
+    (set! (.last n) -1)
+    (set! (.next n) -1)
+    (when (>= parent 0)
+      (let [owner (node ctx parent)]
+        (if (< (.first owner) 0) (set! (.first owner) id) (set! (.next (node ctx (.last owner))) id))
+        (set! (.last owner) id)
+        (set! (.children owner) (+ (.children owner) 1))))
+    (set! (.count ctx) (+ id 1))
+    (set! (.solved ctx) false)
+    id))
+
+(defn measured [(ctx (ptr Layout))
+                (parent i64)
+                (style Style)
+                (measure (fnptr c [(ptr i8) f64] Extent))
+                (data (ptr i8))] (-> i64)
+  (let [id (add ctx parent style)
+        n (node ctx id)]
+    (set! (.measured n) true)
+    (set! (.measure n) measure)
+    (set! (.data n) data)
+    id))
+
+(defn axis-size [(n Node) (axis i64)] (-> Size)
+  (if (= axis 0) (.width (.style n)) (.height (.style n))))
+
+(defn dimension [(n Node) (axis i64)] (-> f64)
+  (if (= axis 0) (.w (.bounds n)) (.h (.bounds n))))
+
+(defn set-dimension [(n (ptr Node)) (axis i64) (value f64)] (-> i64)
+  (if (= axis 0) (set! (.w (.bounds n)) value) (set! (.h (.bounds n)) value))
+  0)
+
+(defn pad-start [(s Style) (axis i64)] (-> f64)
+  (if (= axis 0) (.left (.padding s)) (.top (.padding s))))
+
+(defn pad-total [(s Style) (axis i64)] (-> f64)
+  (if (= axis 0) (+ (.left (.padding s)) (.right (.padding s))) (+ (.top (.padding s)) (.bottom (.padding s)))))
+
+(defn maximum [(a f64) (b f64)] (-> f64)
+  (if (> a b) a b))
+
+(defn minimum [(a f64) (b f64)] (-> f64)
+  (if (< a b) a b))
+
+(defn intrinsic-axis [(n Node) (axis i64)] (-> f64)
+  (if (= axis 0) (.width (.intrinsic n)) (.height (.intrinsic n))))
+
+(defn natural [(n Node) (axis i64)] (-> f64)
+  (let [s (axis-size n axis)]
+    (clamp (case (.kind s) 1 (.value s) 3 0.0 (intrinsic-axis n axis)) (.min s) (.max s))))
+
+;;; Reverse insertion order is a topological bottom-up pass, without recursion.
+(defn measure-axis [(ctx (ptr Layout)) (axis i64)] (-> i64)
+  (for [reverse 0 (.count ctx)]
+    (let [n (node ctx (- (- (.count ctx) 1) reverse))
+          s (.style n)
+          (mut extent) (intrinsic-axis n axis)
+          (mut count) 0
+          (mut child) (.first n)]
+      (while (>= (load child) 0)
+        (let [c (node ctx (load child))]
+          (when (not (.floating (.style c)))
+            (let [value (natural c axis)]
+              (if (= (.direction s) axis)
+                  (set! extent (+ (load extent) value))
+                  (set! extent (maximum (load extent) value))))
+            (set! count (+ (load count) 1)))
+          (set! child (.next c))))
+      (when (and (= (.direction s) axis) (> (load count) 1))
+        (set! extent (+ (load extent) (* (.gap s) (cast f64 (- (load count) 1))))))
+      (set! extent (+ (load extent) (pad-total s axis)))
+      (if (= axis 0) (set! (.width (.intrinsic n)) (load extent)) (set! (.height (.intrinsic n)) (load extent)))))
+  0)
+
+(defn offered [(n Node) (axis i64) (available f64)] (-> f64)
+  (let [s (axis-size n axis)]
+    (clamp (case (.kind s) 1 (.value s) 2 available 3 (* available (.value s)) (natural n axis)) (.min s) (.max s))))
+
+(defn event-at [(ctx (ptr Layout)) (i i64)] (-> (ptr Breakpoint))
+  (field (index (.nodes ctx) i) scratch))
+
+(defn swap-events [(ctx (ptr Layout)) (a i64) (b i64)] (-> i64)
+  (let [value (load (event-at ctx a))]
+    (set! (event-at ctx a) (load (event-at ctx b)))
+    (set! (event-at ctx b) value))
+  0)
+
+(defn sift-events [(ctx (ptr Layout)) (root i64) (count i64)] (-> i64)
+  (let [(mut parent) root]
+    (while (< (+ (* (load parent) 2) 1) count)
+      (let [(mut child) (+ (* (load parent) 2) 1)]
+        (when (and (< (+ (load child) 1) count)
+                   (< (.limit (event-at ctx (load child))) (.limit (event-at ctx (+ (load child) 1)))))
+          (set! child (+ (load child) 1)))
+        (when (>= (.limit (event-at ctx (load parent))) (.limit (event-at ctx (load child)))) (break))
+        (swap-events ctx (load parent) (load child))
+        (set! parent (load child)))))
+  0)
+
+;;; Allocation-free heapsort bounds the fallback at O(k log k), even for
+;;; adversarial sibling constraints. Only scratch fields are touched.
+(defn sort-events [(ctx (ptr Layout)) (count i64)] (-> i64)
+  (for [i 0 (/ count 2)] (sift-events ctx (- (- (/ count 2) 1) i) count))
+  (for [i 0 (- count 1)]
+    (let [end (- (- count 1) i)] (swap-events ctx 0 end) (sift-events ctx 0 end)))
+  0)
+
+;;; Solve sum(min(weight * lambda, capacity)) = target. Most layouts finish
+;;; in one scan. Four linear freeze passes handle ordinary caps; a sorted
+;;; breakpoint sweep prevents quadratic work for adversarial cap sequences.
+(defn water-level [(ctx (ptr Layout)) (count i64) (target f64) (weight f64)] (-> f64)
+  (let [(mut remaining) count
+        (mut budget) target
+        (mut active) weight
+        (mut level) (if (> weight 0.0) (/ target weight) 0.0)
+        (mut complete) false]
+    (for [pass 0 4]
+      (let [(mut kept) 0
+            (mut spent) 0.0
+            (mut kept-weight) 0.0]
+        (for [i 0 (load remaining)]
+          (let [event (load (event-at ctx i))]
+            (if (< (.limit event) (load level))
+                (do
+                  (set! spent (+ (load spent) (* (.limit event) (.weight event))))
+                  0)
+                (do
+                  (set! (event-at ctx (load kept)) event)
+                  (set! kept-weight (+ (load kept-weight) (.weight event)))
+                  (set! kept (+ (load kept) 1))))))
+        (when (= (load kept) (load remaining)) (set! complete true) (break))
+        (set! remaining (load kept))
+        (when (= (load remaining) 0) (set! complete true) (break))
+        (set! budget (maximum 0.0 (- (load budget) (load spent))))
+        (set! active (load kept-weight))
+        (when (<= (load active) 0.0) (set! complete true) (break))
+        (set! level (/ (load budget) (load active)))))
+    (when (not (load complete))
+      (sort-events ctx (load remaining))
+      (let [(mut previous) 0.0]
+        (for [i 0 (load remaining)]
+          (let [event (event-at ctx i)
+                cost (* (- (.limit event) (load previous)) (load active))]
+            (if (<= (load budget) cost)
+                (do (set! level (+ (load previous) (/ (load budget) (load active)))) (break))
+                (do
+                  (set! budget (- (load budget) cost))
+                  (set! active (maximum 0.0 (- (load active) (.weight event))))
+                  (set! previous (.limit event))
+                  (set! level (.limit event))))))))
+    (load level)))
+
+(defn flexible? [(n Node) (axis i64) (shrink bool)] (-> bool)
+  (let [s (axis-size n axis)]
+    (and (not (.floating (.style n))) (or (= (.kind s) 2) (and shrink (= (.kind s) 0))))))
+
+(defn distribute [(ctx (ptr Layout)) (owner (ptr Node)) (axis i64) (available f64)] (-> i64)
+  (let [(mut child) (.first owner)
+        (mut total) 0.0
+        (mut count) 0]
+    (while (>= (load child) 0)
+      (let [n (node ctx (load child))]
+        (when (not (.floating (.style n)))
+          (set! count (+ (load count) 1))
+          (set! total (+ (load total) (dimension n axis))))
+        (set! child (.next n))))
+    (let [room
+            (maximum 0.0
+                     (- available
+                        (* (.gap (.style owner))
+                           (cast f64 (if (> (load count) 0) (- (load count) 1) 0)))))
+          shrink (> (load total) room)
+          (mut events) 0
+          (mut weight) 0.0]
+      (set! child (.first owner))
+      (while (>= (load child) 0)
+        (let [n (node ctx (load child))
+              s (axis-size n axis)
+              value (dimension n axis)]
+          (when (flexible? n axis shrink)
+            (let [w (if shrink (maximum 1.0 value) (.value s))
+                  cap (if shrink (- value (.min s)) (- (.max s) value))]
+              (set! (event-at ctx (load events)) (Breakpoint :limit (/ cap w) :weight w))
+              (set! events (+ (load events) 1))
+              (set! weight (+ (load weight) w))))
+          (set! child (.next n))))
+      (when (> (load events) 0)
+        (let [target (maximum 0.0 (if shrink (- (load total) room) (- room (load total))))
+              level (water-level ctx (load events) target (load weight))]
+          (set! child (.first owner))
+          (while (>= (load child) 0)
+            (let [n (node ctx (load child))
+                  s (axis-size n axis)
+                  value (dimension n axis)]
+              (when (flexible? n axis shrink)
+                (let [w (if shrink (maximum 1.0 value) (.value s))]
+                  (set-dimension n axis (clamp (+ value (* (if shrink -1.0 1.0) (* level w))) (.min s) (.max s)))))
+              (set! child (.next n))))))))
+  0)
+
+(defn size-axis [(ctx (ptr Layout)) (axis i64)] (-> i64)
+  (for [id 0 (.count ctx)]
+    (let [owner (node ctx id)
+          s (.style owner)
+          available (maximum 0.0 (- (dimension owner axis) (pad-total s axis)))
+          (mut child) (.first owner)]
+      (while (>= (load child) 0)
+        (let [n (node ctx (load child))
+              sizing (axis-size n axis)
+              value
+                (if (and (= (.direction s) axis) (= (.kind sizing) 2) (not (.floating (.style n))))
+                    (.min sizing)
+                    (offered n axis available))]
+          (set-dimension n axis value)
+          (set! child (.next n))))
+      (when (= (.direction s) axis) (distribute ctx owner axis available))))
+  0)
+
+(defn intersection [(a Rect) (b Rect)] (-> Rect)
+  (let [x (maximum (.x a) (.x b))
+        y (maximum (.y a) (.y b))]
+    (rect x
+          y
+          (maximum 0.0 (- (minimum (+ (.x a) (.w a)) (+ (.x b) (.w b))) x))
+          (maximum 0.0 (- (minimum (+ (.y a) (.h a)) (+ (.y b) (.h b))) y)))))
+
+(defn content-box [(n Node)] (-> Rect)
+  (let [r (.bounds n)
+        s (.style n)]
+    (rect (+ (.x r) (.left (.padding s)))
+          (+ (.y r) (.top (.padding s)))
+          (maximum 0.0 (- (.w r) (pad-total s 0)))
+          (maximum 0.0 (- (.h r) (pad-total s 1))))))
+
+(defn position [(ctx (ptr Layout))] (-> i64)
+  (for [id 0 (.count ctx)]
+    (let [owner (node ctx id)
+          s (.style owner)
+          inner (content-box owner)
+          horizontal (= (.direction s) 0)
+          layered (= (.direction s) 2)
+          (mut child) (.first owner)
+          (mut used) 0.0
+          (mut cross) 0.0
+          (mut count) 0]
+      (while (>= (load child) 0)
+        (let [n (node ctx (load child))]
+          (when (not (.floating (.style n)))
+            (set! count (+ (load count) 1))
+            (set! used (if layered (maximum (load used) (.w (.bounds n))) (+ (load used) (dimension n (.direction s)))))
+            (set! cross (maximum (load cross) (dimension n (if (or horizontal layered) 1 0)))))
+          (set! child (.next n))))
+      (let [gaps (cast f64 (if (> (load count) 1) (- (load count) 1) 0))
+            occupied (+ (load used) (if layered 0.0 (* gaps (.gap s))))
+            room (maximum 0.0 (- (if horizontal (.w inner) (.h inner)) occupied))
+            gap (+ (.gap s) (if (and (.between s) (> gaps 0.0)) (/ room gaps) 0.0))
+            (mut cursor) (if (.between s) 0.0 (* room (.justify s)))
+            clip (if (.clip s) (intersection (.clip owner) (.bounds owner)) (.clip owner))]
+        (set! (.content owner)
+              (Extent :width (if (or horizontal layered) occupied (load cross))
+                :height (if (or horizontal layered) (load cross) occupied)))
+        (set! child (.first owner))
+        (while (>= (load child) 0)
+          (let [n (node ctx (load child))
+                ns (.style n)
+                floating? (.floating ns)
+                w (.w (.bounds n))
+                h (.h (.bounds n))
+                x
+                  (cond floating? (+ (* (- (.w inner) w) (.anchor-x ns)) (.offset-x ns))
+                        layered (* (- (.w inner) w) (.align s))
+                        horizontal (load cursor)
+                        :else (* (maximum 0.0 (- (.w inner) w)) (.align s)))
+                y
+                  (cond floating? (+ (* (- (.h inner) h) (.anchor-y ns)) (.offset-y ns))
+                        layered (* (- (.h inner) h) (.justify s))
+                        horizontal (* (maximum 0.0 (- (.h inner) h)) (.align s))
+                        :else (load cursor))]
+            (set! (.bounds n) (rect (- (+ (.x inner) x) (.scroll-x s)) (- (+ (.y inner) y) (.scroll-y s)) w h))
+            (set! (.clip n) clip)
+            (when (and (not floating?) (not layered)) (set! cursor (+ (load cursor) (+ (if horizontal w h) gap))))
+            (set! child (.next n)))))))
+  0)
+
+;;; Four linear sizing passes, then positioning. Root bounds are externally
+;;; assigned. Re-solving the same tree is supported (including new viewports).
+(defn solve [(ctx (ptr Layout)) (viewport Rect)] (-> i64)
+  (assert (> (.count ctx) 0))
+  (assert (and (>= (.w viewport) 0.0) (>= (.h viewport) 0.0)))
+  (for [i 0 (.count ctx)]
+    (let [n (node ctx i)]
+      (set! (.intrinsic n) (zeroed Extent))
+      (when (.measured n)
+        (set! (.intrinsic n) (p/call-ptr (.measure n) (.data n) unlimited)))))
+  (measure-axis ctx 0)
+  (set! (.bounds (node ctx 0)) viewport)
+  (set! (.clip (node ctx 0)) viewport)
+  (size-axis ctx 0)
+  (for [i 0 (.count ctx)]
+    (let [n (node ctx i)
+          s (.style n)]
+      (when (.measured n)
+        (let [extent (p/call-ptr (.measure n) (.data n) (maximum 0.0 (- (.w (.bounds n)) (pad-total s 0))))]
+          (set! (.height (.intrinsic n)) (.height extent))))
+      (when (and (> (.aspect s) 0.0) (= (.kind (.height s)) 0))
+        (set! (.height (.intrinsic n)) (/ (.w (.bounds n)) (.aspect s))))))
+  (measure-axis ctx 1)
+  (size-axis ctx 1)
+  (position ctx)
+  (set! (.solved ctx) true)
+  0)
+
+(defn bounds [(ctx (ptr Layout)) (id i64)] (-> Rect)
+  (assert (.solved ctx))
+  (.bounds (node ctx id)))
+
+(defn visible-bounds [(ctx (ptr Layout)) (id i64)] (-> Rect)
+  (intersection (bounds ctx id) (.clip (node ctx id))))
+
+(defn hit? [(ctx (ptr Layout)) (id i64) (x f64) (y f64)] (-> bool)
+  (contains? (visible-bounds ctx id) x y))
+
+;;; Erase a borrowed typed pointer for a measurement callback. This function
+;;; accepts Coil's ordinary reference-to-pointer argument coercion explicitly.
+(defn measure-data [T] [(value (ptr T))] (-> (ptr i8))
+  (cast (ptr i8) value))
+
+;;; Scroll extents exclude floating children and include inter-child gaps.
+(defn scroll-range [(ctx (ptr Layout)) (id i64)] (-> Extent)
+  (assert (.solved ctx))
+  (let [n (node ctx id)
+        inner (content-box n)]
+    (Extent :width (maximum 0.0 (- (.width (.content n)) (.w inner)))
+      :height (maximum 0.0 (- (.height (.content n)) (.h inner))))))
+
+;;; Update a solved scroll container without rebuilding or remeasuring its tree.
+;;; Caller state can retain these clamped offsets across frame reconstruction.
+(defn scroll-to [(ctx (ptr Layout)) (id i64) (x f64) (y f64)] (-> Extent)
+  (let [n (node ctx id)
+        range (scroll-range ctx id)]
+    (set! (.style n) (scrolled (.style n) (clamp x 0.0 (.width range)) (clamp y 0.0 (.height range))))
+    (position ctx)
+    (Extent :width (.scroll-x (.style n)) :height (.scroll-y (.style n)))))

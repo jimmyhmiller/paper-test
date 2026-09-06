@@ -48,8 +48,8 @@
     (set! (.elevation s) 680.0)
     (set! (.depth s) 0.82)
     (set! (.grain s) 1.0)
-    (set! (.hole-x s) 1332.0)
-    (set! (.hole-y s) 784.0)
+    (set! (.hole-x s) 0.5)
+    (set! (.hole-y s) 0.5)
     (set! (.agent-names s) (host/paper_pref_array c"agent-names"))
     (when (= (o/msg i64 (.agent-names s) (o/sel c"count") []) 0)
       (let [(mut name) (zeroed (array i8 64))]

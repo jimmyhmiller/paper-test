@@ -1,0 +1,16 @@
+[package]
+name = "paper-calculator"
+entry = "src/main.coil"
+source-roots = ["src", "tests"]
+
+[dependencies]
+paper = { path = "../../lib/paper" }
+layout = { path = "../../lib/layout" }
+
+[link]
+frameworks = ["AppKit", "QuartzCore", "CoreGraphics", "CoreText", "ImageIO", "CoreFoundation", "AVFoundation", "Metal"]
+libs = ["objc"]
+
+[test]
+roots = ["tests"]
+suffixes = ["_test.coil"]

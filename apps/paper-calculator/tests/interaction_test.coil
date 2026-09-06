@@ -1,0 +1,130 @@
+(module calculator.interaction-test)
+(import "calculator.ui" :as app)
+(import "calculator.model" :as model)
+(import "paper.platform" :as host)
+(import "paper.scene" :as scene)
+(import "paper.objc" :use *)
+(import "coil.primitive" :as p)
+(import "paper.lighting" :as light)
+
+(defn type-key [(text (ptr i8)) (flags u64)] (-> i64)
+  (let [native
+          (msg (ptr i8)
+               (class c"NSEvent")
+               (sel c"keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:")
+               [u64 host/CGPoint u64 f64 i64 (ptr i8) (ptr i8) (ptr i8) bool u16]
+               10
+               (host/CGPoint :x 0.0 :y 0.0)
+               flags
+               0.0
+               0
+               (nil)
+               (ns text)
+               (ns text)
+               false
+               0)]
+    (app/keyboard native))
+  0)
+
+(deftest native-character-events-handle-shifted-operators-and-shortcuts
+         (let [pool (new c"NSAutoreleasePool")]
+           (model/reset (app/state))
+           (type-key c"2" 0)
+           (type-key c"+" 131072)
+           (type-key c"3" 0)
+           (type-key c"=" 0)
+           (assert (< (host/fabs (- (.value (app/state)) 5.0)) 0.00001))
+           (type-key c"9" 1048576)
+           (assert (< (host/fabs (- (.value (app/state)) 5.0)) 0.00001))
+           (type-key c"c" 0)
+           (type-key c"8" 0)
+           (type-key c"*" 131072)
+           (type-key c"4" 0)
+           (type-key c"\r" 0)
+           (assert (< (host/fabs (- (.value (app/state)) 32.0)) 0.00001))
+           (release pool)))
+
+(defn setup [] (-> i64)
+  (scene/init)
+  (host/paper_configure c"Calculator test" 620.0 790.0)
+  (set! (.event (host/host)) (p/fnptr-of app/event))
+  (app/event 0 0 0.0 0.0)
+  (app/draw))
+
+(defn click [(x f64) (y f64)] (-> i64)
+  (let [id (host/hit-test x y)]
+    (assert (> id 0))
+    (assert (host/activate-control id))
+    (app/draw))
+  0)
+
+(deftest lighting-popover-drags-resets-and-blocks-calculator-input
+         (let [pool (new c"NSAutoreleasePool")]
+           (setup)
+           (click 438.0 140.0)
+           (assert (.open (app/lighting)))
+           (assert (not (host/activate-control 107)))
+           (let [r (light/map-bounds (app/lighting))]
+             (app/event 1 501 (+ (.x r) (.w r)) (.y r))
+             (assert (> (.x (app/lighting)) 1.99))
+             (assert (< (.y (app/lighting)) -0.99)))
+           (app/draw)
+           (assert (host/adjust-control 502 -0.05))
+           (assert (< (.height (app/lighting)) 1499.0))
+           (assert (host/activate-control 504))
+           (assert (> (.height (app/lighting)) 1499.0))
+           (app/event 4 53 0.0 0.0)
+           (app/draw)
+           (assert (not (.open (app/lighting))))
+           (assert (host/activate-control 107))
+           (release pool)))
+
+(deftest rendered-keys-activate-and-scientific-targets-follow-layout
+         (let [pool (new c"NSAutoreleasePool")]
+           (setup)
+           (assert (= (host/hit-test 150.0 350.0) 107))
+           (click 150.0 350.0)
+           (click 470.0 600.0)
+           (click 250.0 520.0)
+           (click 360.0 600.0)
+           (assert (< (host/fabs (- (.value (app/state)) 9.0)) 0.00001))
+           (assert (host/activate-control 133))
+           (app/draw)
+           (assert (.scientific (app/state)))
+           (assert (= (host/hit-test 220.0 326.0) 126))
+           (click 220.0 326.0)
+           (assert (< (host/fabs (- (.value (app/state)) 3.0)) 0.00001))
+           (assert (host/activate-control 132))
+           (app/draw)
+           (assert (not (host/activate-control 126)))
+           (assert (< (host/hit-test 40.0 400.0) 1))
+           (release pool)))
+
+(deftest panel-header-drag-preserves-light-and-position-on-reopen
+         (let [pool (new c"NSAutoreleasePool")]
+           (setup)
+           (click 438.0 140.0)
+           (let [before (.bounds (app/lighting))
+                 light-x (.x (app/lighting))
+                 light-y (.y (app/lighting))
+                 x (+ (.x before) 35.0)
+                 y (+ (.y before) 25.0)]
+             (assert (= (host/hit-test x y) 507))
+             (app/event 1 507 x y)
+             (app/event 2 507 (+ x 60.0) (+ y 90.0))
+             (app/event 3 507 (+ x 60.0) (+ y 90.0))
+             (app/draw)
+             (assert (< (host/fabs (- (.x (.bounds (app/lighting))) (+ (.x before) 60.0))) 0.01))
+             (assert (< (host/fabs (- (.y (.bounds (app/lighting))) (+ (.y before) 90.0))) 0.01))
+             (assert (< (host/fabs (- (.x (app/lighting)) light-x)) 0.01))
+             (assert (< (host/fabs (- (.y (app/lighting)) light-y)) 0.01))
+             (app/event 3 500 0.0 0.0)
+             (app/draw)
+             (click 438.0 140.0)
+             (assert (< (host/fabs (- (.y (.bounds (app/lighting))) (+ (.y before) 90.0))) 0.01))
+             (app/event 1 507 (+ x 60.0) (+ y 90.0))
+             (app/event 2 507 -1000.0 -1000.0)
+             (app/draw)
+             (assert (>= (.x (.bounds (app/lighting))) 16.0))
+             (assert (>= (.y (.bounds (app/lighting))) 16.0)))
+           (release pool)))

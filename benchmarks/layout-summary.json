@@ -1,0 +1,151 @@
+{
+  "date": "2026-09-06",
+  "hardware": "Apple M2 Max",
+  "os": "26.5.2",
+  "coil": "0.1.0",
+  "clang": "Homebrew 22.1.8",
+  "clay_commit": "e6cc36941ab2af5d81107617039d6f527a1c660b",
+  "samples": 20,
+  "warmups": 2,
+  "units": "microseconds per iteration",
+  "results": [
+    {
+      "engine": "coil",
+      "scenario": "wide",
+      "nodes": 100,
+      "median_build_solve_us": 5.4,
+      "median_solve_us": 3.97
+    },
+    {
+      "engine": "coil",
+      "scenario": "wide",
+      "nodes": 1000,
+      "median_build_solve_us": 87.42,
+      "median_solve_us": 70.67
+    },
+    {
+      "engine": "coil",
+      "scenario": "wide",
+      "nodes": 10000,
+      "median_build_solve_us": 935.1,
+      "median_solve_us": 763.65
+    },
+    {
+      "engine": "coil",
+      "scenario": "bounded",
+      "nodes": 100,
+      "median_build_solve_us": 5.49,
+      "median_solve_us": 4.02
+    },
+    {
+      "engine": "coil",
+      "scenario": "bounded",
+      "nodes": 1000,
+      "median_build_solve_us": 88.28,
+      "median_solve_us": 72.53
+    },
+    {
+      "engine": "coil",
+      "scenario": "bounded",
+      "nodes": 10000,
+      "median_build_solve_us": 934.6,
+      "median_solve_us": 775.95
+    },
+    {
+      "engine": "coil",
+      "scenario": "deep",
+      "nodes": 100,
+      "median_build_solve_us": 6.79,
+      "median_solve_us": 5.32
+    },
+    {
+      "engine": "coil",
+      "scenario": "deep",
+      "nodes": 1000,
+      "median_build_solve_us": 74.01,
+      "median_solve_us": 57.89
+    },
+    {
+      "engine": "coil",
+      "scenario": "deep",
+      "nodes": 10000,
+      "median_build_solve_us": 741.55,
+      "median_solve_us": 583.15
+    },
+    {
+      "engine": "coil",
+      "scenario": "weighted",
+      "nodes": 100,
+      "median_build_solve_us": 5.56,
+      "median_solve_us": 4.1
+    },
+    {
+      "engine": "coil",
+      "scenario": "weighted",
+      "nodes": 1000,
+      "median_build_solve_us": 89.24,
+      "median_solve_us": 73.12
+    },
+    {
+      "engine": "coil",
+      "scenario": "weighted",
+      "nodes": 10000,
+      "median_build_solve_us": 926.45,
+      "median_solve_us": 766.8
+    },
+    {
+      "engine": "clay",
+      "scenario": "wide",
+      "nodes": 100,
+      "median_build_solve_us": 8.73
+    },
+    {
+      "engine": "clay",
+      "scenario": "wide",
+      "nodes": 1000,
+      "median_build_solve_us": 104.13
+    },
+    {
+      "engine": "clay",
+      "scenario": "wide",
+      "nodes": 10000,
+      "median_build_solve_us": 1240.3
+    },
+    {
+      "engine": "clay",
+      "scenario": "bounded",
+      "nodes": 100,
+      "median_build_solve_us": 8.85
+    },
+    {
+      "engine": "clay",
+      "scenario": "bounded",
+      "nodes": 1000,
+      "median_build_solve_us": 105.59
+    },
+    {
+      "engine": "clay",
+      "scenario": "bounded",
+      "nodes": 10000,
+      "median_build_solve_us": 1292.8
+    },
+    {
+      "engine": "clay",
+      "scenario": "deep",
+      "nodes": 100,
+      "median_build_solve_us": 10.4
+    },
+    {
+      "engine": "clay",
+      "scenario": "deep",
+      "nodes": 1000,
+      "median_build_solve_us": 113.01
+    },
+    {
+      "engine": "clay",
+      "scenario": "deep",
+      "nodes": 10000,
+      "median_build_solve_us": 1570.0
+    }
+  ]
+}

@@ -1,0 +1,197 @@
+(module paper.lighting)
+(import "paper.flow" :use *)
+(import "paper.platform" :as host)
+
+;;; App-owned lighting and popover state. Reserve base-id through base-id + 7.
+;;; Coordinates are normalized to the app viewport, allowing the light outside it.
+(defstruct Lighting
+  [(x f64)
+   (y f64)
+   (height f64)
+   (depth f64)
+   (grain f64)
+   (default-x f64)
+   (default-y f64)
+   (default-height f64)
+   (default-depth f64)
+   (open bool)
+   (positioned bool)
+   (dragging bool)
+   (grab-x f64)
+   (grab-y f64)
+   (drag-limits Rect)
+   (bounds Rect)
+   (viewport Rect)])
+
+(defn lighting [(x f64) (y f64) (height f64) (depth f64) (grain f64)] (-> Lighting)
+  (Lighting
+    :x x
+    :y y
+    :height height
+    :depth depth
+    :grain grain
+    :default-x x
+    :default-y y
+    :default-height height
+    :default-depth depth
+    :open false
+    :positioned false
+    :dragging false
+    :grab-x 0.0
+    :grab-y 0.0
+    :drag-limits (rect 0.0 0.0 0.0 0.0)
+    :bounds (rect 0.0 0.0 0.0 0.0)
+    :viewport (rect 0.0 0.0 1.0 1.0)))
+
+(defn apply-light [(s (ptr Lighting)) (viewport Rect)] (-> i64)
+  (set! (.viewport s) viewport)
+  (host/paper_light (+ (.x viewport) (* (.x s) (.w viewport)))
+                    (+ (.y viewport) (* (.y s) (.h viewport)))
+                    (.height s)
+                    (.depth s)
+                    (.grain s)))
+
+(defn map-bounds [(s (ptr Lighting))] (-> Rect)
+  (let [r (.bounds s)] (rect (+ (.x r) 22.0) (+ (.y r) 61.0) (- (.w r) 44.0) (- (.h r) 178.0))))
+
+(defn track-bounds [(s (ptr Lighting)) (row i64)] (-> Rect)
+  (let [r (.bounds s)]
+    (rect (+ (.x r) 100.0) (+ (.y r) (+ (- (.h r) 99.0) (* (cast f64 row) 36.0))) (- (.w r) 126.0) 24.0)))
+
+(defn sun [(r Rect) (z f64)] (-> i64)
+  (let [x (+ (.x r) (* (.w r) 0.5))
+        y (+ (.y r) (* (.h r) 0.5))]
+    (ring (- x 4.0) (- y 4.0) 8.0 1.2 z (cotton 0x796343))
+    (for [i 0 8]
+      (let [angle (* (cast f64 i) (/ 3.141592653589793 4.0))
+            dx (host/cos angle)
+            dy (host/sin angle)]
+        (begin-sheet)
+        (move-to (+ x (- (* dx 7.0) (* dy 0.65))) (+ y (+ (* dy 7.0) (* dx 0.65))))
+        (line-to (+ x (- (* dx 10.0) (* dy 0.65))) (+ y (+ (* dy 10.0) (* dx 0.65))))
+        (line-to (+ x (+ (* dx 10.0) (* dy 0.65))) (+ y (- (* dy 10.0) (* dx 0.65))))
+        (line-to (+ x (+ (* dx 7.0) (* dy 0.65))) (+ y (- (* dy 7.0) (* dx 0.65))))
+        (close-path)
+        (finish-sheet z (cotton 0x796343)))))
+  0)
+
+(defn track [(id i64) (r Rect) (name (ptr i8)) (value f64)] (-> i64)
+  (panel (rect (.x r) (+ (.y r) 10.0) (.w r) 4.0) 2.0 50.0 (cotton 0xb7ad96))
+  (panel (rect (.x r) (+ (.y r) 10.0) (* (.w r) value) 4.0) 2.0 51.0 (ochre))
+  (disc (- (+ (.x r) (* (.w r) value)) 7.0) (+ (.y r) 5.0) 14.0 55.0 (cream))
+  (host/paper_hit id (.x r) (.y r) (.w r) (.h r) name 1 value)
+  0)
+
+;;; Call after app content. The modal scope blocks obscured input while open.
+;;; A native-surface app should reserve this rectangle beside its native view.
+(defn popover-panel [(s (ptr Lighting)) (base-id i64) (anchor Rect)] (-> i64)
+  (when (.open s)
+    (let [v (.viewport s)
+          width (clamp (- (.w v) 32.0) 240.0 310.0)
+          height (clamp (- (.h v) 32.0) 208.0 310.0)
+          preferred-y
+            (if (>= (- (.y anchor) (+ height 16.0)) (+ (.y v) 16.0))
+                (- (.y anchor) (+ height 16.0))
+                (+ (+ (.y anchor) (.h anchor)) 16.0))
+          x
+            (clamp (if (.positioned s) (.x (.bounds s)) (- (+ (.x anchor) (.w anchor)) width))
+                   (+ (.x v) 16.0)
+                   (- (+ (.x v) (.w v)) (+ width 16.0)))
+          y
+            (clamp (if (.positioned s) (.y (.bounds s)) preferred-y)
+                   (+ (.y v) 16.0)
+                   (- (+ (.y v) (.h v)) (+ height 16.0)))]
+      (set! (.bounds s) (rect x y width height)))
+    (host/paper_modal_scope)
+    (hit (+ base-id 6) (.viewport s) c"Dismiss lighting")
+    (let [r (.bounds s)
+          map (map-bounds s)]
+      (panel r 22.0 48.0 (cotton 0xece0c6))
+      (hit (+ base-id 5) r c"Lighting panel")
+      (hit (+ base-id 7) (rect (+ (.x r) 10.0) (+ (.y r) 8.0) (- (.w r) 65.0) 44.0) c"Move lighting panel")
+      (ink-height 48.0)
+      (label (+ (.x r) 22.0) (+ (.y r) 20.0) 18.0 0x493f2e 3 c"Light")
+      (label (- (+ (.x r) (.w r)) 40.0) (+ (.y r) 19.0) 20.0 0x796343 0 c"×")
+      (hit base-id (rect (- (+ (.x r) (.w r)) 49.0) (+ (.y r) 9.0) 36.0 36.0) c"Close lighting")
+      (recess map 12.0 48.0 3.0 1.0 (cotton 0xc4b89e) (cotton 0xd7cbb1))
+      (frame (rect (+ (.x map) (* (.w map) 0.25)) (+ (.y map) (* (.h map) 0.25)) (* (.w map) 0.5) (* (.h map) 0.5))
+             4.0
+             0.8
+             46.0
+             (cotton 0xa3987e))
+      (disc (- (+ (.x map) (* (/ (+ (.x s) 1.0) 3.0) (.w map))) 7.0)
+            (- (+ (.y map) (* (/ (+ (.y s) 1.0) 3.0) (.h map))) 7.0)
+            14.0
+            54.0
+            (ochre))
+      (hit (+ base-id 1) map c"Light position")
+      (for [i 0 2]
+        (let [rtrack (track-bounds s i)]
+          (ink-height 48.0)
+          (label (+ (.x r) 22.0) (+ (.y rtrack) 4.0) 12.0 0x6b5d46 0 (if (= i 0) c"Height" c"Relief"))
+          (track (+ base-id (+ 2 i))
+                 rtrack
+                 (if (= i 0) c"Light height" c"Paper relief")
+                 (if (= i 0) (/ (- (.height s) 200.0) 1800.0) (/ (.depth s) 1.5)))))
+      (ink-height 48.0)
+      (label (+ (.x r) 22.0) (+ (.y r) (- (.h r) 28.0)) 11.0 0x796343 0 c"Reset")
+      (hit (+ base-id 4) (rect (+ (.x r) 14.0) (+ (.y r) (- (.h r) 37.0)) 65.0 30.0) c"Reset lighting")))
+  0)
+
+;;; Default launcher; apps may draw a custom icon and call popover-panel instead.
+(defn popover [(s (ptr Lighting)) (base-id i64) (anchor Rect)] (-> i64)
+  (popover-panel s base-id anchor)
+  (when (not (.open s))
+    (disc (+ (.x anchor) (* 0.5 (- (.w anchor) 28.0)))
+          (+ (.y anchor) (* 0.5 (- (.h anchor) 28.0)))
+          28.0
+          27.0
+          (control-stock base-id (cotton 0xead8b7)))
+    (sun anchor 28.0)
+    (hit base-id anchor c"Adjust lighting"))
+  0)
+
+;;; Return true when consumed. Sliders support both dragging and keyboard/AX steps.
+(defn handle [(s (ptr Lighting)) (base-id i64) (kind i64) (id i64) (x f64) (y f64)] (-> bool)
+  (cond (or (= kind 0) (= kind 6)) false
+        (and (.open s) (= kind 4) (= id 53)) (do (set! (.open s) false) (host/paper_redraw) true)
+        (or (< id base-id) (> id (+ base-id 7))) (.open s)
+        :else
+          (do
+            (cond (and (.open s) (= id (+ base-id 7)) (= kind 1))
+                    (do
+                      (set! (.grab-x s) (- x (.x (.bounds s))))
+                      (set! (.grab-y s) (- y (.y (.bounds s))))
+                      (set! (.dragging s) true))
+                  (and (.open s) (.dragging s) (= id (+ base-id 7)) (= kind 2))
+                    (let [v (if (> (.w (.drag-limits s)) 0.0) (.drag-limits s) (.viewport s))
+                          r (.bounds s)]
+                      (set! (.bounds s)
+                            (rect (clamp (- x (.grab-x s)) (+ (.x v) 16.0) (- (+ (.x v) (.w v)) (+ (.w r) 16.0)))
+                                  (clamp (- y (.grab-y s)) (+ (.y v) 16.0) (- (+ (.y v) (.h v)) (+ (.h r) 16.0)))
+                                  (.w r)
+                                  (.h r)))
+                      (set! (.positioned s) true))
+                  (and (= kind 3) (or (= id base-id) (= id (+ base-id 6)))) (set! (.open s) (not (.open s)))
+                  (and (.open s) (= kind 3) (= id (+ base-id 4)))
+                    (do
+                      (set! (.x s) (.default-x s))
+                      (set! (.y s) (.default-y s))
+                      (set! (.height s) (.default-height s))
+                      (set! (.depth s) (.default-depth s)))
+                  (and (.open s) (or (= kind 1) (= kind 2)))
+                    (cond (= id (+ base-id 1))
+                            (let [r (map-bounds s)]
+                              (set! (.x s) (- (* 3.0 (fraction x (.x r) (.w r))) 1.0))
+                              (set! (.y s) (- (* 3.0 (fraction y (.y r) (.h r))) 1.0)))
+                          (or (= id (+ base-id 2)) (= id (+ base-id 3)))
+                            (let [r (track-bounds s (- id (+ base-id 2)))
+                                  v (fraction x (.x r) (.w r))]
+                              (if (= id (+ base-id 2))
+                                  (set! (.height s) (+ 200.0 (* v 1800.0)))
+                                  (set! (.depth s) (* v 1.5))))
+                          :else 0)
+                  :else 0)
+            (when (= kind 3) (set! (.dragging s) false))
+            (host/paper_redraw)
+            true)))

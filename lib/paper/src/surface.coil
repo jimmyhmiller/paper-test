@@ -101,3 +101,28 @@
   (oval-path (rect x y d d))
   (oval-path (rect (+ x border) (+ y border) (- d (* border 2.0)) (- d (* border 2.0))))
   (finish-sheet z material))
+
+;;; Clip sheets, cuts, ink, hit regions and native inputs to a layout viewport.
+;;; Nested scopes intersect and restore the previous clip when the body finishes.
+(defn with-clip [(bounds Code) & (body Code)] (-> Code)
+  `(let [previous-clip (load (host/clip-state))]
+     (host/push-clip ~bounds)
+     (let [result (do ~@body)]
+       (store! (host/clip-state) previous-clip)
+       result)))
+
+;;; A shallow seat with one controlled lip. Useful for fields and small insets
+;;; where the deeper, three-level well would crowd the content.
+(defn recess [(r Rect)
+              (radius f64)
+              (z f64)
+              (depth f64)
+              (lip f64)
+              (edge Material)
+              (bottom Material)] (-> i64)
+  (assert (and (> depth 0.0) (>= lip 0.0) (<= lip radius)))
+  (begin-sheet)
+  (rounded-path r radius)
+  (cut-through (- z depth))
+  (panel r radius (- z depth) bottom)
+  (frame r radius lip z edge))

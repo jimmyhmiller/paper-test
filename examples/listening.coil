@@ -1,94 +1,150 @@
 (module papercut.listening)
-(import "paper.surface" :use *)
-(import "paper.material" :use *)
-(import "paper.geometry" :use [rect])
-(import "paper.components" :use *)
-(import "paper.navigation" :use *)
-(import "paper.charts" :use *)
+(import "paper.flow" :use *)
 (import "paper.ffi" :use [sin cos fabs])
 (import "papercut.state" :use *)
 
 (defn title [(i i64)] (-> (ptr i8))
   (case i 0 c"The space between" 1 c"A slower kind of Sunday" c"Light through the curtains"))
 
-(defn sleeve [] (-> i64)
-  (panel (rect 92.0 262.0 490.0 435.0) 16.0 22.0 (linen 0xd29477))
-  (disc 157.0 292.0 368.0 25.0 (cotton 0xe6b677))
-  (begin-sheet)
-  (rounded-path (rect 92.0 262.0 490.0 435.0) 16.0)
-  (contour-path 337.0 479.0 195.0 149.0 0.0)
-  (finish-sheet 35.0 (recycled 0xc7765e))
-  (begin-sheet)
-  (rounded-path (rect 92.0 262.0 490.0 435.0) 16.0)
-  (contour-path 337.0 479.0 218.0 171.0 0.0)
-  (finish-sheet 40.0 (cotton 0xe1ab86))
-  (begin-sheet)
-  (rounded-path (rect 92.0 262.0 490.0 435.0) 16.0)
-  (contour-path 337.0 479.0 232.0 187.0 0.0)
-  (finish-sheet 44.0 (linen 0xf0d2ac))
-  (disc 230.0 364.0 213.0 32.0 (smooth 0x3d4240))
-  (for [i 0 9]
-    (let [inset (* 7.0 (cast f64 i))]
-      (ring (+ 237.0 inset) (+ 371.0 inset) (- 199.0 (* inset 2.0)) 0.65 33.0 (smooth 0x60645b))))
-  (disc 300.0 433.0 72.0 35.0 (cotton 0xd2936d))
-  (disc 331.0 464.0 9.0 38.0 (ink-stock))
-  (label 115.0 285.0 10.0 0x775743 2 c"SIDE A / SOFT FOCUS")
-  (label 114.0 649.0 21.0 0x78503f 1 c"Sound, with a little room to breathe.")
-  0)
+(defn sleeve [(bounds Rect)] (-> i64)
+  (let [space (art-space bounds (rect 92.0 262.0 490.0 435.0))]
+    (panel (rect (art-x space 92.0) (art-y space 262.0) (art-length space 490.0) (art-length space 435.0))
+           (art-length space 16.0)
+           22.0
+           (linen 0xd29477))
+    (disc (art-x space 157.0) (art-y space 292.0) (art-length space 368.0) 25.0 (cotton 0xe6b677))
+    (begin-sheet)
+    (rounded-path (rect (art-x space 92.0) (art-y space 262.0) (art-length space 490.0) (art-length space 435.0))
+                  (art-length space 16.0))
+    (contour-path (art-x space 337.0) (art-y space 479.0) (art-length space 195.0) (art-length space 149.0) 0.0)
+    (finish-sheet 35.0 (recycled 0xc7765e))
+    (begin-sheet)
+    (rounded-path (rect (art-x space 92.0) (art-y space 262.0) (art-length space 490.0) (art-length space 435.0))
+                  (art-length space 16.0))
+    (contour-path (art-x space 337.0) (art-y space 479.0) (art-length space 218.0) (art-length space 171.0) 0.0)
+    (finish-sheet 40.0 (cotton 0xe1ab86))
+    (begin-sheet)
+    (rounded-path (rect (art-x space 92.0) (art-y space 262.0) (art-length space 490.0) (art-length space 435.0))
+                  (art-length space 16.0))
+    (contour-path (art-x space 337.0) (art-y space 479.0) (art-length space 232.0) (art-length space 187.0) 0.0)
+    (finish-sheet 44.0 (linen 0xf0d2ac))
+    (disc (art-x space 230.0) (art-y space 364.0) (art-length space 213.0) 32.0 (smooth 0x3d4240))
+    (for [i 0 9]
+      (let [inset (* 7.0 (cast f64 i))]
+        (ring (art-x space (+ 237.0 inset))
+              (art-y space (+ 371.0 inset))
+              (art-length space (- 199.0 (* inset 2.0)))
+              (art-length space 0.65)
+              33.0
+              (smooth 0x60645b))))
+    (disc (art-x space 300.0) (art-y space 433.0) (art-length space 72.0) 35.0 (cotton 0xd2936d))
+    (disc (art-x space 331.0) (art-y space 464.0) (art-length space 9.0) 38.0 (ink-stock))
+    (ink-height 44.0)
+    (label (art-x space 115.0) (art-y space 285.0) (art-length space 10.0) 0x775743 2 c"SIDE A / SOFT FOCUS")
+    (label (art-x space 114.0)
+           (art-y space 649.0)
+           (art-length space 21.0)
+           0x78503f
+           1
+           c"Sound, with a little room to breathe.")
+    0))
 
-(defn draw [] (-> i64)
-  (let [s (state)]
-    (panel (rect 24.0 102.0 1160.0 800.0) 30.0 7.0 (recycled 0xa97c68))
-    (panel (rect 24.0 92.0 1160.0 800.0) 30.0 16.0 (linen 0xebdcc5))
-    (label 65.0 129.0 30.0 0x664f43 1 c"the listening room")
-    (label 68.0 175.0 10.0 0x9b8069 3 c"LESS NOISE. MORE FEELING.")
-    (button 310
-            (rect 978.0 127.0 157.0 42.0)
-            (if (selected-bit? (.favorite s) (.track s)) c"♥  In your favorites" c"♡  Keep this one")
-            false
-            (cotton 0xe9c8ac))
-    (rule 68.0 213.0 1067.0 0xcbbb9e)
-    (sleeve)
-    (label 641.0 261.0 10.0 0x98795f 3 c"NOW ON THE TURNTABLE")
-    (label 639.0 300.0 32.0 0x654e40 1 (title (.track s)))
-    (label 641.0 348.0 15.0 0x9b7b65 0 c"Paper Ensemble · Ambient studies, vol. 01")
-    (badge 642.0 392.0 c"Original synthesized soundscape" (clay))
-    (well (rect 637.0 437.0 498.0 86.0) 22.0 27.0 (linen 0xe5d6bf) (cotton 0xbfae96) (linen 0xd5c5a9))
+(defn waveform [(bounds Rect)] (-> i64)
+  (well bounds 22.0 27.0 (linen 0xe5d6bf) (cotton 0xbfae96) (linen 0xd5c5a9))
+  (let [inner (inset bounds 20.0)
+        s (state)]
     (for [i 0 61]
-      (let [x (+ 657.0 (* (cast f64 i) 7.5))
+      (let [cell (row-cell inner 61 4.5 i)
             h (+ 8.0 (* 39.0 (fabs (sin (* (cast f64 (+ i (* (.track s) 7))) 0.49)))))]
-        (panel (rect x (- 480.0 (* h 0.5)) 3.0 h)
+        (panel (rect (.x cell) (+ (.y bounds) (* 0.5 (- (.h bounds) h))) (.w cell) h)
                1.5
                31.0
-               (if (< i (% (.seconds s) 61)) (clay) (cotton 0xbaa990)))))
-    (number 641.0 538.0 11.0 0x8a725e (.seconds s))
-    (label 665.0 538.0 11.0 0x8a725e 0 c"seconds · endless ambient loop")
-    (button 302 (rect 691.0 583.0 73.0 48.0) c"│◀" false (cotton 0xe4c9ac))
-    (button 300
-            (rect 786.0 574.0 146.0 66.0)
-            (if (.playing s) c"Ⅱ    Pause" c"▶    Listen")
-            false
-            (cotton 0xd9a17c))
-    (button 303 (rect 954.0 583.0 73.0 48.0) c"▶│" false (cotton 0xe4c9ac))
-    (label 644.0 673.0 11.0 0x967c64 3 c"VOLUME")
-    (slider 304 (rect 735.0 665.0 332.0 26.0) c"Volume" (.volume s) (clay))
-    (rule 68.0 736.0 1067.0 0xcbbb9e)
-    (label 69.0 762.0 11.0 0x8c745e 3 c"A LITTLE QUEUE FOR A LONG AFTERNOON")
-    (let [(mut style) (selection-style (linen 0xe4d4bb) (cotton 0xe2bd9e) (clay))]
-      (set! (.treatment style) 1)
-      (set! (.z style) 23.0)
-      (set! (.radius style) 14.0)
-      (set! (.leading style) 31.0)
-      (set! (.font style) 3)
-      (set! (.size style) 13.0)
-      (set! (.ink style) 0x765744)
-      (set! (.active-ink style) 0x765744)
-      (for [i 0 3]
-        (let [x (+ 69.0 (* 360.0 (cast f64 i)))]
-          (selection-row 320
-                         (choice (+ 320 i) (title i) c"")
-                         (rect x 798.0 344.0 62.0)
-                         (= i (.track s))
-                         (load style))
-          (number (+ x 15.0) 817.0 17.0 0xa07156 (+ i 1))))))
+               (if (< i (% (.seconds s) 61)) (clay) (cotton 0xbaa990))))))
+  0)
+
+(defn transport [(bounds Rect)] (-> i64)
+  (let [s (state)]
+    (arrange bounds
+             [root
+              (column (grow 1.0) (grow 1.0) 10.0)
+              [eyebrow (box (grow 1.0) (fixed 18.0))]
+              [heading (box (grow 1.0) (fixed 44.0))]
+              [artist (box (grow 1.0) (fixed 25.0))]
+              [sound (box (grow 1.0) (fixed 24.0))]
+              [wave (box (grow 1.0) (fixed 86.0))]
+              [elapsed
+               (row (grow 1.0) (fixed 20.0) 8.0)
+               [seconds (box (fixed 24.0) (grow 1.0))]
+               [description (box (grow 1.0) (grow 1.0))]]
+              [controls
+               (aligned (row (grow 1.0) (fixed 66.0) 22.0) 0.5 0.5)
+               [previous (box (fixed 73.0) (fixed 48.0))]
+               [play (box (fixed 146.0) (fixed 66.0))]
+               [next (box (fixed 73.0) (fixed 48.0))]]
+              [space (box (grow 1.0) (grow 1.0))]
+              [volume-row
+               (aligned (row (grow 1.0) (fixed 30.0) 28.0) 0.5 0.0)
+               [volume-label (box (fixed 65.0) (fixed 18.0))]
+               [volume (box (grow 1.0) (fixed 26.0))]]]
+             (caption eyebrow 10.0 0x98795f 3 c"NOW ON THE TURNTABLE")
+             (caption heading 32.0 0x654e40 1 (title (.track s)))
+             (caption artist 15.0 0x9b7b65 0 c"Paper Ensemble · Ambient studies, vol. 01")
+             (tag sound c"Original synthesized soundscape" (clay))
+             (waveform wave)
+             (numeral seconds 11.0 0x8a725e (.seconds s))
+             (caption description 11.0 0x8a725e 0 c"seconds · endless ambient loop")
+             (button 302 previous c"│◀" false (cotton 0xe4c9ac))
+             (button 300 play (if (.playing s) c"Ⅱ    Pause" c"▶    Listen") false (cotton 0xd9a17c))
+             (button 303 next c"▶│" false (cotton 0xe4c9ac))
+             (caption volume-label 11.0 0x967c64 3 c"VOLUME")
+             (slider 304 volume c"Volume" (.volume s) (clay))))
+  0)
+
+(defn draw [(bounds Rect)] (-> i64)
+  (let [s (state)]
+    (arrange bounds
+             [page
+              (padded (column (grow 1.0) (grow 1.0) 24.0) (edges 44.0 32.0 44.0 32.0))
+              [header
+               (row (grow 1.0) (fixed 65.0) 20.0)
+               [brand
+                (column (grow 1.0) (grow 1.0) 8.0)
+                [heading (box (grow 1.0) (fixed 38.0))]
+                [motto (box (grow 1.0) (fixed 16.0))]]
+               [favorite (box (fixed 157.0) (fixed 42.0))]]
+              [top-rule (box (grow 1.0) (fixed 1.0))]
+              [body
+               (row (grow 1.0) (grow 1.0) 54.0)
+               [art (box (grow 1.0) (grow 1.0))]
+               [player (box (grow 1.0) (grow 1.0))]]
+              [bottom-rule (box (grow 1.0) (fixed 1.0))]
+              [queue-title (box (grow 1.0) (fixed 18.0))]
+              [queue (box (grow 1.0) (fixed 62.0))]]
+             (panel (shifted page 0.0 10.0) 30.0 7.0 (recycled 0xa97c68))
+             (panel page 30.0 16.0 (linen 0xebdcc5))
+             (caption heading 30.0 0x664f43 1 c"the listening room")
+             (caption motto 10.0 0x9b8069 3 c"LESS NOISE. MORE FEELING.")
+             (button 310
+                     favorite
+                     (if (selected-bit? (.favorite s) (.track s)) c"♥  In your favorites" c"♡  Keep this one")
+                     false
+                     (cotton 0xe9c8ac))
+             (separator top-rule 0xcbbb9e)
+             (sleeve art)
+             (transport player)
+             (separator bottom-rule 0xcbbb9e)
+             (caption queue-title 11.0 0x8c745e 3 c"A LITTLE QUEUE FOR A LONG AFTERNOON")
+             (let [(mut style) (selection-style (linen 0xe4d4bb) (cotton 0xe2bd9e) (clay))]
+               (set! (.treatment style) 1)
+               (set! (.z style) 23.0)
+               (set! (.radius style) 14.0)
+               (set! (.leading style) 31.0)
+               (set! (.font style) 3)
+               (set! (.size style) 13.0)
+               (set! (.ink style) 0x765744)
+               (set! (.active-ink style) 0x765744)
+               (for [i 0 3]
+                 (let [cell (row-cell queue 3 16.0 i)]
+                   (selection-row 320 (choice (+ 320 i) (title i) c"") cell (= i (.track s)) (load style))
+                   (numeral (inset cell 15.0) 17.0 0xa07156 (+ i 1)))))))
   0)

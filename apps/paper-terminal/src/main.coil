@@ -1,0 +1,978 @@
+(module folio.main)
+(import "paper.flow" :use *)
+(import "paper.platform" :as host)
+(import "paper.scene" :as scene)
+(import "paper.surface" :as surface)
+(import "paper.render" :as render)
+(import "paper.gpu" :as gpu)
+(import "paper.workers" :as workers)
+(import "paper.frame-clock" :as clock)
+(import "paper.objc" :as o)
+(import "folio.native" :as n)
+(import "folio.terminal" :as terminal)
+(import "folio.ghostty" :as g)
+(import "folio.model" :as model)
+(import "coil.arraylist" :as al)
+(import "coil.alloc" :as alloc)
+(import "coil.primitive" :as p)
+(import "paper.lighting" :as light)
+
+(defn lighting [] (-> (ptr light/Lighting))
+  (p/alloc-static light/Lighting))
+
+(defstruct Tab [(id i64) (terminal (ptr terminal/Terminal))])
+
+(defstruct App
+  [(tabs (al/ArrayList Tab))
+   (active i64)
+   (next-id i64)
+   (viewport Rect)
+   (terminal-bounds Rect)
+   (lab-bounds Rect)
+   (generation i64)
+   (quitting bool)
+   (testing bool)
+   (ready bool)
+   (lab-open bool)
+   (lab-page i64)
+   (light-x f64)
+   (light-y f64)
+   (light-height f64)
+   (text-fill f64)
+   (text-relief f64)
+   (text-edge f64)
+   (text-grain f64)
+   (cursor-lift f64)
+   (cursor-fold f64)
+   (material-slot i64)
+   (material-dirty bool)
+   (material-next f64)
+   (material-directory (ptr i8))
+   (material-scale f64)
+   (material-origin Rect)
+   (last-focus bool)
+   (delegate (ptr i8))
+   (resources (ptr i8))])
+
+(defn app [] (-> (ptr App))
+  (p/alloc-static App))
+
+(defn tab-count [] (-> i64)
+  (al/al-len [Tab] (.tabs (app))))
+
+(defn tab [(index i64)] (-> (ptr Tab))
+  (al/al-elem [Tab] (mut (.tabs (app))) index))
+
+(defn current [] (-> (ptr terminal/Terminal))
+  (if (> (tab-count) 0) (.terminal (tab (.active (app)))) (cast (ptr terminal/Terminal) 0)))
+
+(defn native-rect [(r Rect)] (-> n/Rect)
+  (n/rect (.x r) (- (.h (.viewport (app))) (+ (.y r) (.h r))) (.w r) (.h r)))
+
+(defn resource [(suffix (ptr i8))] (-> (ptr i8))
+  (o/msg (ptr i8) (.resources (app)) (o/sel c"stringByAppendingPathComponent:") [(ptr i8)] (o/ns suffix)))
+
+(defn replace-text [(source (ptr i8)) (old (ptr i8)) (replacement (ptr i8))] (-> (ptr i8))
+  (o/msg (ptr i8)
+         source
+         (o/sel c"stringByReplacingOccurrencesOfString:withString:")
+         [(ptr i8) (ptr i8)]
+         old
+         replacement))
+
+(defn constant-line [(name (ptr i8)) (value f64)] (-> (ptr i8))
+  (let [(mut bytes) (zeroed (array i8 128))]
+    (host/snprintf (index bytes 0) 128 c"const float %s = %.4f;" name value)
+    (o/ns (index bytes 0))))
+
+(defn replace-constant [(source (ptr i8)) (name (ptr i8)) (value f64)] (-> (ptr i8))
+  ; Match the declaration, independently of how its default was formatted.
+  ; Verify the result so a missing constant cannot become a silent no-op.
+  (let [(mut pattern) (zeroed (array i8 160))
+        replacement (constant-line name value)]
+    (host/snprintf (index pattern 0) 160 c"const\\s+float\\s+%s\\s*=\\s*[-+0-9.]+\\s*;" name)
+    (let [result
+            (o/msg (ptr i8)
+                   source
+                   (o/sel c"stringByReplacingOccurrencesOfString:withString:options:range:")
+                   [(ptr i8) (ptr i8) u64 n/Range]
+                   (o/ns (index pattern 0))
+                   replacement
+                   (cast u64 1024)
+                   (n/Range :location 0 :length (o/msg u64 source (o/sel c"length") [])))]
+      (assert (o/msg bool result (o/sel c"containsString:") [(ptr i8)] replacement))
+      result)))
+
+(defn apply-material [] (-> i64)
+  (set! (.material-dirty (app)) false)
+  (set! (.material-next (app)) (+ (host/CACurrentMediaTime) 0.12))
+  (set! (.material-scale (app)) (o/msg f64 (.window (host/host)) (o/sel c"backingScaleFactor") []))
+  (set! (.material-origin (app)) (.terminal-bounds (app)))
+  (let [a (app)
+        source
+          (o/msg (ptr i8)
+                 (o/class c"NSString")
+                 (o/sel c"stringWithContentsOfFile:encoding:error:")
+                 [(ptr i8) u64 (ptr i8)]
+                 (resource c"config/cursor.glsl")
+                 (cast u64 4)
+                 (o/nil))
+        s1 (replace-constant source c"TEXT_RELIEF" (.text-relief a))
+        s2 (replace-constant s1 c"TEXT_PAPER_FILL" (.text-fill a))
+        s3 (replace-constant s2 c"TEXT_EDGE_PX" (.text-edge a))
+        s4 (replace-constant s3 c"TEXT_GRAIN" (.text-grain a))
+        s5 (replace-constant s4 c"CURSOR_LIFT_PX" (.cursor-lift a))
+        s6 (replace-constant s5 c"CURSOR_FOLD" (.cursor-fold a))
+        s7 (replace-constant s6 c"RASTER_SCALE" (/ (.material-scale a) 2.0))
+        s8 (replace-constant s7 c"LIGHT_X" (.light-x a))
+        s9 (replace-constant s8 c"LIGHT_Y" (.light-y a))
+        s10 (replace-constant s9 c"LIGHT_HEIGHT" (.light-height a))
+        s11 (replace-constant s10 c"TERMINAL_X" (.x (.terminal-bounds a)))
+        shader (replace-constant s11 c"TERMINAL_Y" (.y (.terminal-bounds a)))
+        temp (.material-directory a)]
+    (set! (.material-slot a) (- 1 (.material-slot a)))
+    (let [shader-name (if (= (.material-slot a) 0) c"paper-terminal-material-a.glsl" c"paper-terminal-material-b.glsl")
+          config-name (if (= (.material-slot a) 0) c"paper-terminal-material-a.conf" c"paper-terminal-material-b.conf")
+          shader-path (o/msg (ptr i8) temp (o/sel c"stringByAppendingPathComponent:") [(ptr i8)] (o/ns shader-name))
+          config-path (o/msg (ptr i8) temp (o/sel c"stringByAppendingPathComponent:") [(ptr i8)] (o/ns config-name))
+          base
+            (o/msg (ptr i8)
+                   (o/class c"NSString")
+                   (o/sel c"stringWithContentsOfFile:encoding:error:")
+                   [(ptr i8) u64 (ptr i8)]
+                   (resource c"config/ghostty")
+                   (cast u64 4)
+                   (o/nil))
+          shader-setting
+            (o/msg (ptr i8) (o/ns c"custom-shader = ") (o/sel c"stringByAppendingString:") [(ptr i8)] shader-path)
+          config-text (replace-text base (o/ns c"custom-shader = cursor.glsl") shader-setting)]
+      (assert (o/msg bool
+                     shader
+                     (o/sel c"writeToFile:atomically:encoding:error:")
+                     [(ptr i8) bool u64 (ptr i8)]
+                     shader-path
+                     true
+                     (cast u64 4)
+                     (o/nil)))
+      (assert (o/msg bool
+                     config-text
+                     (o/sel c"writeToFile:atomically:encoding:error:")
+                     [(ptr i8) bool u64 (ptr i8)]
+                     config-path
+                     true
+                     (cast u64 4)
+                     (o/nil)))
+      (let [config (g/ghostty_config_new)]
+        (g/ghostty_config_load_file config (o/utf8 config-path))
+        (g/ghostty_config_finalize config)
+        (assert (= (g/ghostty_config_diagnostics_count config) (cast u32 0)))
+        (g/ghostty_app_update_config (load (terminal/app-cell)) config)
+        (for [i 0 (tab-count)] (g/ghostty_surface_update_config (.surface (.terminal (tab i))) config))
+        (g/ghostty_config_free config)))
+    (host/paper_redraw))
+  0)
+
+(defn focus-tab [(index i64)] (-> i64)
+  (when (and (>= index 0) (< index (tab-count)))
+    (set! (.active (app)) index)
+    (for [i 0 (tab-count)]
+      (let [t (.terminal (tab i))
+            selected (= i index)]
+        (o/msg i64 (.view t) (o/sel c"setHidden:") [bool] (not selected))
+        (g/ghostty_surface_set_occlusion (.surface t) selected)
+        (g/ghostty_surface_set_focus (.surface t) selected)))
+    (o/msg bool (.window (host/host)) (o/sel c"makeFirstResponder:") [(ptr i8)] (.view (current)))
+    (g/ghostty_surface_refresh (.surface (current)))
+    (host/paper_redraw))
+  0)
+
+(defn new-tab [(command (ptr i8))] (-> bool)
+  (let [cwd (if (> (tab-count) 0) (o/utf8 (.directory (current))) (n/getenv c"HOME"))
+        r (native-rect (.terminal-bounds (app)))
+        t (terminal/create! (.view (host/host)) r cwd command)]
+    (if (= (.surface t) (o/nil))
+        (do (terminal/free! t) false)
+        (do
+          (set! (.next-id (app)) (+ (.next-id (app)) 1))
+          (al/al-push! [Tab] (mut (.tabs (app))) (Tab :id (.next-id (app)) :terminal t))
+          (focus-tab (- (tab-count) 1))
+          true))))
+
+(defn confirm-close [(all bool)] (-> bool)
+  (let [(mut busy) false]
+    (for [i 0 (tab-count)]
+      (when (and (or all (= i (.active (app))))
+                 (g/ghostty_surface_needs_confirm_quit (.surface (.terminal (tab i)))))
+        (set! busy true)))
+    (if (or (.testing (app)) (not (load busy)))
+        true
+        (let [alert (o/new c"NSAlert")]
+          (o/msg i64
+                 alert
+                 (o/sel c"setMessageText:")
+                 [(ptr i8)]
+                 (o/ns (if all c"Close the terminal sessions?" c"Close this terminal session?")))
+          (o/msg i64
+                 alert
+                 (o/sel c"setInformativeText:")
+                 [(ptr i8)]
+                 (o/ns c"A process is still running. Closing ends the session and its running processes."))
+          (o/msg (ptr i8) alert (o/sel c"addButtonWithTitle:") [(ptr i8)] (o/ns c"Cancel"))
+          (o/msg (ptr i8) alert (o/sel c"addButtonWithTitle:") [(ptr i8)] (o/ns c"Close session"))
+          (let [answer (o/msg i64 alert (o/sel c"runModal") [])]
+            (o/release alert)
+            (= answer 1001))))))
+
+(defn remove-tab [(index i64)] (-> i64)
+  (let [count (tab-count)
+        next (model/after-close (.active (app)) index count)
+        t (.terminal (tab index))]
+    (o/msg bool (.window (host/host)) (o/sel c"makeFirstResponder:") [(ptr i8)] (o/nil))
+    (terminal/free! t)
+    (for [i index (- count 1)] (set! (tab i) (load (tab (+ i 1)))))
+    (al/al-pop! [Tab] (mut (.tabs (app))))
+    (set! (.active (app)) next)
+    (if (< next 0) (set! (.quitting (app)) true) (do (focus-tab next) 0)))
+  0)
+
+(defn open-tab [] (-> i64)
+  (when (not (new-tab (o/nil)))
+    (let [alert (o/new c"NSAlert")]
+      (o/msg i64 alert (o/sel c"setMessageText:") [(ptr i8)] (o/ns c"The shell could not start."))
+      (o/msg i64
+             alert
+             (o/sel c"setInformativeText:")
+             [(ptr i8)]
+             (o/ns c"Check that your login shell and working directory are available, then try opening a tab again."))
+      (o/msg i64 alert (o/sel c"runModal") [])
+      (o/release alert)))
+  0)
+
+(defn close-button [(id i64) (bounds Rect) (stock Material)] (-> i64)
+  (let [surface (control-stock id stock)
+        cx (+ (.x bounds) (* (.w bounds) 0.5))
+        cy (+ (.y bounds) (* (.h bounds) 0.5))
+        diameter (minimum 20.0 (- (minimum (.w bounds) (.h bounds)) 3.0))
+        half 4.0
+        thickness 0.72]
+    (when (or (host/paper_hovered id) (host/paper_pressed id))
+      (disc (- cx (* diameter 0.5))
+            (- cy (* diameter 0.5))
+            diameter
+            (if (host/paper_pressed id) 33.0 35.0)
+            surface))
+    ; Draw the mark geometrically. A font glyph's asymmetric side bearings and
+    ; baseline made the old × look off-centre, especially inside its hover card.
+    (begin-sheet)
+    (move-to (- (- cx half) thickness) (+ (- cy half) thickness))
+    (line-to (+ (- cx half) thickness) (- (- cy half) thickness))
+    (line-to (+ (+ cx half) thickness) (- (+ cy half) thickness))
+    (line-to (- (+ cx half) thickness) (+ (+ cy half) thickness))
+    (close-path)
+    (move-to (- (- cx half) thickness) (- (+ cy half) thickness))
+    (line-to (+ (- cx half) thickness) (+ (+ cy half) thickness))
+    (line-to (+ (+ cx half) thickness) (+ (- cy half) thickness))
+    (line-to (- (+ cx half) thickness) (- (- cy half) thickness))
+    (close-path)
+    (finish-sheet 36.0 (linen 0x35412e))
+    (host/paper_hit id (.x bounds) (.y bounds) (.w bounds) (.h bounds) c"Close tab" 0 0.0))
+  0)
+
+(defn tab-stock [(id i64)] (-> Material)
+  (case (% id 4) 0 (cotton 0xc3cbb0) 1 (cotton 0xd6b186) 2 (cotton 0xb2c6cb) (cotton 0xd2b2a7)))
+
+(defn material-track [(bounds Rect) (index i64)] (-> Rect)
+  (let [inner (inset bounds 20.0)
+        stride (/ (- (.h inner) 114.0) 6.0)
+        y (+ (+ (.y inner) 62.0) (* (cast f64 index) stride))
+        compact (< stride 41.0)]
+    (if compact
+        (rect (+ (.x inner) 111.0) y (- (.w inner) 111.0) (minimum 25.0 stride))
+        (rect (.x inner) (+ y 16.0) (.w inner) 25.0))))
+
+(defn material-slider [(id i64) (track Rect) (name (ptr i8)) (value f64) (stock Material)] (-> i64)
+  ; These controls sit 1–4 points above the lab's 32-point sheet. Generic
+  ; controls have their own absolute elevations; stacking those added another
+  ; entire sheet of height and produced the former oversized black shadows.
+  (let [y (+ (.y track) (- (* (.h track) 0.5) 2.0))
+        v (clamp value 0.0 1.0)
+        diameter (minimum 19.0 (maximum 10.0 (- (.h track) 2.0)))]
+    (panel (rect (.x track) y (.w track) 4.0) 2.0 32.5 (cotton 0xb2af98))
+    (panel (rect (.x track) y (* (.w track) v) 4.0) 2.0 33.0 stock)
+    (disc (- (+ (.x track) (* (.w track) v)) (* diameter 0.5))
+          (+ (.y track) (* (- (.h track) diameter) 0.5))
+          diameter
+          (if (host/paper_pressed id) 34.0 36.0)
+          (control-stock id (cream)))
+    (host/paper_hit id (.x track) (.y track) (.w track) (.h track) name 1 v))
+  0)
+
+(defn light-well-bounds [(bounds Rect)] (-> Rect)
+  (let [inner (inset bounds 20.0)]
+    (rect (.x inner) (+ (.y inner) 80.0) (.w inner) (maximum 36.0 (- (.h inner) 170.0)))))
+
+(defn light-map-bounds [(bounds Rect)] (-> Rect)
+  (inset (light-well-bounds bounds) 10.0))
+
+(defn light-height-track [(bounds Rect)] (-> Rect)
+  (let [inner (inset bounds 20.0)]
+    (rect (+ (.x inner) 88.0) (- (+ (.y inner) (.h inner)) 78.0) (- (.w inner) 88.0) 24.0)))
+
+(defn light-controls [(bounds Rect)] (-> i64)
+  ; Adapt the Paper workbench's light-well. The central frame is the window;
+  ; the outer half lets the source move beyond its edges in either direction.
+  (let [inner (inset bounds 20.0)
+        well (light-well-bounds bounds)
+        map (light-map-bounds bounds)
+        viewport (.viewport (app))
+        fx (clamp (/ (+ (/ (.light-x (app)) (.w viewport)) 0.5) 2.0) 0.0 1.0)
+        fy (clamp (/ (+ (/ (.light-y (app)) (.h viewport)) 0.5) 2.0) 0.0 1.0)
+        diameter (minimum 18.0 (* (.h well) 0.35))
+        track (light-height-track bounds)
+        (mut numbers) (zeroed (array i8 64))]
+    (caption (rect (.x inner) (+ (.y inner) 62.0) 112.0 16.0) 10.0 0x606957 2 c"LIGHT POSITION")
+    (host/snprintf (index numbers 0) 64 c"%+.0f, %+.0f" (.light-x (app)) (.light-y (app)))
+    (caption (rect (+ (.x inner) 124.0) (+ (.y inner) 62.0) (- (.w inner) 124.0) 16.0)
+             10.0
+             0x606957
+             2
+             (index numbers 0))
+    (recess well 10.0 33.0 2.0 1.0 (cotton 0xbdbda5) (linen 0xd9d8bd))
+    (ink-height 34.0)
+    (for [i 1 4]
+      (let [v (/ (cast f64 i) 4.0)]
+        (host/paper_rule (+ (.x map) (* (.w map) v)) (+ (.y map) 5.0) 0.5 (- (.h map) 10.0) 0xbabd9f)
+        (host/paper_rule (+ (.x map) 5.0) (+ (.y map) (* (.h map) v)) (- (.w map) 10.0) 0.5 0xbabd9f)))
+    (surface/frame (rect (+ (.x map) (* (.w map) 0.25))
+                         (+ (.y map) (* (.h map) 0.25))
+                         (* (.w map) 0.5)
+                         (* (.h map) 0.5))
+                   4.0
+                   0.8
+                   32.0
+                   (cotton 0x989f82))
+    (disc (- (+ (.x map) (* fx (.w map))) (* diameter 0.5))
+          (- (+ (.y map) (* fy (.h map))) (* diameter 0.5))
+          diameter
+          36.0
+          (ochre))
+    (hit 211 well c"Drag the light source")
+    (host/snprintf (index numbers 0) 64 c"HEIGHT %.0f" (.light-height (app)))
+    (caption (rect (.x inner) (.y track) 85.0 (.h track)) 10.0 0x606957 2 (index numbers 0))
+    (material-slider 212 track c"Light height" (/ (- (.light-height (app)) 200.0) 1400.0) (ochre))
+    (button 213
+            (rect (.x inner) (- (+ (.y inner) (.h inner)) 34.0) (.w inner) 34.0)
+            c"Reset light"
+            false
+            (cotton 0xd6b186)))
+  0)
+
+(defn lab-tab [(id i64) (bounds Rect) (name (ptr i8)) (selected bool)] (-> i64)
+  (panel bounds
+         7.0
+         (if (host/paper_pressed id) 33.0 34.0)
+         (control-stock id (if selected (cotton 0xc3cbb0) (cotton 0xe2ddca))))
+  (caption (inset bounds 6.0) 11.0 0x384236 3 name)
+  (hit id bounds name)
+  0)
+
+(defn material-lab [(bounds Rect)] (-> i64)
+  (let [inner (inset bounds 20.0)
+        x (.x inner)
+        w (.w inner)
+        stride (/ (- (.h inner) 114.0) 6.0)
+        compact (< stride 41.0)]
+    (panel (shifted bounds 2.0 3.0) 18.0 29.0 (cotton 0xa6a08a))
+    (panel bounds 18.0 32.0 (cream))
+    (host/paper_set_offset 0.0)
+    (ink-height 36.0)
+    (caption (rect x (.y inner) (- w 34.0) 24.0) 17.0 0x384236 1 c"MATERIAL LAB")
+    (close-button 299 (rect (+ x (- w 27.0)) (.y inner) 27.0 27.0) (cream))
+    (let [half (/ (- w 6.0) 2.0)]
+      (lab-tab 209 (rect x (+ (.y inner) 30.0) half 24.0) c"Material" (= (.lab-page (app)) 0))
+      (lab-tab 210 (rect (+ x (+ half 6.0)) (+ (.y inner) 30.0) half 24.0) c"Light" (= (.lab-page (app)) 1)))
+    (if (= (.lab-page (app)) 0)
+        (do
+          (for [i 0 6]
+            (let [track (material-track bounds i)
+                  label
+                    (case i 0
+                          c"PAPER TONE" 1
+                          c"CARVED ↔ RAISED" 2
+                          c"CUT EDGE" 3
+                          c"FIBRE" 4
+                          c"CURSOR LIFT" c"FOLDED CORNER")
+                  value
+                    (case i 0
+                          (.text-fill (app)) 1
+                          (/ (+ (.text-relief (app)) 2.0) 4.0) 2
+                          (/ (- (.text-edge (app)) 0.5) 3.5) 3
+                          (/ (.text-grain (app)) 0.5) 4
+                          (/ (.cursor-lift (app)) 12.0) (/ (.cursor-fold (app)) 0.7))
+                  raw
+                    (case i 0
+                          (* (.text-fill (app)) 100.0) 1
+                          (.text-relief (app)) 2
+                          (.text-edge (app)) 3
+                          (* (.text-grain (app)) 100.0) 4
+                          (.cursor-lift (app)) (* (.cursor-fold (app)) 100.0))
+                  (mut number) (zeroed (array i8 48))]
+              (caption (rect x
+                             (if compact (.y track) (- (.y track) 16.0))
+                             (if compact 109.0 (- w 46.0))
+                             (if compact (.h track) 16.0))
+                       (if compact 9.0 10.0)
+                       0x606957
+                       2
+                       label)
+              (when (not compact)
+                (host/snprintf (index number 0) 48 (if (or (= i 0) (= i 3) (= i 5)) c"%.0f%%" c"%.2f") raw)
+                (caption (rect (+ x (- w 45.0)) (- (.y track) 16.0) 45.0 16.0) 10.0 0x606957 2 (index number 0)))
+              (material-slider (+ 200 i)
+                               track
+                               label
+                               value
+                               (case i 0
+                                     (sage) 1
+                                     (cotton 0xd6b186) 2
+                                     (cotton 0xb2c6cb) 3
+                                     (cotton 0xd2b2a7) (cotton 0xd6b186)))))
+          (let [third (/ (- w 12.0) 3.0)
+                y (- (+ (.y inner) (.h inner)) 34.0)]
+            (button 206 (rect x y third 34.0) c"Ink" false (cotton 0xc3cbb0))
+            (button 207 (rect (+ (+ x third) 6.0) y third 34.0) c"Raised" false (cotton 0xd6b186))
+            (button 208 (rect (+ (+ x (* third 2.0)) 12.0) y third 34.0) c"Carved" false (cotton 0xb2c6cb))))
+        (light-controls bounds))
+    (host/paper_set_offset 0.0))
+  0)
+
+(defn draw [] (-> i64)
+  (host/paper_begin 0x343e35)
+  (set! (.x (lighting)) (/ (.light-x (app)) (.w (.viewport (app)))))
+  (set! (.y (lighting)) (/ (.light-y (app)) (.h (.viewport (app)))))
+  (set! (.height (lighting)) (.light-height (app)))
+  (light/apply-light (lighting) (.viewport (app)))
+  (arrange (.viewport (app))
+           [folio
+            (padded (column (grow 1.0) (grow 1.0) 14.0) (edges 24.0 42.0 24.0 18.0))
+            [header
+             (aligned (row (grow 1.0) (fixed 40.0) 12.0) 0.5 0.0)
+             [brand (box (fixed 185.0) (fixed 36.0))]
+             [path (box (grow 1.0) (fixed 20.0))]
+             [previous (box (fixed 34.0) (fixed 30.0))]
+             [next (box (fixed 34.0) (fixed 30.0))]
+             [materials (box (fixed 112.0) (fixed 34.0))]
+             [add (box (fixed 105.0) (fixed 34.0))]]
+            [tabs (box (grow 1.0) (fixed 45.0))]
+            [sheet
+             (padded (column (grow 1.0) (grow 1.0) 10.0) (padding 18.0))
+             [session
+              (aligned (row (grow 1.0) (fixed 23.0) 12.0) 0.5 0.0)
+              [dot (box (fixed 8.0) (fixed 8.0))]
+              [title (box (grow 1.0) (grow 1.0))]
+              [size (box (fixed 112.0) (grow 1.0))]]
+             [line (box (grow 1.0) (fixed 1.0))]
+             [screen (box (grow 1.0) (grow 1.0))]]
+            [footer
+             (row (grow 1.0) (fixed 18.0) 16.0)
+             [hint (box (grow 1.0) (grow 1.0))]
+             [edition (box (fixed 166.0) (grow 1.0))]
+             [light-space (box (fixed 34.0) (grow 1.0))]]]
+           (host/paper_drag_area (rect 0.0 0.0 (.w folio) (+ (.y header) (.h header))))
+           (caption brand 27.0 0xeee6d0 1 c"paper terminal")
+           (caption path
+                    11.0
+                    0xbdc5b0
+                    2
+                    (if (> (tab-count) 0) (o/utf8 (.directory (current))) c"A place for your next command"))
+           (button 1 add c"+  New tab" false (sage))
+           (button 4 materials c"Materials" (.lab-open (app)) (cotton 0xd6b186))
+           (with-enabled (> (tab-count) 1)
+                         (button 2 previous c"‹" false (cotton 0xa4b199))
+                         (button 3 next c"›" false (cotton 0xa4b199)))
+           (let [capacity (cast i64 (maximum 1.0 (/ (.w tabs) 175.0)))
+                 start (model/page-start (maximum-index (.active (app))) capacity)
+                 count (minimum-index capacity (- (tab-count) start))]
+             (for [i 0 count]
+               (let [index (+ start i)
+                     t (tab index)
+                     selected (= index (.active (app)))
+                     cell
+                       (row-cell (rect (.x tabs)
+                                       (.y tabs)
+                                       (minimum (.w tabs) (+ (* (cast f64 count) 230.0) (* (cast f64 (- count 1)) 9.0)))
+                                       (.h tabs))
+                                 count
+                                 9.0
+                                 i)
+                     (mut style) (selection-style (tab-stock (.id t)) (cream) (sage))]
+                 (set! (.treatment style) 1)
+                 (set! (.radius style) 12.0)
+                 (set! (.z style) (if selected 25.0 17.0))
+                 (selection-surface 100
+                                    (+ 1000 (* (.id t) 2))
+                                    cell
+                                    (o/utf8 (.title (.terminal t)))
+                                    selected
+                                    (load style))
+                 (arrange (inset cell 9.0)
+                          [tab-row
+                           (aligned (row (grow 1.0) (grow 1.0) 10.0) 0.5 0.0)
+                           [number (box (fixed 22.0) (fixed 18.0))]
+                           [label (box (grow 1.0) (fixed 20.0))]
+                           [close (box (fixed 25.0) (fixed 25.0))]]
+                          (numeral number 11.0 0x5d624e (.id t))
+                          (caption label 13.0 0x35412e 3 (o/utf8 (.title (.terminal t))))
+                          (close-button (+ 1001 (* (.id t) 2)) close (if selected (cream) (tab-stock (.id t))))))))
+           (panel (shifted sheet 3.0 6.0) 24.0 9.0 (cotton 0x9a9f88))
+           (panel (shifted sheet -2.0 3.0) 24.0 16.0 (cotton 0xc5c3a8))
+           (panel sheet 23.0 25.0 (cream))
+           (disc (.x dot) (.y dot) 8.0 28.0 (moss))
+           (ink-height 28.0)
+           (caption title 11.0 0x66715a 2 c"SHELL / LIVE SESSION")
+           (when (> (tab-count) 0)
+             (let [dimensions (g/ghostty_surface_size (.surface (current)))
+                   (mut text) (zeroed (array i8 48))]
+               (host/snprintf (index text 0)
+                              48
+                              c"%u × %u"
+                              (cast u32 (.columns dimensions))
+                              (cast u32 (.rows dimensions)))
+               (caption size 11.0 0x737961 2 (index text 0))))
+           (separator line 0xc7c7af)
+           (recess screen 10.0 26.0 3.0 2.0 (cotton 0xb6b299) (cotton 0xdfceb1))
+           (let [terminal-area (inset screen 4.0)]
+             (if (or (.lab-open (app)) (.open (lighting)))
+                 (do
+                   (set! (.terminal-bounds (app))
+                         (rect (.x terminal-area) (.y terminal-area) (- (.w terminal-area) 326.0) (.h terminal-area)))
+                   (set! (.lab-bounds (app))
+                         (rect (+ (.x terminal-area) (- (.w terminal-area) 306.0))
+                               (+ (.y terminal-area) 6.0)
+                               286.0
+                               (minimum 530.0 (- (.h terminal-area) 12.0))))
+                   (when (not (.open (lighting))) (material-lab (.lab-bounds (app)))))
+                 (set! (.terminal-bounds (app)) terminal-area)))
+           (ink-height 30.0)
+           (caption hint
+                    10.0
+                    0xb4bea6
+                    0
+                    c"⌘T  new tab     ⌘W  close     ⌘⇧[ / ]  switch     ⌘+ / −  text size")
+           (caption edition 10.0 0x9daa94 2 c"A LITTLE ROOM TO THINK"))
+  (set! (.drag-limits (lighting)) (rect (- (.w (.viewport (app))) 350.0) 0.0 350.0 (.h (.viewport (app)))))
+  (light/popover (lighting) 500 (rect (- (.w (.viewport (app))) 58.0) (- (.h (.viewport (app))) 43.0) 34.0 30.0))
+  0)
+
+(defn maximum-index [(value i64)] (-> i64)
+  (if (> value 0) value 0))
+
+(defn minimum-index [(a i64) (b i64)] (-> i64)
+  (if (< a b) a b))
+
+(defn app-event [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
+  (when (or (= kind 3)
+            (and (or (= kind 1) (= kind 2))
+                 (or (and (>= id 200) (<= id 205)) (= id 211) (= id 212))))
+    (cond (= id 1) (open-tab)
+          (= id 2) (focus-tab (model/adjacent (.active (app)) -1 (tab-count)))
+          (= id 3) (focus-tab (model/adjacent (.active (app)) 1 (tab-count)))
+          (= id 4) (set! (.lab-open (app)) (not (.lab-open (app))))
+          (= id 299) (set! (.lab-open (app)) false)
+          (= id 209) (set! (.lab-page (app)) 0)
+          (= id 210) (set! (.lab-page (app)) 1)
+          (= id 211)
+            (let [bounds (light-map-bounds (.lab-bounds (app)))
+                  fx (clamp (/ (- x (.x bounds)) (.w bounds)) 0.0 1.0)
+                  fy (clamp (/ (- y (.y bounds)) (.h bounds)) 0.0 1.0)
+                  viewport (.viewport (app))]
+              (set! (.light-x (app)) (* (- (* fx 2.0) 0.5) (.w viewport)))
+              (set! (.light-y (app)) (* (- (* fy 2.0) 0.5) (.h viewport)))
+              (set! (.material-dirty (app)) true)
+              (when (= kind 3) (apply-material)))
+          (= id 212)
+            (let [track (light-height-track (.lab-bounds (app)))
+                  v (clamp (/ (- x (.x track)) (.w track)) 0.0 1.0)]
+              (set! (.light-height (app)) (+ 200.0 (* v 1400.0)))
+              (set! (.material-dirty (app)) true)
+              (when (= kind 3) (apply-material)))
+          (= id 213)
+            (do
+              (set! (.light-x (app)) -180.0)
+              (set! (.light-y (app)) -260.0)
+              (set! (.light-height (app)) 820.0)
+              (apply-material))
+          (and (>= id 200) (<= id 205))
+            (let [track (material-track (.lab-bounds (app)) (- id 200))
+                  v (clamp (/ (- x (.x track)) (.w track)) 0.0 1.0)]
+              (case id 200
+                    (set! (.text-fill (app)) v) 201
+                    (set! (.text-relief (app)) (- (* v 4.0) 2.0)) 202
+                    (set! (.text-edge (app)) (+ 0.5 (* v 3.5))) 203
+                    (set! (.text-grain (app)) (* v 0.5)) 204
+                    (set! (.cursor-lift (app)) (* v 12.0)) (set! (.cursor-fold (app)) (* v 0.7)))
+              (set! (.material-dirty (app)) true)
+              (when (= kind 3) (apply-material)))
+          (= id 206)
+            (do
+              (set! (.text-fill (app)) 0.0)
+              (set! (.text-relief (app)) 0.0)
+              (set! (.text-edge (app)) 1.70)
+              (set! (.text-grain (app)) 0.10)
+              (set! (.cursor-lift (app)) 3.0)
+              (set! (.cursor-fold (app)) 0.35)
+              (apply-material))
+          (= id 207)
+            (do
+              (set! (.text-fill (app)) 0.40)
+              (set! (.text-relief (app)) 0.85)
+              (set! (.text-edge (app)) 1.70)
+              (set! (.text-grain (app)) 0.10)
+              (apply-material))
+          (= id 208)
+            (do
+              (set! (.text-fill (app)) 0.25)
+              (set! (.text-relief (app)) -0.85)
+              (set! (.text-edge (app)) 1.70)
+              (set! (.text-grain (app)) 0.10)
+              (apply-material))
+          (>= id 1000)
+            (let [identity (/ (- id 1000) 2)
+                  close (= (% (- id 1000) 2) 1)]
+              (for [i 0 (tab-count)]
+                (when (= (.id (tab i)) identity)
+                  (focus-tab i)
+                  (when (and close (confirm-close false)) (remove-tab i))
+                  (break))))
+          :else 0)
+    (host/paper_redraw))
+  0)
+
+(defn event [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
+  (if (light/handle (lighting) 500 kind id x y)
+      (do
+        (set! (.light-x (app)) (* (.x (lighting)) (.w (.viewport (app)))))
+        (set! (.light-y (app)) (* (.y (lighting)) (.h (.viewport (app)))))
+        (set! (.light-height (app)) (.height (lighting)))
+        (set! (.material-dirty (app)) true)
+        (when (= kind 3) (apply-material))
+        0)
+      (app-event kind id x y)))
+
+(defn refresh [] (-> i64)
+  (draw)
+  (when (or (p/fcmp-ne (.x (.terminal-bounds (app))) (.x (.material-origin (app))))
+            (p/fcmp-ne (.y (.terminal-bounds (app))) (.y (.material-origin (app)))))
+    (set! (.material-dirty (app)) true))
+  (let [scale (o/msg f64 (.window (host/host)) (o/sel c"backingScaleFactor") [])
+        r (native-rect (.terminal-bounds (app)))]
+    (for [i 0 (tab-count)] (terminal/resize! (.terminal (tab i)) r scale)))
+  (render/render-frame false)
+  (if (.available (gpu/gpu))
+      (do (when (not (gpu/present (.layer (host/host)))) (host/paper_redraw)) 0)
+      (let [image (host/CGBitmapContextCreateImage (.output-context (scene/scene)))]
+        (o/msg i64 (.layer (host/host)) (o/sel c"setContents:") [(ptr i8)] image)
+        (host/CGImageRelease image)
+        0))
+  (host/accessibility-refresh)
+  (when (> (tab-count) 0)
+    (let [children (o/msg (ptr i8) (.view (host/host)) (o/sel c"accessibilityChildren") [])]
+      (o/msg i64
+             (.view (host/host))
+             (o/sel c"setAccessibilityChildren:")
+             [(ptr i8)]
+             (o/msg (ptr i8) children (o/sel c"arrayByAddingObject:") [(ptr i8)] (.view (current))))))
+  0)
+
+(defn window-should-close [(self (ptr i8)) (selector (ptr i8)) (window (ptr i8))] (-> bool)
+  (if (confirm-close true) (do (set! (.quitting (app)) true) true) false))
+
+(defn should-terminate [(self (ptr i8)) (selector (ptr i8)) (application (ptr i8))] (-> u64)
+  (when (confirm-close true) (set! (.quitting (app)) true))
+  0)
+
+(defn keyboard [(event (ptr i8))] (-> bool)
+  (let [mods (o/msg u64 event (o/sel c"modifierFlags") [])
+        code (o/msg u16 event (o/sel c"keyCode") [])
+        command (!= (& mods 1048576) (cast u64 0))
+        shift (!= (& mods 131072) (cast u64 0))]
+    (cond (and command (= code (cast u16 17))) (do (open-tab) true)
+          (and command (= code (cast u16 13))) (do (when (confirm-close false) (remove-tab (.active (app)))) true)
+          (and command (= code (cast u16 12))) (do (when (confirm-close true) (set! (.quitting (app)) true)) true)
+          (and command shift (= code (cast u16 33)))
+            (do (focus-tab (model/adjacent (.active (app)) -1 (tab-count))) true)
+          (and command shift (= code (cast u16 30)))
+            (do (focus-tab (model/adjacent (.active (app)) 1 (tab-count))) true)
+          :else false)))
+
+(defn frame [] (-> i64)
+  (when (and (.ready (app)) (not (.quitting (app))))
+    (let [bounds (o/msg host/CGRect (.view (host/host)) (o/sel c"bounds") [])
+          scale (o/msg f64 (.window (host/host)) (o/sel c"backingScaleFactor") [])
+          width (cast i64 (* (.w bounds) scale))
+          height (cast i64 (* (.h bounds) scale))]
+      (when (or (!= width (.width (scene/scene))) (!= height (.height (scene/scene))))
+        (set! (.viewport (app)) (rect 0.0 0.0 (.w bounds) (.h bounds)))
+        (set! (.logical-w (host/host)) (.w bounds))
+        (set! (.logical-h (host/host)) (.h bounds))
+        (set! (.window-w (host/host)) (.w bounds))
+        (set! (.window-h (host/host)) (.h bounds))
+        (set! (.width (scene/scene)) width)
+        (set! (.height (scene/scene)) height)
+        (set! (.scale (scene/scene)) scale)
+        (render/setup)
+        (gpu/layer-size (.layer (host/host)) (.w bounds) (.h bounds) scale)
+        (host/paper_redraw))
+      (let [focused (o/msg bool (.window (host/host)) (o/sel c"isKeyWindow") [])]
+        (when (!= focused (.last-focus (app)))
+          (set! (.last-focus (app)) focused)
+          (g/ghostty_app_set_focus (load (terminal/app-cell)) focused)
+          0))
+      (when (!= (.generation (app)) (load (terminal/changed-cell)))
+        (set! (.generation (app)) (load (terminal/changed-cell)))
+        (host/paper_redraw))
+      (when (= (load (terminal/request-cell)) 1)
+        (set! (terminal/request-cell) 0)
+        (open-tab))
+      (let [(mut i) 0]
+        (while (< (load i) (tab-count))
+          (if (.closed (.terminal (tab (load i))))
+              (let [t (.terminal (tab (load i)))]
+                (if (.close-alive t) (focus-tab (load i)) 0)
+                (if (or (not (.close-alive t)) (confirm-close false))
+                    (remove-tab (load i))
+                    (do (set! (.closed t) false) (set! i (+ (load i) 1)) 0)))
+              (set! i (+ (load i) 1)))))
+      (host/poll-pointer)
+      (when (or (< scale (.material-scale (app))) (> scale (.material-scale (app)))) (apply-material))
+      (when (and (.material-dirty (app)) (>= (host/CACurrentMediaTime) (.material-next (app))))
+        (apply-material))
+      (when (.dirty (scene/scene)) (refresh))))
+  0)
+
+(defn menu-action [(self (ptr i8)) (selector (ptr i8)) (sender (ptr i8))] (-> void)
+  (case (o/msg i64 sender (o/sel c"tag") []) 1
+        (open-tab) 2
+        (focus-tab (model/adjacent (.active (app)) -1 (tab-count))) 3
+        (focus-tab (model/adjacent (.active (app)) 1 (tab-count))) 4
+        (when (confirm-close false) (remove-tab (.active (app)))) 0))
+
+(defn menus [] (-> i64)
+  (let [bar (o/new c"NSMenu")]
+    (for [group 0 4]
+      (let [title (case group 0 c"Paper Terminal" 1 c"Shell" 2 c"Edit" c"Window")
+            parent (host/native-menu-item title (o/nil) c"")
+            menu (o/new c"NSMenu")]
+        (o/msg i64 menu (o/sel c"setTitle:") [(ptr i8)] (o/ns title))
+        (for [i 0 (case group 0 1 1 4 2 3 3)]
+          (let [name
+                  (case group 0
+                        c"Quit Paper Terminal" 1
+                        (case i 0 c"New Tab" 1 c"Previous Tab" 2 c"Next Tab" c"Close Tab") 2
+                        (case i 0 c"Copy" 1 c"Paste" c"Select All")
+                          (case i 0 c"Minimize" 1 c"Zoom" c"Enter Full Screen"))
+                action
+                  (case group 0
+                        c"terminate:" 1
+                        c"menuAction:" 2
+                        (case i 0 c"copy:" 1 c"paste:" c"selectAll:")
+                          (case i 0 c"performMiniaturize:" 1 c"performZoom:" c"toggleFullScreen:"))
+                key
+                  (case group 0
+                        c"q" 1
+                        (case i 0 c"t" 1 c"[" 2 c"]" c"w") 2
+                        (case i 0 c"c" 1 c"v" c"a") (case i 0 c"m" 1 c"" c"f"))
+                item (host/native-menu-item name (o/sel action) key)]
+            (when (= group 1)
+              (o/msg i64 item (o/sel c"setTarget:") [(ptr i8)] (.delegate (app)))
+              (o/msg i64 item (o/sel c"setTag:") [i64] (+ i 1))
+              (when (or (= i 1) (= i 2))
+                (o/msg i64 item (o/sel c"setKeyEquivalentModifierMask:") [u64] 1179648)))
+            (when (= group 3)
+              (o/msg i64 item (o/sel c"setTarget:") [(ptr i8)] (.window (host/host)))
+              (when (= i 2) (o/msg i64 item (o/sel c"setKeyEquivalentModifierMask:") [u64] 1310720)))
+            (o/msg i64 menu (o/sel c"addItem:") [(ptr i8)] item)
+            (o/release item)))
+        (o/msg i64 parent (o/sel c"setSubmenu:") [(ptr i8)] menu)
+        (o/msg i64 bar (o/sel c"addItem:") [(ptr i8)] parent)
+        (o/release menu)
+        (o/release parent)))
+    (o/msg i64 (.app (host/host)) (o/sel c"setMainMenu:") [(ptr i8)] bar)
+    (o/release bar))
+  0)
+
+(defn initialize [(testing bool)] (-> i64)
+  (let [h (host/host)
+        a (app)
+        application (o/msg (ptr i8) (o/class c"NSApplication") (o/sel c"sharedApplication") [])
+        window (host/create-window 1100.0 760.0)
+        view (o/msg (ptr i8) window (o/sel c"contentView") [])
+        bundle (o/msg (ptr i8) (o/class c"NSBundle") (o/sel c"mainBundle") [])
+        bundled
+          (o/msg bool (o/msg (ptr i8) bundle (o/sel c"bundlePath") []) (o/sel c"hasSuffix:") [(ptr i8)] (o/ns c".app"))
+        delegate-class (host/objc_allocateClassPair (o/class c"NSObject") c"FolioDelegate" 0)
+        scale (o/msg f64 window (o/sel c"backingScaleFactor") [])]
+    (set! (.testing a) testing)
+    (set! (lighting) (light/lighting (/ -180.0 1100.0) (/ -260.0 760.0) 820.0 0.42 0.6))
+    (set! (.light-x a) -180.0)
+    (set! (.light-y a) -260.0)
+    (set! (.light-height a) 820.0)
+    (set! (.material-scale a) scale)
+    (set! (.text-fill a) 0.25)
+    (set! (.text-relief a) -0.85)
+    (set! (.text-edge a) 1.70)
+    (set! (.text-grain a) 0.10)
+    (set! (.cursor-lift a) 3.0)
+    (set! (.cursor-fold a) 0.35)
+    (let [identity
+            (o/msg (ptr i8)
+                   (o/msg (ptr i8) (o/class c"NSProcessInfo") (o/sel c"processInfo") [])
+                   (o/sel c"globallyUniqueString")
+                   [])
+          name (o/msg (ptr i8) (o/ns c"paper-terminal-") (o/sel c"stringByAppendingString:") [(ptr i8)] identity)
+          directory (o/msg (ptr i8) (n/NSTemporaryDirectory) (o/sel c"stringByAppendingPathComponent:") [(ptr i8)] name)]
+      (assert (o/msg bool
+                     (o/msg (ptr i8) (o/class c"NSFileManager") (o/sel c"defaultManager") [])
+                     (o/sel c"createDirectoryAtPath:withIntermediateDirectories:attributes:error:")
+                     [(ptr i8) bool (ptr i8) (ptr i8)]
+                     directory
+                     false
+                     (o/nil)
+                     (o/nil)))
+      (set! (.material-directory a) (o/retain directory)))
+    (set! (.resources a)
+          (o/retain (if bundled
+                        (o/msg (ptr i8) bundle (o/sel c"resourcePath") [])
+                        (o/msg (ptr i8)
+                               (o/msg (ptr i8) (o/class c"NSURL") (o/sel c"fileURLWithPath:") [(ptr i8)] (o/ns c"."))
+                               (o/sel c"path")
+                               []))))
+    (n/setenv c"GHOSTTY_RESOURCES_DIR" (o/utf8 (resource (if bundled c"ghostty" c"build/ghostty/share/ghostty"))) 1)
+    (set! (.tabs a) (al/al-new [Tab] (alloc/malloc-allocator)))
+    (set! (.viewport a) (rect 0.0 0.0 1100.0 760.0))
+    (scene/init)
+    (host/paper_configure c"Paper Terminal" 1100.0 760.0)
+    (set! (.app h) application)
+    (set! (.window h) window)
+    (set! (.view h) view)
+    (set! (.window-w h) 1100.0)
+    (set! (.window-h h) 760.0)
+    (set! (.draw h) (p/fnptr-of draw))
+    (set! (.event h) (p/fnptr-of event))
+    (set! (.inputs h) (al/al-new [host/Input] (alloc/malloc-allocator)))
+    (set! (.width (scene/scene)) (cast i64 (* 1100.0 scale)))
+    (set! (.height (scene/scene)) (cast i64 (* 760.0 scale)))
+    (set! (.scale (scene/scene)) scale)
+    (render/setup)
+    (o/msg i64 view (o/sel c"setWantsLayer:") [bool] true)
+    (set! (.layer h)
+          (if (.available (gpu/gpu))
+              (gpu/create-layer view 1100.0 760.0 scale)
+              (o/msg (ptr i8) view (o/sel c"layer") [])))
+    (o/msg i64 window (o/sel c"setTitle:") [(ptr i8)] (o/ns c"Paper Terminal"))
+    (o/msg i64 window (o/sel c"setReleasedWhenClosed:") [bool] false)
+    (o/msg i64 window (o/sel c"setAcceptsMouseMovedEvents:") [bool] true)
+    (o/msg i64 window (o/sel c"setContentMinSize:") [host/CGSize] (host/CGSize :w 760.0 :h 540.0))
+    (assert (host/class_addMethod delegate-class
+                                  (o/sel c"windowShouldClose:")
+                                  (cast (ptr i8) (p/fnptr-of window-should-close))
+                                  c"B@:@"))
+    (assert (host/class_addMethod delegate-class
+                                  (o/sel c"applicationShouldTerminate:")
+                                  (cast (ptr i8) (p/fnptr-of should-terminate))
+                                  c"Q@:@"))
+    (assert (host/class_addMethod delegate-class
+                                  (o/sel c"menuAction:")
+                                  (cast (ptr i8) (p/fnptr-of menu-action))
+                                  c"v@:@"))
+    (host/objc_registerClassPair delegate-class)
+    (let [delegate (o/msg (ptr i8) delegate-class (o/sel c"new") [])]
+      (set! (.delegate a) delegate)
+      (o/msg i64 window (o/sel c"setDelegate:") [(ptr i8)] delegate)
+      (o/msg i64 application (o/sel c"setDelegate:") [(ptr i8)] delegate))
+    (o/msg i64 application (o/sel c"setActivationPolicy:") [i64] 0)
+    (menus)
+    (o/msg i64 application (o/sel c"finishLaunching") [])
+    (host/accessibility-init)
+    (assert (!= (terminal/start! (o/utf8 (resource c"config/ghostty"))) (o/nil)))
+    (draw)
+    (assert (new-tab (if testing c"/bin/sh -i" (o/nil))))
+    (apply-material)
+    (o/msg i64 window (o/sel c"center") [])
+    (o/msg i64 window (o/sel c"makeKeyAndOrderFront:") [(ptr i8)] (o/nil))
+    (when (not testing) (o/msg i64 application (o/sel c"activateIgnoringOtherApps:") [bool] true) 0)
+    (set! (.ready a) true)
+    (focus-tab 0)
+    (refresh)
+    (clock/start view (p/fnptr-of frame) 60.0))
+  0)
+
+(defn paper-pointer [(event (ptr i8)) (kind i64)] (-> i64)
+  (let [point (o/msg host/CGPoint event (o/sel c"locationInWindow") [])
+        id (host/hit-test (.x point) (- (.window-h (host/host)) (.y point)))
+        inspector (or (= id 4) (and (>= id 200) (<= id 299)) (and (>= id 500) (<= id 507)))]
+    (host/pointer-event-with-focus event kind (not inspector)))
+  0)
+
+(defn pump [] (-> i64)
+  (let [h (host/host)
+        deadline (o/msg (ptr i8) (o/class c"NSDate") (o/sel c"dateWithTimeIntervalSinceNow:") [f64] 0.008)
+        ev
+          (o/msg (ptr i8)
+                 (.app h)
+                 (o/sel c"nextEventMatchingMask:untilDate:inMode:dequeue:")
+                 [u64 (ptr i8) (ptr i8) bool]
+                 (cast u64 -1)
+                 deadline
+                 (o/constant-object c"NSDefaultRunLoopMode")
+                 true)]
+    (when (!= ev (o/nil))
+      (let [kind (o/msg i64 ev (o/sel c"type") [])
+            (mut consumed) false]
+        (when (= (o/msg (ptr i8) ev (o/sel c"window") []) (.window h))
+          (cond (= kind 10) (set! consumed (keyboard ev))
+                (= kind 1)
+                  (if (host/begin-window-drag ev)
+                      (do (set! consumed true) 0)
+                      (let [pt (o/msg host/CGPoint ev (o/sel c"locationInWindow") [])]
+                        (when (> (host/hit-test (.x pt) (- (.window-h h) (.y pt))) 0)
+                          (paper-pointer ev 1)
+                          (set! consumed true))
+                        0))
+                (and (= kind 6) (> (.drag h) 0)) (do (host/pointer-event ev 2) (set! consumed true) 0)
+                (and (= kind 2) (> (.drag h) 0)) (do (host/pointer-event ev 3) (set! consumed true) 0)
+                :else 0))
+        (when (not (load consumed)) (o/msg i64 (.app h) (o/sel c"sendEvent:") [(ptr i8)] ev))))
+    (frame))
+  0)
+
+(defn shutdown [] (-> i64)
+  (set! (.ready (app)) false)
+  (clock/stop)
+  (o/msg bool (.window (host/host)) (o/sel c"makeFirstResponder:") [(ptr i8)] (o/nil))
+  (for [i 0 (tab-count)] (terminal/free! (.terminal (tab i))))
+  (al/al-free! [Tab] (mut (.tabs (app))))
+  (terminal/stop!)
+  (o/msg bool
+         (o/msg (ptr i8) (o/class c"NSFileManager") (o/sel c"defaultManager") [])
+         (o/sel c"removeItemAtPath:error:")
+         [(ptr i8) (ptr i8)]
+         (.material-directory (app))
+         (o/nil))
+  (o/release (.material-directory (app)))
+  (workers/stop)
+  (o/msg i64 (.window (host/host)) (o/sel c"setDelegate:") [(ptr i8)] (o/nil))
+  (o/msg i64 (.app (host/host)) (o/sel c"setDelegate:") [(ptr i8)] (o/nil))
+  (o/release (.delegate (app)))
+  (o/release (.resources (app)))
+  (o/msg i64 (.window (host/host)) (o/sel c"orderOut:") [(ptr i8)] (o/nil))
+  0)
+
+(defn main [(argc i32) (argv (ptr (ptr i8)))] (-> i64)
+  (let [pool (o/new c"NSAutoreleasePool")]
+    (initialize false)
+    (while (not (.quitting (app)))
+      (let [iteration (o/new c"NSAutoreleasePool")] (pump) (o/release iteration)))
+    (shutdown)
+    (o/release pool))
+  0)

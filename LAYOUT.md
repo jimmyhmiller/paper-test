@@ -1,0 +1,56 @@
+# Layout integration and verification
+
+The reusable package is [lib/layout](lib/layout/README.md). Every application scene, the shared studio shell and workbench, dialogs, and the minimal application now compose named layout rectangles. Fixed numbers describe sizes, spacing, and artwork coordinates; callers no longer need to position each ordinary control in global screen coordinates.
+
+`paper.flow` combines the Paper drawing facade with native text measurement and bounds-first helpers. `caption`, `textbox`, `numeral`, `separator`, and `tag` consume solved rectangles. `art-space` uniformly fits a local artwork view box into a layout rectangle; `art-x`, `art-y`, `art-length`, and `art-rect` preserve paths, map contours, vinyl grooves, and botanical silhouettes. The stepped AgentHub cutout derives its outline from the solved introduction, metric shelf, and body bounds.
+
+The examples use layout for their logical viewport. The native host still preserves the configured canvas aspect ratio and scales it when the window resizes. Applications can solve different logical viewports, as the gallery does; changing window size does not automatically change the application's logical design size.
+
+## Controls and unified window
+
+Buttons now have a raised, warmer hover state, lower pressed state, and independent disabled appearance. Button text uses native font measurements for horizontal and vertical centering. Keyboard focus uses a muted inset outline instead of a bottom underline; pointer selection does not draw that focus outline. Inputs disable the native Aqua ring and use a shallow paper recess with a quiet focus rim.
+
+The AgentHub navigation uses a flat selected-stock treatment. The account footer uses a padded avatar/text row, and the terminal uses one shallow recess with consistent inner margins. The two requested toolbar/footer credits have been removed.
+
+The macOS window retains its native close, minimize, zoom, and resize behavior, but content extends through a transparent title bar and the title text is hidden. The studio reserves space above its header for the traffic lights. During drawing, `paper_drag_area bounds` registers the top region in logical coordinates. Blank points there call AppKit's `performWindowDragWithEvent:`; paper hit paths (including disabled controls), native subviews, and traffic-light buttons are excluded. The region resets with `paper_begin`.
+
+References: Apple's [transparent title bar](https://developer.apple.com/documentation/appkit/nswindow/titlebarappearstransparent), [native window drag](https://developer.apple.com/documentation/appkit/nswindow/performdrag(with:)), and [focus ring type](https://developer.apple.com/documentation/appkit/nsview/focusringtype) APIs.
+
+## Reproduce validation
+
+`coil verify` passes all 66 tests. All 16 layout tests also pass with AddressSanitizer and Coil runtime safety checks (`--debug-runtime`).
+
+```sh
+coil verify
+mkdir -p build/layout-gallery
+coil build tools/layout_gallery.coil -o build/layout-gallery-runner
+build/layout-gallery-runner
+build/layout-gallery-runner small
+build/layout-gallery-runner large
+coil build
+coil run tools/bundle.coil
+```
+
+The gallery renders all four applications at 1280 × 900, 1480 × 960, and 1800 × 1080 logical points, plus alternate AgentHub views, validation errors, journal editing, long track text, hover, and keyboard/input focus. It uses fixture state and does not modify saved application data. Output is under `build/layout-gallery`.
+
+Tests cover weighted constraints, saturation redistribution, proportional shrink, padding, wrapped measurement, percentages, floating alignment, aspect ratio, explicit overflow, zero viewports, non-depth-first insertion, nested clips, scroll extents, and adversarial growth constraints. Renderer tests check clipping of sheet geometry, cuts and ink; interaction tests check clipped focus/hit targets, hover elevation, keyboard-only focus, and drag-region exclusion.
+
+Native screenshots from the gallery contain the rendered scene, not AppKit window chrome. Computer Use was unavailable during this pass (`Transport closed`), so actual native drag gestures and live field-focus appearance still need an interactive check. Native API tests verify full-frame content bounds, traffic-light availability, field clip geometry, and disabled Aqua focus rings. Automated tests also verify region routing and render output; they do not establish that an OS drag was performed.
+
+## Kernel benchmark
+
+The benchmark excludes renderer work, text measurement, startup allocation, and OS interaction. It includes tree construction and solving; a separate Coil column measures solving an existing tree. There are two warmup samples followed by 20 measured samples, with enough iterations per sample for each tree size. Viewport width alternates by one point and checksums consume output geometry.
+
+The optional C program compares analogous wide, bounded, and deeply nested trees using the calls generated by Clay's declaration macros, including its IDs and end-layout processing. The reference harness reads the final element ID from Clay's context to consume its resolved geometry. Clay also supports render commands and other work that this rectangle-only kernel does not do. The engines use different numeric representations and sizing semantics in some cases. These are reproducible workload measurements, not a general speed or feature-parity claim. The weighted scenario exercises Coil-specific weights and has no Clay comparison here.
+
+```sh
+coil build tools/layout_benchmark.coil -o build/layout-benchmark
+build/layout-benchmark > benchmarks/layout-coil.csv
+curl -L --fail https://raw.githubusercontent.com/nicbarker/clay/e6cc36941ab2af5d81107617039d6f527a1c660b/clay.h -o build/clay.h
+clang -O3 -Ibuild tools/clay_benchmark.c -lm -o build/clay-benchmark
+build/clay-benchmark > benchmarks/layout-clay.csv
+```
+
+Raw samples and machine/compiler metadata live in `benchmarks/layout-*`. Timing results should be interpreted on the recorded machine and run date. Full renderer performance is documented separately in [PERFORMANCE.md](PERFORMANCE.md).
+
+On the recorded M2 Max run, 10,000-node build-and-solve medians were 0.94 ms (wide), 0.93 ms (bounded), and 0.74 ms (deep). Corresponding Clay harness medians were 1.24, 1.29, and 1.57 ms. See the comparison qualifications above.

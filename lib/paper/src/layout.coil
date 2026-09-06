@@ -1,5 +1,6 @@
 (module paper.layout)
-(import "paper.geometry" :use [Rect rect clamp])
+(import "layout.core" :use * :reexport)
+(import "layout.syntax" :use * :reexport)
 
 ;;; Equal-width cells inside a row. Index and count are checked, and an oversized
 ;;; gap consumes available space without producing negative rectangle dimensions.

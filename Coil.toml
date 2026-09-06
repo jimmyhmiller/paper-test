@@ -5,6 +5,7 @@ source-roots = ["examples", "tests", "tools"]
 
 [dependencies]
 paper = { path = "lib/paper" }
+layout = { path = "lib/layout" }
 
 [link]
 frameworks = ["AppKit", "QuartzCore", "CoreGraphics", "CoreText", "ImageIO", "CoreFoundation", "AVFoundation", "Metal"]

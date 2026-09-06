@@ -1,0 +1,87 @@
+(module paper.text-layout)
+(import "layout.core" :use [Extent unlimited minimum maximum measure-data])
+(import "paper.objc" :as o)
+(import "paper.ffi" :use [CGSize CGRect])
+(import "coil.primitive" :as p)
+
+;;; Borrowed UTF-8 and font settings. Keep this value alive through arrange/solve.
+(defstruct TextMeasure [(text (ptr i8)) (size f64) (font i64)])
+
+(defn text-measure [(text (ptr i8)) (size f64) (font i64)] (-> TextMeasure)
+  (TextMeasure
+    :text text
+    :size size
+    :font font))
+
+;;; Native typography, including fallback fonts, UTF-8 and word wrapping, uses
+;;; the same AppKit layout options as paper.text-box. No estimated glyph widths.
+(defn measure-uncached [(data (ptr i8)) (width f64)] (-> Extent)
+  (let [m (cast (ptr TextMeasure) data)
+        font-name (case (.font m) 1 c"Georgia" 2 c"Menlo" 3 c"HelveticaNeue-Medium" c"HelveticaNeue")
+        font
+          (o/msg (ptr i8) (o/class c"NSFont") (o/sel c"fontWithName:size:") [(ptr i8) f64] (o/ns font-name) (.size m))
+        attrs (o/new c"NSMutableDictionary")]
+    (o/msg i64 attrs (o/sel c"setObject:forKey:") [(ptr i8) (ptr i8)] font (o/ns c"NSFont"))
+    (let [r
+            (o/msg CGRect
+                   (o/ns (.text m))
+                   (o/sel c"boundingRectWithSize:options:attributes:context:")
+                   [CGSize u64 (ptr i8) (ptr i8)]
+                   (CGSize :w (maximum 0.01 (minimum width 10000000.0)) :h 10000000.0)
+                   33
+                   attrs
+                   (o/nil))]
+      (o/release attrs)
+      (Extent :width (maximum 0.0 (.w r)) :height (maximum 0.0 (.h r))))))
+
+(extern strcmp :cc c [(ptr i8) (ptr i8)] (-> i32))
+
+(defstruct TextCacheEntry
+  [(owner (ptr i8)) (utf8 (ptr i8)) (size f64) (font i64) (width f64) (extent Extent)])
+
+(defn text-cache [] (-> (ptr (array TextCacheEntry 512)))
+  (p/alloc-static (array TextCacheEntry 512)))
+
+;;; A bounded direct-mapped cache owns copied strings, so changing or freeing a
+;;; caller buffer is safe. Collisions compare the full key before reuse. This
+;;; adapter shares Paper's UI-thread ownership; the layout core has no globals.
+(defn measure-text [(data (ptr i8)) (width f64)] (-> Extent)
+  (let [m (cast (ptr TextMeasure) data)
+        (mut hash) (% (+ (.font m) (cast i64 (minimum width 10000000.0))) 512)
+        (mut pos) 0]
+    (while (!= (load (index (.text m) (load pos))) (cast i8 0))
+      (set! hash (% (+ (* (load hash) 33) (cast i64 (cast u8 (load (index (.text m) (load pos)))))) 512))
+      (set! pos (+ (load pos) 1)))
+    (let [entry (index (text-cache) (load hash))]
+      (if (and (!= (.owner entry) (o/nil))
+               (= (.font entry) (.font m))
+               (p/fcmp-eq (.size entry) (.size m))
+               (p/fcmp-eq (.width entry) width)
+               (= (strcmp (.utf8 entry) (.text m)) (cast i32 0)))
+          (.extent entry)
+          (let [extent (measure-uncached data width)]
+            (when (!= (.owner entry) (o/nil)) (o/release (.owner entry)))
+            (set! (.owner entry) (o/msg (ptr i8) (o/ns (.text m)) (o/sel c"copy") []))
+            (set! (.utf8 entry) (o/utf8 (.owner entry)))
+            (set! (.size entry) (.size m))
+            (set! (.font entry) (.font m))
+            (set! (.width entry) width)
+            (set! (.extent entry) extent)
+            (load extent))))))
+
+;;; Invalidate after changes to registered fonts or typography environment.
+(defn clear-text-cache [] (-> i64)
+  (for [i 0 512]
+    (let [entry (index (text-cache) i)]
+      (when (!= (.owner entry) (o/nil)) (o/release (.owner entry)))
+      (set! (.owner entry) (o/nil))))
+  0)
+
+;;; Measure a single line for content-sized controls without a text node.
+(defn text-width [(text (ptr i8)) (size f64) (font i64)] (-> f64)
+  (let [(mut m) (text-measure text size font)
+        extent (measure-text (measure-data [TextMeasure] m) unlimited)]
+    (.width extent)))
+
+(defn text-data [(text (ptr TextMeasure))] (-> (ptr i8))
+  (cast (ptr i8) text))
