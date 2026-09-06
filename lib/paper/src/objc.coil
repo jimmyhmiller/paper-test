@@ -42,3 +42,12 @@
 
 (defn utf8 [(obj (ptr i8))] (-> (ptr i8))
   (msg (ptr i8) obj (sel c"UTF8String") []))
+
+(extern dlsym :cc c [(ptr i8) (ptr i8)] (-> (ptr i8)))
+
+;;; Some Cocoa constants, particularly common run-loop modes, are identity
+;;; tokens. Resolve their exported object instead of recreating an equal string.
+(defn constant-object [(name (ptr i8))] (-> (ptr i8))
+  (let [symbol (dlsym (cast (ptr i8) -2) name)]
+    (assert (!= symbol (nil)))
+    (load (cast (ptr (ptr i8)) symbol))))

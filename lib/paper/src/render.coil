@@ -1,18 +1,17 @@
 (module paper.render)
 (import "coil.primitive" :as primitive)
 (import "coil.arraylist" :as al)
-(import "coil.thread" :as thread)
+(import "coil.alloc" :as alloc)
+(import "paper.damage" :as damage)
+(import "paper.vector" :as v)
+(import "paper.workers" :as workers)
+(import "paper.gpu" :as gpu)
+(import "paper.masks" :as masks)
+(import "paper.paint" :use * :reexport)
 (import "paper.ffi" :use *)
 (import "paper.objc" :use *)
 (import "paper.scene" :use *)
 (import "paper.geometry" :use [clamp])
-
-(defn channel [(rgb u32) (shift i64)] (-> f64)
-  (/ (cast f64 (& (>> (cast i64 rgb) shift) 255)) 255.0))
-
-(defn fill [(ctx (ptr i8)) (rgb u32)] (-> i64)
-  (CGContextSetRGBFillColor ctx (channel rgb 16) (channel rgb 8) (channel rgb 0) 1.0)
-  0)
 
 (defn make-bitmap [(gray bool)] (-> (ptr i8))
   (let [s (scene)
@@ -31,7 +30,127 @@
     (CGContextScaleCTM ctx (.scale s) (- 0.0 (.scale s)))
     ctx))
 
+(defstruct RasterBand [(color (ptr i8)) (height (ptr i8)) (material (ptr i8)) (bounds CGRect)])
+
+(defstruct RasterBands [(items (al/ArrayList RasterBand)) (ready bool)])
+
+(defn raster-bands [] (-> (ptr RasterBands))
+  (primitive/alloc-static RasterBands))
+
+(defn release-raster-bands [] (-> i64)
+  (let [b (raster-bands)]
+    (if (.ready b)
+        (do
+          (for [i 0 (al/al-len [RasterBand] (.items b))]
+            (let [band (al/al-get [RasterBand] (.items b) i)]
+              (CGContextRelease (.color band))
+              (CGContextRelease (.height band))
+              (CGContextRelease (.material band))))
+          (al/al-clear! [RasterBand] (mut (.items b)))
+          0)
+        (do (set! (.items b) (al/al-new [RasterBand] (alloc/malloc-allocator))) (set! (.ready b) true) 0)))
+  0)
+
+;;; Each worker owns separate contexts and disjoint complete bitmap rows.
+;;; Global coordinates are retained, including glyph layout and antialiasing.
+(defn band-context [(parent (ptr i8)) (y i64) (height i64) (gray bool)] (-> (ptr i8))
+  (let [s (scene)
+        stride (* (.width s) (if gray 1 4))
+        cs (if gray (CGColorSpaceCreateDeviceGray) (CGColorSpaceCreateDeviceRGB))
+        data (index (CGBitmapContextGetData parent) (* y stride))
+        ctx
+          (CGBitmapContextCreate (cast (ptr i8) data)
+                                 (cast u64 (.width s))
+                                 (cast u64 height)
+                                 8
+                                 (cast u64 stride)
+                                 cs
+                                 (cast u32 (if gray 0 0x4001)))]
+    (CGColorSpaceRelease cs)
+    (assert (!= ctx (nil)))
+    (CGContextTranslateCTM ctx 0.0 (cast f64 (+ height y)))
+    (CGContextScaleCTM ctx (.scale s) (- 0.0 (.scale s)))
+    ctx))
+
+(defn setup-raster-bands [] (-> i64)
+  (let [s (scene)
+        b (raster-bands)]
+    (for [i 0 (/ (+ (.height s) 127) 128)]
+      (let [y (* i 128)
+            height (if (< (- (.height s) y) 128) (- (.height s) y) 128)]
+        (al/al-push! [RasterBand]
+                     (mut (.items b))
+                     (RasterBand
+                       :color (band-context (.color-context s) y height false)
+                       :height (band-context (.height-context s) y height true)
+                       :material (band-context (.material-context s) y height false)
+                       :bounds
+                         (cgrect 0.0
+                                 (/ (cast f64 y) (.scale s))
+                                 (/ (cast f64 (.width s)) (.scale s))
+                                 (/ (cast f64 height) (.scale s))))))))
+  0)
+
+(defn raster-worker [(argument (ptr i8)) (index u64)] (-> i64)
+  (let [band (al/al-get [RasterBand] (.items (raster-bands)) (cast i64 index))
+        region (.bounds (damage/cache))
+        b (.bounds band)]
+    (when (intersects b region)
+      (let [pool (new c"NSAutoreleasePool")
+            top (if (> (.y b) (.y region)) (.y b) (.y region))
+            bottom (if (< (+ (.y b) (.h b)) (+ (.y region) (.h region))) (+ (.y b) (.h b)) (+ (.y region) (.h region)))]
+        (rasterize-contexts (cgrect (.x region) top (.w region) (- bottom top))
+                            (.color band)
+                            (.height band)
+                            (.material band))
+        (release pool))))
+  0)
+
+(defstruct HeightTiles
+  [(data (ptr u8)) (minimum (ptr u8)) (texture (ptr f64)) (dx (ptr f32)) (dy (ptr f32)) (width i64) (height i64)])
+
+(defn height-tiles [] (-> (ptr HeightTiles))
+  (primitive/alloc-static HeightTiles))
+
+(extern free :cc c [(ptr i8)] (-> void))
+
 (defn setup [] (-> i64)
+  ;; SIMD ray indices are signed 32-bit. These limits also reject invalid
+  ;; bitmap dimensions before allocations or division by the backing scale.
+  (assert (and (> (.width (scene)) 0)
+               (> (.height (scene)) 0)
+               (<= (.width (scene)) 32768)
+               (<= (.height (scene)) 32768)
+               (> (.scale (scene)) 0.0)))
+  (damage/reset)
+  (masks/reset)
+  (release-raster-bands)
+  (gpu/setup)
+  (let [tiles (height-tiles)]
+    (free (cast (ptr i8) (.data tiles)))
+    (free (cast (ptr i8) (.minimum tiles)))
+    (free (cast (ptr i8) (.texture tiles)))
+    (free (cast (ptr i8) (.dx tiles)))
+    (free (cast (ptr i8) (.dy tiles)))
+    (set! (.width tiles) (/ (+ (.width (scene)) 15) 16))
+    (set! (.height tiles) (/ (+ (.height (scene)) 15) 16))
+    (set! (.data tiles) (cast (ptr u8) 0))
+    (set! (.minimum tiles) (cast (ptr u8) 0))
+    (set! (.texture tiles) (cast (ptr f64) 0))
+    (set! (.dx tiles) (cast (ptr f32) 0))
+    (set! (.dy tiles) (cast (ptr f32) 0))
+    (when (not (.available (gpu/gpu)))
+      (set! (.data tiles) (cast (ptr u8) (alloc/malloc (cast isize (* (.width tiles) (.height tiles))))))
+      (set! (.minimum tiles) (cast (ptr u8) (alloc/malloc (cast isize (* (.width tiles) (.height tiles))))))
+      (set! (.texture tiles) (cast (ptr f64) (alloc/malloc (cast isize (* (* (.width (scene)) (.height (scene))) 8)))))
+      (set! (.dx tiles) (cast (ptr f32) (alloc/malloc (cast isize (* (* (.width (scene)) (.height (scene))) 4)))))
+      (set! (.dy tiles) (cast (ptr f32) (alloc/malloc (cast isize (* (* (.width (scene)) (.height (scene))) 4)))))
+      (assert (!= (.dx tiles) (cast (ptr f32) 0)))
+      (assert (!= (.dy tiles) (cast (ptr f32) 0)))
+      (assert (!= (.texture tiles) (cast (ptr f64) 0)))
+      (assert (!= (.minimum tiles) (cast (ptr u8) 0)))
+      (assert (!= (.data tiles) (cast (ptr u8) 0)))
+      0))
   (let [s (scene)]
     (when (!= (.color-context s) (nil)) (CGContextRelease (.color-context s)) 0)
     (when (!= (.height-context s) (nil)) (CGContextRelease (.height-context s)) 0)
@@ -41,54 +160,46 @@
     (set! (.height-context s) (make-bitmap true))
     (set! (.material-context s) (make-bitmap false))
     (set! (.output-context s) (make-bitmap false)))
+  (when (not (.available (gpu/gpu))) (setup-raster-bands))
   0)
 
-(defn draw-ink [(ctx (ptr i8)) (ink Ink)] (-> i64)
-  (let [font-name
-          (cond (= (.font ink) 1) c"Georgia"
-                (= (.font ink) 2) c"Menlo"
-                (= (.font ink) 3) c"HelveticaNeue-Medium"
-                :else c"HelveticaNeue")
-        font (msg (ptr i8) (class c"NSFont") (sel c"fontWithName:size:") [(ptr i8) f64] (ns font-name) (.size ink))
-        color
-          (msg (ptr i8)
-               (class c"NSColor")
-               (sel c"colorWithSRGBRed:green:blue:alpha:")
-               [f64 f64 f64 f64]
-               (channel (.color ink) 16)
-               (channel (.color ink) 8)
-               (channel (.color ink) 0)
-               1.0)
-        attrs (new c"NSMutableDictionary")]
-    (msg i64 attrs (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] font (ns c"NSFont"))
-    (msg i64 attrs (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] color (ns c"NSColor"))
-    (if (> (.width ink) 0.0)
-        (msg i64
-             (.text ink)
-             (sel c"drawWithRect:options:attributes:context:")
-             [CGRect u64 (ptr i8) (ptr i8)]
-             (cgrect (.x ink) (.y ink) (.width ink) (.height ink))
-             33
-             attrs
-             (nil))
-        (msg i64
-             (.text ink)
-             (sel c"drawAtPoint:withAttributes:")
-             [CGPoint (ptr i8)]
-             (CGPoint :x (.x ink) :y (.y ink))
-             attrs))
-    (release attrs))
-  0)
-
-;;; Rasterize sheet geometry once. Lighting reads these buffers without mutation.
 (defn rasterize [] (-> i64)
+  (rasterize-frame true))
+
+(defn rasterize-frame [(readback bool)] (-> i64)
+  (sort-commands)
+  (let [pending (.bounds (damage/cache))
+        bounds (damage/measure)]
+    (set! (.bounds (damage/cache)) bounds)
+    (when (> (.w bounds) 0.0)
+      (if (.available (gpu/gpu))
+          (do (masks/render) 0)
+          (do
+            (workers/apply (cast u64 (al/al-len [RasterBand] (.items (raster-bands)))) (nil) (fnptr-of raster-worker))
+            (build-height-tiles)
+            (workers/apply (cast u64 (.height (height-tiles))) (nil) (fnptr-of prepare-worker))
+            0)))
+    (when (and readback (.available (gpu/gpu))) (masks/read-inputs))
+    (damage/include pending)
+    (damage/remember)
+    (set! (.geometry-dirty (scene)) false))
+  0)
+
+(defn rasterize-region [(region CGRect)] (-> i64)
+  (let [s (scene)] (rasterize-contexts region (.color-context s) (.height-context s) (.material-context s)))
+  0)
+
+(defn rasterize-contexts [(region CGRect) (c (ptr i8)) (h (ptr i8)) (m (ptr i8))] (-> i64)
   (let [s (scene)
-        c (.color-context s)
-        h (.height-context s)
-        m (.material-context s)
         bounds (cgrect 0.0 0.0 (/ (cast f64 (.width s)) (.scale s)) (/ (cast f64 (.height s)) (.scale s)))
         ink-count (al/al-len [Ink] (.inks s))
         (mut ink-index) 0]
+    (CGContextSaveGState c)
+    (CGContextSaveGState h)
+    (CGContextSaveGState m)
+    (CGContextClipToRect c region)
+    (CGContextClipToRect h region)
+    (CGContextClipToRect m region)
     (fill c (.background s))
     (CGContextFillRect c bounds)
     (CGContextSetGrayFillColor h 0.0 1.0)
@@ -112,42 +223,38 @@
           (let [ink (al/al-elem [Ink] (field s inks) (load ink-index))]
             (if (or (< (.z ink) (.z sheet))
                     (and (primitive/fcmp-eq (.z ink) (.z sheet)) (< (.order ink) (.order sheet))))
-                (do (paint-ink c (load ink)) (set! ink-index (+ (load ink-index) 1)))
+                (do
+                  (when (intersects (.bounds ink) region) (paint-ink c (load ink)))
+                  (set! ink-index (+ (load ink-index) 1)))
                 (break))))
-        (fill c (.color sheet))
-        (CGContextAddPath c (.path sheet))
-        (CGContextEOFillPath c)
-        (CGContextSetGrayFillColor h (/ (clamp (.z sheet) 0.0 64.0) 64.0) 1.0)
-        (CGContextAddPath h (.path sheet))
-        (CGContextEOFillPath h)
-        (CGContextSaveGState h)
-        (CGContextAddPath h (.path sheet))
-        (CGContextEOClip h)
-        (CGContextSetGrayStrokeColor h (/ (clamp (- (.z sheet) 0.7) 0.0 64.0) 64.0) 1.0)
-        (CGContextSetLineWidth h 1.2)
-        (CGContextAddPath h (.path sheet))
-        (CGContextStrokePath h)
-        (CGContextRestoreGState h)
-        (CGContextSetRGBFillColor m (.rough sheet) (.fiber sheet) (.seed sheet) 1.0)
-        (CGContextAddPath m (.path sheet))
-        (CGContextEOFillPath m)))
+        (when (intersects (CGPathGetPathBoundingBox (.path sheet)) region)
+          (fill c (.color sheet))
+          (CGContextAddPath c (.path sheet))
+          (CGContextEOFillPath c)
+          (CGContextSetGrayFillColor h (/ (clamp (.z sheet) 0.0 64.0) 64.0) 1.0)
+          (CGContextAddPath h (.path sheet))
+          (CGContextEOFillPath h)
+          (CGContextSaveGState h)
+          (CGContextClipToRect h (CGPathGetPathBoundingBox (.path sheet)))
+          (CGContextAddPath h (.path sheet))
+          (CGContextEOClip h)
+          (CGContextSetGrayStrokeColor h (/ (clamp (- (.z sheet) 0.7) 0.0 64.0) 64.0) 1.0)
+          (CGContextSetLineWidth h 1.2)
+          (CGContextAddPath h (.path sheet))
+          (CGContextStrokePath h)
+          (CGContextRestoreGState h)
+          (CGContextSetRGBFillColor m (.rough sheet) (.fiber sheet) (.seed sheet) 1.0)
+          (CGContextAddPath m (.path sheet))
+          (CGContextEOFillPath m)
+          0)))
     (while (< (load ink-index) ink-count)
-      (paint-ink c (al/al-get [Ink] (.inks s) (load ink-index)))
+      (let [ink (al/al-get [Ink] (.inks s) (load ink-index))]
+        (when (intersects (.bounds ink) region) (paint-ink c ink)))
       (set! ink-index (+ (load ink-index) 1)))
     (msg i64 (class c"NSGraphicsContext") (sel c"restoreGraphicsState") [])
-    (set! (.geometry-dirty s) false))
-  0)
-
-(defn paint-ink [(ctx (ptr i8)) (ink Ink)] (-> i64)
-  (CGContextSaveGState ctx)
-  (when (!= (.clip ink) (nil))
-    (CGContextAddPath ctx (.clip ink))
-    (CGContextEOClip ctx)
-    0)
-  (if (= (.kind ink) 1)
-      (do (fill ctx (.color ink)) (CGContextFillRect ctx (cgrect (.x ink) (.y ink) (.width ink) (.height ink))) 0)
-      (draw-ink ctx ink))
-  (CGContextRestoreGState ctx)
+    (CGContextRestoreGState c)
+    (CGContextRestoreGState h)
+    (CGContextRestoreGState m))
   0)
 
 ;;; Deterministic fibers use integer mixing, so material variation is stationary
@@ -165,11 +272,10 @@
 (defn smooth-unit [(value f64)] (-> f64)
   (let [v (clamp value 0.0 1.0)] (* (* v v) (- 3.0 (* 2.0 v)))))
 
-;;; Each worker exclusively owns an interleaved set of output rows. All scene
-;;; buffers are immutable until every worker has joined; no shared pixel writes.
-(defn shade-worker [(argument (ptr i8))] (-> (ptr i8))
+;;; Tile shading reads immutable scene buffers. The row-band worker owns all
+;;; output stores until the completion barrier returns control to the UI thread.
+(defn shade-tile [(argument (ptr i8)) (worker u64)] (-> i64)
   (let [s (scene)
-        worker (cast i64 argument)
         w (.width s)
         h (.height s)
         scale (.scale s)
@@ -177,62 +283,176 @@
         grain (.grain s)
         heights (CGBitmapContextGetData (.height-context s))
         colors (CGBitmapContextGetData (.color-context s))
-        materials (CGBitmapContextGetData (.material-context s))
         output (CGBitmapContextGetData (.output-context s))
-        (mut y) worker]
-    (while (< (load y) h)
-      (for [x 0 w]
-        (let [y0 (load y)
-              pos (+ (* y0 w) x)
-              rgba (* pos 4)
-              z (* (height-at heights x y0 w h) depth)
-              lx (- (.light-x s) (/ (cast f64 x) scale))
-              ly (- (.light-y s) (/ (cast f64 y0) scale))
-              horizontal (sqrt (+ (+ (* lx lx) (* ly ly)) 0.001))
-              norm (sqrt (+ (* horizontal horizontal) (* (.elevation s) (.elevation s))))
-              ux (/ lx horizontal)
-              uy (/ ly horizontal)
-              slope (/ (.elevation s) horizontal)
-              reach (clamp (/ (* 64.0 depth) slope) 1.0 180.0)
-              (mut visibility) 1.0]
-          (for [step 1 33]
-            (let [d (+ 0.6 (* reach (/ (cast f64 (* step step)) 1024.0)))
-                  sx (cast i64 (+ (cast f64 x) (* (* ux d) scale)))
-                  sy (cast i64 (+ (cast f64 y0) (* (* uy d) scale)))
-                  obstacle (* (height-at heights sx sy w h) depth)
-                  gap (- (+ z (* d slope)) obstacle)
-                  penumbra (+ 0.5 (* d 0.19))
-                  v (smooth-unit (/ (+ gap penumbra) (* 2.0 penumbra)))]
-              (when (and (> obstacle (+ z 0.125)) (< v (load visibility))) (set! visibility v))))
-          (let [dx (* (- (height-at heights (+ x 1) y0 w h) (height-at heights (- x 1) y0 w h)) depth)
-                dy (* (- (height-at heights x (+ y0 1) w h) (height-at heights x (- y0 1) w h)) depth)
-                n (sqrt (+ 1.0 (+ (* dx dx) (* dy dy))))
-                diffuse
-                  (+ 0.80 (* 0.20 (clamp (/ (+ (- 0.0 (+ (* dx lx) (* dy ly))) (.elevation s)) (* n norm)) 0.0 1.0)))
-                rough (* grain (/ (cast f64 (load (index materials rgba))) 255.0))
-                fiber (/ (cast f64 (load (index materials (+ rgba 1)))) 255.0)
-                seed (cast i64 (load (index materials (+ rgba 2))))
-                pulp (grain-hash x y0 seed)
-                strands (grain-hash (/ x 7) y0 seed)
-                cloud (grain-hash (/ x 37) (/ y0 37) seed)
-                texture (* rough (+ (* pulp 0.10) (+ (* strands (* fiber 0.07)) (* cloud 0.018))))
-                shade (* 1.07 (+ (* diffuse (+ 0.53 (* 0.47 (load visibility)))) texture))]
-            (for [channel 0 3]
-              (set! (index output (+ rgba channel))
-                    (cast u8 (clamp (* (cast f64 (load (index colors (+ rgba channel)))) shade) 0.0 255.0))))
-            (set! (index output (+ rgba 3)) (cast u8 255)))))
-      (set! y (+ (load y) 8))))
-  (nil))
+        region (.bounds (damage/cache))
+        all (damage/light-changed)
+        padding (+ (* 181.0 scale) 2.0)
+        left (if all 0 (cast i64 (clamp (- (* (.x region) scale) padding) 0.0 (cast f64 w))))
+        right (if all w (cast i64 (clamp (+ (* (+ (.x region) (.w region)) scale) padding) 0.0 (cast f64 w))))
+        top (if all 0 (cast i64 (clamp (- (* (.y region) scale) padding) 0.0 (cast f64 h))))
+        bottom (if all h (cast i64 (clamp (+ (* (+ (.y region) (.h region)) scale) padding) 0.0 (cast f64 h))))
+        tile-x (* (% (cast i64 worker) (.width (height-tiles))) 16)
+        tile-y (* (/ (cast i64 worker) (.width (height-tiles))) 16)
+        tile-left (if (> left tile-x) (* (/ left 4) 4) tile-x)
+        tile-right
+          (if (< right (+ tile-x 16)) (if (< (* (/ (+ right 3) 4) 4) w) (* (/ (+ right 3) 4) 4) w) (+ tile-x 16))
+        (mut y) (if (> top tile-y) top tile-y)
+        end (if (< bottom (+ tile-y 16)) bottom (+ tile-y 16))
+        local-max (if (and (< tile-left tile-right) (< (load y) end)) (* (footprint-maximum tile-x tile-y) depth) 0.0)]
+
+    (while (< (load y) end)
+      (let [(mut x) tile-left]
+        (while (< (+ (load x) 3) tile-right)
+          (shade-four (load x) (load y) local-max heights colors output)
+          (set! x (+ (load x) 4)))
+        (while (< (load x) tile-right)
+          (shade-pixel (load x) (load y) local-max heights colors output)
+          (set! x (+ (load x) 1))))
+      (set! y (+ (load y) 1))))
+  0)
+
+(defn shadow [(x i64) (y i64) (heights (ptr u8)) (maximum f64)] (-> f64)
+  (let [s (scene)
+        w (.width s)
+        h (.height s)
+        scale (.scale s)
+        depth (.depth s)
+        z (* (height-at heights x y w h) depth)
+        (mut visibility) 1.0]
+    (when (< (+ z 0.125) maximum)
+      (let [lx (- (.light-x s) (/ (cast f64 x) scale))
+            ly (- (.light-y s) (/ (cast f64 y) scale))
+            horizontal (sqrt (+ (+ (* lx lx) (* ly ly)) 0.001))
+            ux (/ lx horizontal)
+            uy (/ ly horizontal)
+            slope (/ (.elevation s) horizontal)
+            reach (clamp (/ (* 64.0 depth) slope) 1.0 180.0)]
+        (for [step 1 33]
+          (let [d (+ 0.6 (* reach (/ (cast f64 (* step step)) 1024.0)))]
+            (when (and (> slope 0.19) (>= (- (+ z (* d slope)) maximum) (+ 0.5 (* d 0.19)))) (break))
+            (let [sx (cast i64 (+ (cast f64 x) (* (* ux d) scale)))
+                  sy (cast i64 (+ (cast f64 y) (* (* uy d) scale)))
+                  obstacle (* (height-at heights sx sy w h) depth)]
+              (when (> obstacle (+ z 0.125))
+                (let [gap (- (+ z (* d slope)) obstacle)
+                      penumbra (+ 0.5 (* d 0.19))
+                      value (smooth-unit (/ (+ gap penumbra) (* 2.0 penumbra)))]
+                  (when (< value (load visibility)) (set! visibility value))
+                  (when (<= (load visibility) 0.0) (break)))))))))
+    (load visibility)))
+
+(defn heights4 [(data (ptr u8)) (x (vec f32 4)) (y (vec f32 4))] (-> (vec f32 4))
+  (v/mul (v/heights data x y (.width (scene)) (.height (scene))) (v/splat 0.25098039215686274)))
+
+(defn shadow4 [(x (vec f32 4))
+               (y (vec f32 4))
+               (heights (ptr u8))
+               (maximum f64)
+               (z (vec f32 4))
+               (lx (vec f32 4))
+               (ly (vec f32 4))
+               (horizontal2 (vec f32 4))] (-> (vec f32 4))
+  (let [s (scene)
+        depth (v/splat (.depth s))
+        threshold (v/add z (v/splat 0.125))
+        (mut active) (v/greater (v/splat maximum) threshold)
+        (mut visibility) (v/splat 1.0)]
+    (when (v/any (load active))
+      (let [horizontal (v/root horizontal2)
+            ux (v/div lx horizontal)
+            uy (v/div ly horizontal)
+            slope (v/div (v/splat (.elevation s)) horizontal)
+            reach (v/limit (v/div (v/mul (v/splat 64.0) depth) slope) 1.0 180.0)]
+        (for [step 1 33]
+          (let [d (v/add (v/splat 0.6) (v/mul reach (v/splat (/ (cast f64 (* step step)) 1024.0))))
+                penumbra (v/add (v/splat 0.5) (v/mul d (v/splat 0.19)))
+                ray-z (v/add z (v/mul d slope))
+                possible (v/greater (v/add (v/splat maximum) penumbra) ray-z)]
+            (set! active (v/both (load active) possible))
+            (when (not (v/any (load active))) (break))
+            (let [sx (v/add x (v/mul (v/mul ux d) (v/splat (.scale s))))
+                  sy (v/add y (v/mul (v/mul uy d) (v/splat (.scale s))))
+                  obstacle (v/mul (heights4 heights sx sy) depth)
+                  hit (v/both (load active) (v/greater obstacle threshold))]
+              (when (v/any hit)
+                (let [gap (v/sub ray-z obstacle)
+                      unit (v/limit (v/div (v/add gap penumbra) (v/mul (v/splat 2.0) penumbra)) 0.0 1.0)
+                      value (v/mul (v/mul unit unit) (v/sub (v/splat 3.0) (v/mul (v/splat 2.0) unit)))]
+                  (set! visibility (v/minimum (load visibility) (v/choose hit value (v/splat 1.0)))))
+                0)))))
+      0)
+    (load visibility)))
+
+(defn shade-four [(x i64) (y i64) (maximum f64) (heights (ptr u8)) (colors (ptr u8)) (output (ptr u8))] (-> i64)
+  (let [s (scene)
+        pos (+ (* y (.width s)) x)
+        xs (v/coordinates x)
+        ys (v/splat (cast f64 y))
+        depth (v/splat (.depth s))
+        elevation (v/splat (.elevation s))
+        lx (v/sub (v/splat (.light-x s)) (v/div xs (v/splat (.scale s))))
+        ly (v/splat (- (.light-y s) (/ (cast f64 y) (.scale s))))
+        horizontal2 (v/add (v/add (v/mul lx lx) (v/mul ly ly)) (v/splat 0.001))
+        norm (v/root (v/add horizontal2 (v/mul elevation elevation)))
+        dx (v/mul (v/read-floats (index (.dx (height-tiles)) pos)) depth)
+        dy (v/mul (v/read-floats (index (.dy (height-tiles)) pos)) depth)
+        n (v/root (v/add (v/splat 1.0) (v/add (v/mul dx dx) (v/mul dy dy))))
+        diffuse
+          (v/add (v/splat 0.80)
+                 (v/mul (v/splat 0.20)
+                        (v/limit (v/div (v/add (v/sub (v/splat 0.0) (v/add (v/mul dx lx) (v/mul dy ly))) elevation)
+                                        (v/mul n norm))
+                                 0.0
+                                 1.0)))
+        visibility
+          (shadow4 xs
+                   ys
+                   heights
+                   maximum
+                   (v/mul (v/mul (v/read-heights (index heights pos)) (v/splat 0.25098039215686274)) depth)
+                   lx
+                   ly
+                   horizontal2)
+        texture (v/mul (v/splat (.grain s)) (v/read-texture (index (.texture (height-tiles)) pos)))
+        shade
+          (v/mul (v/splat 1.07)
+                 (v/add (v/mul diffuse (v/add (v/splat 0.53) (v/mul (v/splat 0.47) visibility))) texture))]
+    (v/write-colors (index colors (* pos 4)) (index output (* pos 4)) shade)))
+
+;;; Odd-width canvas tails use the scalar form without overreading.
+(defn shade-pixel [(x i64) (y i64) (maximum f64) (heights (ptr u8)) (colors (ptr u8)) (output (ptr u8))] (-> i64)
+  (let [s (scene)
+        w (.width s)
+        h (.height s)
+        pos (+ (* y w) x)
+        lx (- (.light-x s) (/ (cast f64 x) (.scale s)))
+        ly (- (.light-y s) (/ (cast f64 y) (.scale s)))
+        horizontal (sqrt (+ (+ (* lx lx) (* ly ly)) 0.001))
+        norm (sqrt (+ (* horizontal horizontal) (* (.elevation s) (.elevation s))))
+        dx (* (- (height-at heights (+ x 1) y w h) (height-at heights (- x 1) y w h)) (.depth s))
+        dy (* (- (height-at heights x (+ y 1) w h) (height-at heights x (- y 1) w h)) (.depth s))
+        n (sqrt (+ 1.0 (+ (* dx dx) (* dy dy))))
+        diffuse (+ 0.80 (* 0.20 (clamp (/ (+ (- 0.0 (+ (* dx lx) (* dy ly))) (.elevation s)) (* n norm)) 0.0 1.0)))
+        texture (* (.grain s) (load (index (.texture (height-tiles)) pos)))
+        shade (* 1.07 (+ (* diffuse (+ 0.53 (* 0.47 (shadow x y heights maximum)))) texture))]
+    (for [channel 0 3]
+      (set! (index output (+ (* pos 4) channel))
+            (cast u8 (clamp (* (cast f64 (load (index colors (+ (* pos 4) channel)))) shade) 0.0 255.0))))
+    (set! (index output (+ (* pos 4) 3)) (cast u8 255)))
+  0)
 
 (defn render [] (-> i64)
-  (when (.geometry-dirty (scene)) (rasterize))
-  (let [(mut threads) (zeroed (array thread/Thread 8))
-        (mut started) (zeroed (array bool 8))]
-    (for [i 0 8]
-      (let [status (thread/thread-spawn (index threads i) (fnptr-of shade-worker) (cast (ptr i8) i))]
-        (set! (index started i) (= status (cast i32 0)))
-        (when (!= status (cast i32 0)) (shade-worker (cast (ptr i8) i)) 0)))
-    (for [i 0 8] (when (load (index started i)) (thread/thread-join (index threads i)) 0)))
+  (render-frame true))
+
+(defn render-frame [(readback bool)] (-> i64)
+  (when (.geometry-dirty (scene)) (rasterize-frame readback))
+  (when (or (damage/light-changed) (> (.w (.bounds (damage/cache))) 0.0))
+    (if (.available (gpu/gpu))
+        (gpu/render (.bounds (damage/cache)) (damage/light-changed) false)
+        (workers/apply (cast u64 (.height (height-tiles))) (nil) (fnptr-of shade-worker)))
+    (damage/remember-light)
+    (set! (.bounds (damage/cache)) (cgrect 0.0 0.0 0.0 0.0)))
+  (when (and readback (.available (gpu/gpu))) (gpu/read-output))
   (set! (.dirty (scene)) false)
   0)
 
@@ -247,3 +467,149 @@
             (CGImageRelease image)
             (CFRelease dest)
             (if ok 0 1))))))
+
+;;; Maximum heights provide a conservative shadow rejection hierarchy. A tile
+;;; whose entire possible shadow footprint is no higher needs no ray samples.
+(defn build-height-tiles [] (-> i64)
+  (let [s (scene)
+        tiles (height-tiles)
+        heights (CGBitmapContextGetData (.height-context s))
+        region (.bounds (damage/cache))
+        scale (.scale s)
+        left (cast i64 (clamp (/ (* (.x region) scale) 16.0) 0.0 (cast f64 (.width tiles))))
+        right (cast i64 (clamp (+ (/ (* (+ (.x region) (.w region)) scale) 16.0) 1.0) 0.0 (cast f64 (.width tiles))))
+        top (cast i64 (clamp (/ (* (.y region) scale) 16.0) 0.0 (cast f64 (.height tiles))))
+        bottom (cast i64 (clamp (+ (/ (* (+ (.y region) (.h region)) scale) 16.0) 1.0) 0.0 (cast f64 (.height tiles))))]
+    (for [ty top bottom]
+      (for [tx left right]
+        (let [(mut maximum) (cast u8 0)
+              (mut minimum) (cast u8 255)
+              right (if (< (+ (* tx 16) 16) (.width s)) (+ (* tx 16) 16) (.width s))
+              bottom (if (< (+ (* ty 16) 16) (.height s)) (+ (* ty 16) 16) (.height s))]
+          (for [y (* ty 16) bottom]
+            (for [x (* tx 16) right]
+              (let [value (load (index heights (+ (* y (.width s)) x)))]
+                (when (> value (load maximum)) (set! maximum value))
+                (when (< value (load minimum)) (set! minimum value)))))
+          (set! (index (.minimum tiles) (+ (* ty (.width tiles)) tx)) (load minimum))
+          (set! (index (.data tiles) (+ (* ty (.width tiles)) tx)) (load maximum))))))
+  0)
+
+(defn footprint-query [(x i64) (y i64) (distance f64)] (-> f64)
+  (let [s (scene)
+        tiles (height-tiles)
+        lx (* (.light-x s) (.scale s))
+        ly (* (.light-y s) (.scale s))
+        dxmax (+ (fabs (- lx (+ (cast f64 x) 8.0))) 8.0)
+        dymax (+ (fabs (- ly (+ (cast f64 y) 8.0))) 8.0)
+        dxmin (clamp (- dxmax 16.0) 0.0 dxmax)
+        dymin (clamp (- dymax 16.0) 0.0 dymax)
+        reach-x (+ (* (* distance (.scale s)) (/ dxmax (sqrt (+ (* dxmax dxmax) (* dymin dymin))))) 2.0)
+        reach-y (+ (* (* distance (.scale s)) (/ dymax (sqrt (+ (* dymax dymax) (* dxmin dxmin))))) 2.0)
+        left (if (< lx (cast f64 (+ x 16))) (- (cast f64 x) reach-x) (cast f64 x))
+        right (if (> lx (cast f64 x)) (+ (cast f64 (+ x 16)) reach-x) (cast f64 (+ x 16)))
+        top (if (< ly (cast f64 (+ y 16))) (- (cast f64 y) reach-y) (cast f64 y))
+        bottom (if (> ly (cast f64 y)) (+ (cast f64 (+ y 16)) reach-y) (cast f64 (+ y 16)))
+        tx0 (cast i64 (clamp (/ left 16.0) 0.0 (cast f64 (- (.width tiles) 1))))
+        tx1 (cast i64 (clamp (/ right 16.0) 0.0 (cast f64 (- (.width tiles) 1))))
+        ty0 (cast i64 (clamp (/ top 16.0) 0.0 (cast f64 (- (.height tiles) 1))))
+        ty1 (cast i64 (clamp (/ bottom 16.0) 0.0 (cast f64 (- (.height tiles) 1))))
+        (mut maximum) (cast u8 0)]
+    (for [ty ty0 (+ ty1 1)]
+      (for [tx tx0 (+ tx1 1)]
+        (let [value (load (index (.data tiles) (+ (* ty (.width tiles)) tx)))]
+          (when (> value (load maximum)) (set! maximum value)))))
+    (* (cast f64 (load maximum)) 0.25098039215686274)))
+
+(defn footprint-maximum [(x i64) (y i64)] (-> f64)
+  (let [s (scene)
+        tiles (height-tiles)
+        maximum (footprint-query x y 180.6)
+        minimum
+          (* (cast f64 (load (index (.minimum tiles) (+ (* (/ y 16) (.width tiles)) (/ x 16))))) 0.25098039215686274)
+        dx (+ (fabs (- (.light-x s) (/ (+ (cast f64 x) 8.0) (.scale s)))) (/ 8.0 (.scale s)))
+        dy (+ (fabs (- (.light-y s) (/ (+ (cast f64 y) 8.0) (.scale s)))) (/ 8.0 (.scale s)))
+        slope (/ (.elevation s) (sqrt (+ (+ (* dx dx) (* dy dy)) 0.001)))]
+    (if (> slope 0.19)
+        (footprint-query x y (clamp (/ (+ (* (- maximum minimum) (.depth s)) 0.5) (- slope 0.19)) 0.0 180.6))
+        maximum)))
+
+(defn prepare-texture [(argument (ptr i8)) (worker u64)] (-> i64)
+  (let [s (scene)
+        tiles (height-tiles)
+        region (.bounds (damage/cache))
+        scale (.scale s)
+        w (.width s)
+        h (.height s)
+        x0 (* (% (cast i64 worker) (.width tiles)) 16)
+        y0 (* (/ (cast i64 worker) (.width tiles)) 16)
+        right (if (< (+ x0 16) w) (+ x0 16) w)
+        bottom (if (< (+ y0 16) h) (+ y0 16) h)
+        materials (CGBitmapContextGetData (.material-context s))
+        heights (CGBitmapContextGetData (.height-context s))]
+    (when (intersects (cgrect (/ (cast f64 x0) scale) (/ (cast f64 y0) scale) (/ 16.0 scale) (/ 16.0 scale))
+                      (cgrect (- (.x region) 1.0) (- (.y region) 1.0) (+ (.w region) 2.0) (+ (.h region) 2.0)))
+      (for [y y0 bottom]
+        (for [x x0 right]
+          (let [pos (+ (* y w) x)
+                rgba (* pos 4)
+                rough (/ (cast f64 (load (index materials rgba))) 255.0)
+                fiber (/ (cast f64 (load (index materials (+ rgba 1)))) 255.0)
+                seed (cast i64 (load (index materials (+ rgba 2))))
+                pulp (grain-hash x y seed)
+                strands (grain-hash (/ x 7) y seed)
+                cloud (grain-hash (/ x 37) (/ y 37) seed)]
+            (set! (index (.dx tiles) pos)
+                  (cast f32 (- (height-at heights (+ x 1) y w h) (height-at heights (- x 1) y w h))))
+            (set! (index (.dy tiles) pos)
+                  (cast f32 (- (height-at heights x (+ y 1) w h) (height-at heights x (- y 1) w h))))
+            (set! (index (.texture tiles) pos)
+                  (* rough (+ (* pulp 0.10) (+ (* strands (* fiber 0.07)) (* cloud 0.018))))))))))
+  0)
+
+;;; A worker owns a complete band of rows. Neighboring tile columns can share
+;;; cache lines on a bitmap with an unaligned row stride; keeping them on the
+;;; same worker avoids cache-line ping-pong during packed pixel stores.
+(defn shade-worker [(argument (ptr i8)) (row u64)] (-> i64)
+  (for [x 0 (.width (height-tiles))]
+    (shade-tile argument (cast u64 (+ (* (cast i64 row) (.width (height-tiles))) x))))
+  0)
+
+(defn prepare-worker [(argument (ptr i8)) (row u64)] (-> i64)
+  (let [s (scene)
+        tiles (height-tiles)
+        region (.bounds (damage/cache))
+        scale (.scale s)
+        y (cast i64 row)
+        left (cast i64 (clamp (/ (- (* (.x region) scale) 2.0) 16.0) 0.0 (cast f64 (.width tiles))))
+        right
+          (cast i64
+                (clamp (+ (/ (+ (* (+ (.x region) (.w region)) scale) 2.0) 16.0) 1.0) 0.0 (cast f64 (.width tiles))))]
+    (when (and (< (* (cast f64 y) 16.0) (+ (* (+ (.y region) (.h region)) scale) 2.0))
+               (> (* (cast f64 (+ y 1)) 16.0) (- (* (.y region) scale) 2.0)))
+      (for [x left right]
+        (prepare-texture argument (cast u64 (+ (* y (.width tiles)) x))))))
+  0)
+
+;;; Reuse native text measurement when its layout inputs are unchanged. Text,
+;;; wrapping width, height, font, and size all participate; placement translates
+;;; the cached glyph bounds. This cache is bounded by the preceding scene.
+(defn measured-ink-bounds [(ink Ink)] (-> CGRect)
+  (let [c (damage/cache)
+        i
+          (if (and (.valid c) (>= (.order ink) 0) (< (.order ink) (al/al-len [i64] (.ink-orders c))))
+              (al/al-get [i64] (.ink-orders c) (.order ink))
+              -1)]
+    (if (>= i 0)
+        (let [previous (al/al-elem [Ink] (field c inks) i)]
+          (if (and (= (.kind previous) (.kind ink))
+                   (= (.font previous) (.font ink))
+                   (primitive/fcmp-eq (.width previous) (.width ink))
+                   (primitive/fcmp-eq (.height previous) (.height ink))
+                   (primitive/fcmp-eq (.size previous) (.size ink))
+                   (or (= (.text previous) (.text ink))
+                       (msg bool (.text previous) (sel c"isEqualToString:") [(ptr i8)] (.text ink))))
+              (let [r (.bounds previous)]
+                (cgrect (+ (.x r) (- (.x ink) (.x previous))) (+ (.y r) (- (.y ink) (.y previous))) (.w r) (.h r)))
+              (ink-bounds ink)))
+        (ink-bounds ink))))

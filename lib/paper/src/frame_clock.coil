@@ -1,0 +1,74 @@
+(module paper.frame-clock)
+(import "coil.primitive" :as p)
+(import "paper.objc" :use *)
+(import "paper.ffi" :use *)
+(import "paper.gpu" :as gpu)
+
+(defstruct RateRange [(minimum f32) (maximum f32) (preferred f32)])
+
+(defstruct Clock
+  [(link (ptr i8))
+   (target (ptr i8))
+   (class (ptr i8))
+   (callback (fnptr c [] i64))
+   (timestamp f64)
+   (duration f64)
+   (frames i64)])
+
+(defn clock [] (-> (ptr Clock))
+  (p/alloc-static Clock))
+
+(defn tick [(object (ptr i8)) (selector (ptr i8)) (link (ptr i8))] (-> void)
+  (let [c (clock)]
+    (set! (.timestamp c) (msg f64 link (sel c"targetTimestamp") []))
+    (set! (.duration c) (- (.timestamp c) (msg f64 link (sel c"timestamp") [])))
+    (set! (.frames c) (+ (.frames c) 1))
+    (set! (.presentation-time (gpu/gpu)) (+ (.timestamp c) (.duration c)))
+    (call-ptr (.callback c))))
+
+(defn stop [] (-> i64)
+  (let [c (clock)]
+    (msg i64 (.link c) (sel c"invalidate") [])
+    (release (.link c))
+    (release (.target c))
+    (set! (.link c) (nil))
+    (set! (.target c) (nil)))
+  0)
+
+(defn start [(view (ptr i8)) (callback (fnptr c [] i64)) (fps f32)] (-> i64)
+  (stop)
+  (let [c (clock)]
+    (when (= (.class c) (nil))
+      (set! (.class c) (objc_allocateClassPair (class c"NSObject") c"CoilPaperFrameClock" 0))
+      (assert (class_addMethod (.class c) (sel c"frame:") (cast (ptr i8) (fnptr-of tick)) c"v@:@"))
+      (objc_registerClassPair (.class c))
+      0)
+    (set! (.callback c) callback)
+    (set! (.target c) (msg (ptr i8) (.class c) (sel c"new") []))
+    (set! (.link c)
+          (retain (msg (ptr i8)
+                       view
+                       (sel c"displayLinkWithTarget:selector:")
+                       [(ptr i8) (ptr i8)]
+                       (.target c)
+                       (sel c"frame:"))))
+    (assert (!= (.link c) (nil)))
+    (msg i64
+         (.link c)
+         (sel c"setPreferredFrameRateRange:")
+         [RateRange]
+         (RateRange
+           :minimum fps
+           :maximum fps
+           :preferred fps))
+    (msg i64
+         (.link c)
+         (sel c"addToRunLoop:forMode:")
+         [(ptr i8) (ptr i8)]
+         (msg (ptr i8) (class c"NSRunLoop") (sel c"mainRunLoop") [])
+         (constant-object c"NSRunLoopCommonModes")))
+  0)
+
+(defn preferred-rate [] (-> f32)
+  (let [value (gpu/getenv c"PAPER_FPS")]
+    (if (and (!= value (nil)) (= (strcmp value c"120") 0)) 120.0 60.0)))

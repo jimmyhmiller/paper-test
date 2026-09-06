@@ -1,0 +1,69 @@
+(module papercut.performance)
+(import "papercut.main" :as demo)
+(import "papercut.state" :as state)
+(import "paper.scene" :as scene)
+(import "paper.render" :as render)
+(import "paper.workers" :as workers)
+(import "paper.gpu" :as gpu)
+(import "paper.platform" :as host)
+(import "paper.objc" :as o)
+(import "paper.ffi" :use *)
+
+(extern printf :cc c [(ptr i8) ...] (-> i32))
+
+;;; Deterministic full-resolution frames, excluding startup and PNG encoding.
+;;; CSV contains individual frames so percentiles and missed budgets are visible.
+(defn main [] (-> i64)
+  (let [pool (o/new c"NSAutoreleasePool")]
+    (scene/init)
+    (set! (.headless (host/host)) true)
+    (render/setup)
+    (state/initialize 0)
+    (printf c"app,scenario,frame,build_ms,raster_ms,shade_ms,gpu_ms,total_ms\n")
+    (for [app 0 4]
+      (set! (.app (state/state)) app)
+      (for [scenario 0 7]
+        (set! (.app (state/state)) app)
+        (set! (.light-x (state/state)) 200.0)
+        (set! (.light-y (state/state)) -160.0)
+        (set! (.elevation (state/state)) 680.0)
+        (set! (.depth (state/state)) 0.82)
+        (set! (.grain (state/state)) 1.0)
+        (set! (.hole-x (state/state)) 1332.0)
+        (set! (.hover (host/host)) 0)
+        (for [frame 0 24]
+          (let [frame-pool (o/new c"NSAutoreleasePool")
+                t (CACurrentMediaTime)]
+            (case scenario 0
+                  (set! (.light-x (state/state)) (+ -600.0 (* (cast f64 frame) 130.0))) 1
+                  (set! (.hole-x (state/state)) (+ 1276.0 (* (cast f64 (% frame 20)) 5.0))) 2
+                  (set! (.hover (host/host)) (if (= (% frame 2) 0) 19 20)) 3
+                  (do
+                    (set! (.elevation (state/state)) 80.0)
+                    (set! (.depth (state/state)) 2.0)
+                    (set! (.light-x (state/state)) (+ -600.0 (* (cast f64 frame) 130.0))))
+                    4
+                  (set! (.depth (state/state)) (* (cast f64 (% frame 21)) 0.1)) 5
+                  (set! (.grain (state/state)) (* (cast f64 (% frame 21)) 0.1)) (set! (.app (state/state)) (% frame 4)))
+            (demo/draw)
+            (let [built (CACurrentMediaTime)]
+              (render/rasterize-frame false)
+              (let [rasterized (CACurrentMediaTime)]
+                (render/render-frame false)
+                (gpu/synchronize)
+                (let [shaded (CACurrentMediaTime)
+                      done (CACurrentMediaTime)]
+                  (when (>= frame 4)
+                    (printf c"%lld,%lld,%lld,%.4f,%.4f,%.4f,%.4f,%.4f\n"
+                            app
+                            scenario
+                            frame
+                            (* 1000.0 (- built t))
+                            (* 1000.0 (- rasterized built))
+                            (* 1000.0 (- shaded rasterized))
+                            (.gpu-ms (gpu/gpu))
+                            (* 1000.0 (- done t)))))))
+            (o/release frame-pool)))))
+    (workers/stop)
+    (o/release pool))
+  0)

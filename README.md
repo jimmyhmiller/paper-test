@@ -4,7 +4,7 @@ A native macOS UI library written in Coil. Compose colored sheets at different e
 
 ## Run
 
-Requires macOS 13 or newer, the installed Coil compiler, and Apple's command-line developer tools. Tested on this Apple Silicon Mac.
+Requires macOS 14 or newer, the installed Coil compiler, and Apple's command-line developer tools. Tested on this Apple Silicon Mac.
 
 ```sh
 coil build
@@ -106,16 +106,20 @@ Call `paper_focus id` to focus a control after the next draw, such as the name f
 
 ## Rendering architecture and limits
 
-All implementation source is Coil, including the Objective-C message bridge, application event loop, audio synthesis, and packaging tool. Coil calls the system AppKit, CoreGraphics, and AVFoundation frameworks through FFI. There are no authored C, C++, Objective-C, JavaScript, or Metal shader implementations.
+The application, Objective-C bindings, event loop, geometry, native text layout, mask cache, audio synthesis, and packaging tool are Coil. Metal shaders perform GPU composition, material preparation, lighting, and presentation. There is no authored C, C++, Objective-C, Swift, or JavaScript runtime bridge. The shader source is embedded by Coil; no separate shader build step is required.
 
-The renderer rasterizes paths into pigment, height, and material buffers. Eight Coil worker threads calculate surface normals, paper grain, and occlusion toward a movable point light. The application displays the resulting image through a native layer.
+CoreGraphics rasterizes reusable path and glyph masks. Metal composites these masks into pigment, height, and material textures, then computes full-resolution grain and 32-sample shadows. A conservative maximum-height hierarchy skips shadow work that cannot affect the image. Exact retained commands identify damage; native text measurements are reused by submission order. Scene construction sorts once after submission instead of repeatedly shifting growing arrays.
 
-This is a top-down 2.5D height-field renderer. It supports stacked cutouts and depth-aware shadows, but not an orbiting camera, folded paper meshes, transparency, or multiple lights. Heights use an eight-bit buffer; soft shadows use 32 samples with a bounded reach. Extreme low light angles can show sampling artifacts. Rendering is CPU-based and redraws on demand; this release does not promise 60 fps animation. Native text fields remain above the paper image.
+A native display clock schedules presentation through CAMetalLayer. Composition, lighting, and presentation share one command buffer, with three drawables limiting frames in flight. Interactive frames stay on the GPU. Snapshots explicitly synchronize and read back their pixels. A Coil SIMD worker-pool renderer remains available as a fallback (`PAPER_RENDERER=cpu`).
+
+The default target is 60 Hz. On a compatible display, `PAPER_FPS=120 build/release/papercut` requests 120 Hz. Native tests on the M2 Max verified 60 Hz presentation with 1,296 moving sheets at 5120 × 2880; the 4K stress scene also sustained 120 Hz in the shorter run. See [measurements, reproduction commands, and limits](PERFORMANCE.md). These measurements describe the tested hardware and workloads, not a guarantee for arbitrary scenes or devices.
+
+This is a top-down 2.5D height-field renderer. It supports stacked cutouts and depth-aware shadows, but not an orbiting camera, folded paper meshes, transparency, or multiple lights. Heights use eight bits; shadows use 32 samples with a bounded reach. Extreme low light angles can show sampling artifacts. Rendering redraws on demand, and native text fields remain above the paper image.
 
 The runtime currently owns one window and one global scene. It does not provide virtualized lists, general scroll containers, automatic content-driven reflow, application-level undo/redo, or a visual interface editor. Native text editing does support undo/redo. Designers compose interfaces in Coil.
 
 ## Verification and project notes
 
-`coil verify` checks formatting, lint, compilation, and 32 tests. Tests cover cutout pixels, cuts crossing outside edges, light reversal, zero-depth shadows, ink occlusion, nested elevation scopes, layout bounds, disabled controls, focus order, choice navigation, pagination boundaries, and native decoding of the three generated audio tracks. I also checked the four examples through the native UI and reviewed their rendered screenshots.
+`coil verify` checks formatting, lint, compilation, and 41 tests. Performance regressions cover incremental/full-frame agreement, odd image dimensions, lighting invalidation, accumulated raster damage, worker-pool completion and restart, empty masks, cached readback, fractional mask placement, and viewport clipping. The accelerated GPU shadow result is compared byte-for-byte with all 32 original samples. Tests cover cutout pixels, cuts crossing outside edges, light reversal, zero-depth shadows, ink occlusion, nested elevation scopes, layout bounds, disabled controls, focus order, choice navigation, pagination boundaries, and native decoding of the three generated audio tracks. I also checked the four examples through the native UI and reviewed their rendered screenshots.
 
 The project index is [paper-test](pad://paper-test). It links the implementation notes and screenshots. Compiler integration issues are recorded in [coil-bugs](pad://coil-bugs): local dependency native-link propagation and void-returning function-pointer casts. The Objective-C bridge follows the existing Jim rewrite's ignored-return convention for void selectors pending that compiler fix.

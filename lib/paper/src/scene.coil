@@ -19,7 +19,8 @@
    (z f64)
    (order i64)
    (kind i64)
-   (clip (ptr i8))])
+   (clip (ptr i8))
+   (bounds CGRect)])
 
 (defstruct Hit
   [(id i64)
@@ -29,7 +30,8 @@
    (value f64)
    (z f64)
    (path (ptr i8))
-   (enabled bool) (group i64)])
+   (enabled bool)
+   (group i64)])
 
 (defstruct FocusTarget [(id i64) (native bool)])
 
@@ -151,31 +153,50 @@
       0))
   0)
 
-;;; Stable insertion maintains elevation order and painter order within a sheet.
+(extern qsort :cc c [(ptr i8) u64 u64 (fnptr c [(ptr i8) (ptr i8)] i32)] (-> void))
+
+(defn compare-sheet [(a (ptr i8)) (b (ptr i8))] (-> i32)
+  (let [x (cast (ptr Sheet) a)
+        y (cast (ptr Sheet) b)]
+    (cond (< (.z x) (.z y)) -1 (> (.z x) (.z y)) 1 (< (.order x) (.order y)) -1 (> (.order x) (.order y)) 1 :else 0)))
+
+(defn compare-ink [(a (ptr i8)) (b (ptr i8))] (-> i32)
+  (let [x (cast (ptr Ink) a)
+        y (cast (ptr Ink) b)]
+    (cond (< (.z x) (.z y)) -1 (> (.z x) (.z y)) 1 (< (.order x) (.order y)) -1 (> (.order x) (.order y)) 1 :else 0)))
+
+;;; Sort once after submission. Painter order breaks ties explicitly; building
+;;; a large scene no longer shifts the growing arrays for each added item.
+(defn sort-commands [] (-> i64)
+  (let [s (scene)]
+    (qsort (cast (ptr i8) (.data (.sheets s)))
+           (cast u64 (al/al-len [Sheet] (.sheets s)))
+           (cast u64 (primitive/sizeof Sheet))
+           (fnptr-of compare-sheet))
+    (qsort (cast (ptr i8) (.data (.inks s)))
+           (cast u64 (al/al-len [Ink] (.inks s)))
+           (cast u64 (primitive/sizeof Ink))
+           (fnptr-of compare-ink)))
+  0)
+
 (defn add-sheet [(sheet Sheet)] (-> i64)
-  (let [s (scene)
-        n (al/al-len [Sheet] (.sheets s))
-        (mut i) n]
-    (al/al-push! [Sheet] (mut (.sheets s)) sheet)
-    (while (> (load i) 0)
-      (let [previous (al/al-get [Sheet] (.sheets s) (- (load i) 1))]
-        (if (> (.z previous) (.z sheet))
-            (do (al/al-set! [Sheet] (mut (.sheets s)) (load i) previous) (set! i (- (load i) 1)))
-            (break))))
-    (al/al-set! [Sheet] (mut (.sheets s)) (load i) sheet)))
+  (al/al-push! [Sheet] (mut (.sheets (scene))) sheet))
 
 (defn next-order [] (-> i64)
   (set! (.serial (scene)) (+ (.serial (scene)) 1))
   (.serial (scene)))
 
 (defn add-ink [(ink Ink)] (-> i64)
-  (let [s (scene)
-        n (al/al-len [Ink] (.inks s))
-        (mut i) n]
-    (al/al-push! [Ink] (mut (.inks s)) ink)
-    (while (> (load i) 0)
-      (let [previous (al/al-get [Ink] (.inks s) (- (load i) 1))]
-        (if (> (.z previous) (.z ink))
-            (do (al/al-set! [Ink] (mut (.inks s)) (load i) previous) (set! i (- (load i) 1)))
-            (break))))
-    (al/al-set! [Ink] (mut (.inks s)) (load i) ink)))
+  (al/al-push! [Ink] (mut (.inks (scene))) ink))
+
+;;; Bounding boxes are a conservative rejection test; exact path operations still
+;;; decide intersecting geometry. Empty rectangles never overlap.
+(defn intersects [(a CGRect) (b CGRect)] (-> bool)
+  (and (> (.w a) 0.0)
+       (> (.h a) 0.0)
+       (> (.w b) 0.0)
+       (> (.h b) 0.0)
+       (< (.x a) (+ (.x b) (.w b)))
+       (< (.x b) (+ (.x a) (.w a)))
+       (< (.y a) (+ (.y b) (.h b)))
+       (< (.y b) (+ (.y a) (.h a)))))

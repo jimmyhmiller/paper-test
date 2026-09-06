@@ -1,0 +1,111 @@
+(module paper.paint)
+(import "coil.primitive" :as primitive)
+(import "paper.ffi" :use *)
+(import "paper.objc" :use *)
+(import "paper.scene" :use *)
+(import "paper.geometry" :use [clamp])
+
+(defn channel [(rgb u32) (shift i64)] (-> f64)
+  (/ (cast f64 (& (>> (cast i64 rgb) shift) 255)) 255.0))
+
+(defn fill [(ctx (ptr i8)) (rgb u32)] (-> i64)
+  (CGContextSetRGBFillColor ctx (channel rgb 16) (channel rgb 8) (channel rgb 0) 1.0)
+  0)
+
+(defn ink-attributes [(ink Ink)] (-> (ptr i8))
+  (let [font-name
+          (cond (= (.font ink) 1) c"Georgia"
+                (= (.font ink) 2) c"Menlo"
+                (= (.font ink) 3) c"HelveticaNeue-Medium"
+                :else c"HelveticaNeue")
+        font (msg (ptr i8) (class c"NSFont") (sel c"fontWithName:size:") [(ptr i8) f64] (ns font-name) (.size ink))
+        color
+          (msg (ptr i8)
+               (class c"NSColor")
+               (sel c"colorWithSRGBRed:green:blue:alpha:")
+               [f64 f64 f64 f64]
+               (channel (.color ink) 16)
+               (channel (.color ink) 8)
+               (channel (.color ink) 0)
+               1.0)
+        attrs (new c"NSMutableDictionary")]
+    (msg i64 attrs (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] font (ns c"NSFont"))
+    (msg i64 attrs (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] color (ns c"NSColor"))
+    attrs))
+
+(defn draw-ink [(ctx (ptr i8)) (ink Ink)] (-> i64)
+  (let [attrs (ink-attributes ink)]
+    (if (> (.width ink) 0.0)
+        (msg i64
+             (.text ink)
+             (sel c"drawWithRect:options:attributes:context:")
+             [CGRect u64 (ptr i8) (ptr i8)]
+             (cgrect (.x ink) (.y ink) (.width ink) (.height ink))
+             33
+             attrs
+             (nil))
+        (msg i64
+             (.text ink)
+             (sel c"drawAtPoint:withAttributes:")
+             [CGPoint (ptr i8)]
+             (CGPoint :x (.x ink) :y (.y ink))
+             attrs))
+    (release attrs))
+  0)
+
+;;; Measure native glyph image bounds as well as typographic bounds. Their
+;;; union includes overhangs, fallback fonts, combining marks, and line layout.
+(defn ink-bounds [(ink Ink)] (-> CGRect)
+  (if (= (.kind ink) 1)
+      (cgrect (.x ink) (.y ink) (.width ink) (.height ink))
+      (let [attrs (ink-attributes ink)
+            size
+              (if (> (.width ink) 0.0)
+                  (load (CGSize :w (.width ink) :h (.height ink)))
+                  (msg CGSize (.text ink) (sel c"sizeWithAttributes:") [(ptr i8)] attrs))
+            a
+              (msg CGRect
+                   (.text ink)
+                   (sel c"boundingRectWithSize:options:attributes:context:")
+                   [CGSize u64 (ptr i8) (ptr i8)]
+                   size
+                   33
+                   attrs
+                   (nil))
+            b
+              (msg CGRect
+                   (.text ink)
+                   (sel c"boundingRectWithSize:options:attributes:context:")
+                   [CGSize u64 (ptr i8) (ptr i8)]
+                   size
+                   41
+                   attrs
+                   (nil))
+            x (if (< (.x a) (.x b)) (.x a) (.x b))
+            y (if (< (.y a) (.y b)) (.y a) (.y b))
+            right (if (> (+ (.x a) (.w a)) (+ (.x b) (.w b))) (+ (.x a) (.w a)) (+ (.x b) (.w b)))
+            bottom (if (> (+ (.y a) (.h a)) (+ (.y b) (.h b))) (+ (.y a) (.h a)) (+ (.y b) (.h b)))]
+        (release attrs)
+        (cgrect (- (+ (.x ink) x) 2.0)
+                (- (+ (.y ink) y) 2.0)
+                (+ (- right x) 4.0)
+                (+ (- bottom y) 4.0)))))
+
+;;; Rasterize sheet geometry once. Lighting reads these buffers without mutation.
+(defn paint-ink [(ctx (ptr i8)) (ink Ink)] (-> i64)
+  (if (and (!= (.clip ink) (nil)) (CGPathIsEmpty (.clip ink)))
+      0
+      (paint-visible-ink ctx ink)))
+
+(defn paint-visible-ink [(ctx (ptr i8)) (ink Ink)] (-> i64)
+  (CGContextSaveGState ctx)
+  (CGContextClipToRect ctx (.bounds ink))
+  (when (!= (.clip ink) (nil))
+    (CGContextAddPath ctx (.clip ink))
+    (CGContextEOClip ctx)
+    0)
+  (if (= (.kind ink) 1)
+      (do (fill ctx (.color ink)) (CGContextFillRect ctx (cgrect (.x ink) (.y ink) (.width ink) (.height ink))) 0)
+      (draw-ink ctx ink))
+  (CGContextRestoreGState ctx)
+  0)

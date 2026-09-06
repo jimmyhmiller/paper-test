@@ -3,5 +3,5 @@ name = "paper"
 source-roots = ["src"]
 
 [link]
-frameworks = ["AppKit", "QuartzCore", "CoreGraphics", "CoreText", "ImageIO", "CoreFoundation", "AVFoundation"]
+frameworks = ["AppKit", "QuartzCore", "CoreGraphics", "CoreText", "ImageIO", "CoreFoundation", "AVFoundation", "Metal"]
 libs = ["objc"]

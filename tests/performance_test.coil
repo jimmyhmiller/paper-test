@@ -1,0 +1,130 @@
+(module papercut.performance-test)
+(import "coil.alloc" :as alloc)
+(import "paper.render" :as render)
+(import "paper.damage" :as damage)
+(import "paper.scene" :as scene)
+(import "paper.platform" :as host)
+(import "paper.objc" :as o)
+(import "paper.ffi" :use *)
+(import "paper.ui" :use *)
+
+(extern memcpy :cc c [(ptr u8) (ptr u8) u64] (-> (ptr u8)))
+
+(extern memcmp :cc c [(ptr u8) (ptr u8) u64] (-> i32))
+
+(defn fixture [(phase i64)] (-> i64)
+  (host/paper_begin 0xeeeeee)
+  (panel (rect 7.0 9.0 160.0 133.0) 9.0 12.0 (cream))
+  (panel (rect (+ 35.0 (cast f64 phase)) 30.0 81.0 70.0) 12.0 36.0 (sage))
+  (label 15.0 20.0 12.0 0x202020 1 (if (= phase 0) c"Paper layers" c"Changed text"))
+  (begin-sheet)
+  (oval-path (rect (+ 50.0 (cast f64 phase)) 35.0 39.0 37.0))
+  (cut-through 12.0)
+  (when (> phase 2)
+    (begin-sheet)
+    (rounded-path (rect 85.0 80.0 50.0 50.0) 5.0)
+    (cut-through 0.0))
+  0)
+
+;;; A forced full rerender is independent of damage tracking. Every byte must
+;;; match, including moved/removed geometry, material preparation, and shadows.
+(defn assert-full-match [] (-> i64)
+  (let [s (scene/scene)
+        bytes (* (* (.width s) (.height s)) 4)
+        copy (cast (ptr u8) (alloc/malloc (cast isize bytes)))
+        output (CGBitmapContextGetData (.output-context s))]
+    (memcpy copy output (cast u64 bytes))
+    (set! (.valid (damage/cache)) false)
+    (set! (.lit (damage/cache)) false)
+    (set! (.geometry-dirty s) true)
+    (render/render)
+    (assert (= (memcmp copy (CGBitmapContextGetData (.output-context s)) (cast u64 bytes)) (cast i32 0)))
+    (render/free (cast (ptr i8) copy)))
+  0)
+
+(deftest incremental-frames-match-full-frames-at-odd-sizes
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (scene/init)
+           (set! (.width (scene/scene)) 181)
+           (set! (.height (scene/scene)) 163)
+           (set! (.scale (scene/scene)) 1.0)
+           (render/setup)
+           (for [phase 0 7]
+             (fixture phase)
+             (host/paper_light -100.0 80.0 150.0 1.8 1.2)
+             (render/render)
+             (assert-full-match))
+           (host/paper_begin 0x333333)
+           (render/render)
+           (assert-full-match)
+           (o/release pool)))
+
+(deftest lighting-invalidates-without-rebuilding-geometry
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (scene/init)
+           (set! (.width (scene/scene)) 183)
+           (set! (.height (scene/scene)) 165)
+           (set! (.scale (scene/scene)) 1.0)
+           (render/setup)
+           (fixture 0)
+           (render/render)
+           (for [phase 0 8]
+             (host/paper_light (+ -600.0 (* (cast f64 phase) 180.0))
+                               85.0
+                               (if (= (% phase 2) 0) 80.0 2000.0)
+                               (if (= phase 4) 0.0 2.0)
+                               (* (cast f64 phase) 0.25))
+             (render/render)
+             (assert-full-match))
+           (o/release pool)))
+
+(deftest unchanged-commands-reuse-raster-and-lighting
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (scene/init)
+           (set! (.width (scene/scene)) 181)
+           (set! (.height (scene/scene)) 163)
+           (set! (.scale (scene/scene)) 1.0)
+           (render/setup)
+           (fixture 0)
+           (render/render)
+           (fixture 0)
+           (render/rasterize)
+           (assert (<= (.w (.bounds (damage/cache))) 0.0))
+           (assert (not (damage/light-changed)))
+           (render/render)
+           (assert-full-match)
+           (o/release pool)))
+
+(import "paper.workers" :as workers)
+(import "coil.atomic" :as atomic)
+(import "coil.primitive" :as p)
+
+(defn count-job [(context (ptr i8)) (row u64)] (-> i64)
+  (atomic/atomic-add (index (cast (ptr i64) context) (cast i64 row)) 1))
+
+(deftest worker-pool-completes-each-job-once-and-restarts
+         (let [(mut counts) (zeroed (array i64 257))]
+           (for [round 0 2]
+             (for [generation 0 5]
+               (workers/apply 257 (job-context (index counts 0)) (p/fnptr-of count-job)))
+             (workers/apply 0 (job-context (index counts 0)) (p/fnptr-of count-job))
+             (workers/stop)
+             (for [i 0 257] (assert (= (load (index counts i)) (* (+ round 1) 5)))))))
+
+(deftest several-raster-updates-accumulate-pending-light-damage
+         (scene/init)
+         (set! (.width (scene/scene)) 1001)
+         (set! (.height (scene/scene)) 101)
+         (set! (.scale (scene/scene)) 1.0)
+         (render/setup)
+         (host/paper_begin 0xeeeeee)
+         (render/render)
+         (panel (rect 5.0 5.0 40.0 40.0) 0.0 20.0 (clay))
+         (render/rasterize)
+         (panel (rect 950.0 5.0 40.0 40.0) 0.0 20.0 (sage))
+         (render/rasterize)
+         (render/render)
+         (assert-full-match))
+
+(defn job-context [(data (ptr i64))] (-> (ptr i8))
+  (cast (ptr i8) data))

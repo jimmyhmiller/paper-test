@@ -6,6 +6,9 @@
 (import "paper.ffi" :use * :reexport)
 (import "paper.scene" :use *)
 (import "paper.render" :as render)
+(import "paper.workers" :as workers)
+(import "paper.gpu" :as gpu)
+(import "paper.frame-clock" :as frame-clock)
 (import "paper.geometry" :use [clamp])
 
 (defstruct Input [(id i64) (view (ptr i8)) (previous (ptr i8)) (live bool)])
@@ -28,6 +31,7 @@
    (window-w f64)
    (window-h f64)
    (last-tick f64)
+   (next-frame f64)
    (ax-class (ptr i8))
    (ax-slider-class (ptr i8))
    (ax-elements (ptr i8))
@@ -117,22 +121,21 @@
   (let [s (scene)]
     (for [i 0 (al/al-len [Sheet] (.sheets s))]
       (let [sheet (al/al-elem [Sheet] (field s sheets) i)]
-        (when (> (.z sheet) (+ floor (.offset s)))
+        (when (and (> (.z sheet) (+ floor (.offset s)))
+                   (intersects (CGPathGetPathBoundingBox (.path sheet)) (CGPathGetPathBoundingBox (.path s))))
           (let [cut (CGPathCreateCopyBySubtractingPath (.path sheet) (.path s) true)]
             (assert (!= cut (nil)))
             (CGPathRelease (.path sheet))
             (set! (.path sheet) cut)))))
     (for [i 0 (al/al-len [Ink] (.inks s))]
       (let [ink (al/al-elem [Ink] (field s inks) i)]
-        (when (> (.z ink) (+ floor (.offset s)))
+        (when (and (> (.z ink) (+ floor (.offset s)))
+                   (intersects (.bounds ink) (CGPathGetPathBoundingBox (.path s))))
           (when (= (.clip ink) (nil))
             (set! (.clip ink) (CGPathCreateMutable))
             (CGPathAddRoundedRect (.clip ink)
                                   (cast (ptr CGAffine) 0)
-                                  (cgrect 0.0
-                                          0.0
-                                          (/ (cast f64 (.width s)) (.scale s))
-                                          (/ (cast f64 (.height s)) (.scale s)))
+                                  (.bounds ink)
                                   0.0
                                   0.0)
             0)
@@ -143,7 +146,8 @@
     (let [(mut i) (- (al/al-len [Hit] (.hits s)) 1)]
       (while (>= (load i) 0)
         (let [hit (al/al-elem [Hit] (field s hits) (load i))]
-          (when (> (.z hit) (+ floor (.offset s)))
+          (when (and (> (.z hit) (+ floor (.offset s)))
+                     (intersects (CGPathGetPathBoundingBox (.path hit)) (CGPathGetPathBoundingBox (.path s))))
             (let [cut (CGPathCreateCopyBySubtractingPath (.path hit) (.path s) true)]
               (assert (!= cut (nil)))
               (CGPathRelease (.path hit))
@@ -154,50 +158,58 @@
         (set! i (- (load i) 1)))))
   0)
 
+(defn submit-ink [(ink Ink)] (-> i64)
+  (let [(mut measured) (load ink)]
+    (set! (.bounds measured) (render/measured-ink-bounds ink))
+    (add-ink (load measured))))
+
 (defn paper_ink [(x f64) (y f64) (size f64) (color u32) (font i64) (text (ptr i8))] (-> i64)
-  (add-ink (Ink
-             :x x
-             :y y
-             :width 0.0
-             :height 0.0
-             :size size
-             :color color
-             :font font
-             :text (retain (ns text))
-             :z (.paint-z (scene))
-             :order (next-order)
-             :kind 0
-             :clip (nil))))
+  (submit-ink (Ink
+                :x x
+                :y y
+                :width 0.0
+                :height 0.0
+                :size size
+                :color color
+                :font font
+                :text (retain (ns text))
+                :z (.paint-z (scene))
+                :order (next-order)
+                :kind 0
+                :clip (nil)
+                :bounds (cgrect 0.0 0.0 0.0 0.0))))
 
 (defn paper_text_box [(x f64) (y f64) (width f64) (height f64) (size f64) (color u32) (font i64) (text (ptr i8))] (-> i64)
-  (add-ink (Ink
-             :x x
-             :y y
-             :width width
-             :height height
-             :size size
-             :color color
-             :font font
-             :text (retain (ns text))
-             :z (.paint-z (scene))
-             :order (next-order)
-             :kind 0
-             :clip (nil))))
+  (submit-ink (Ink
+                :x x
+                :y y
+                :width width
+                :height height
+                :size size
+                :color color
+                :font font
+                :text (retain (ns text))
+                :z (.paint-z (scene))
+                :order (next-order)
+                :kind 0
+                :clip (nil)
+                :bounds (cgrect 0.0 0.0 0.0 0.0))))
 
 (defn paper_rule [(x f64) (y f64) (w f64) (h f64) (color u32)] (-> i64)
-  (add-ink (Ink
-             :x x
-             :y y
-             :width w
-             :height h
-             :size 0.0
-             :color color
-             :font 0
-             :text (nil)
-             :z (.paint-z (scene))
-             :order (next-order)
-             :kind 1
-             :clip (nil))))
+  (submit-ink (Ink
+                :x x
+                :y y
+                :width w
+                :height h
+                :size 0.0
+                :color color
+                :font 0
+                :text (nil)
+                :z (.paint-z (scene))
+                :order (next-order)
+                :kind 1
+                :clip (nil)
+                :bounds (cgrect 0.0 0.0 0.0 0.0))))
 
 ;;; Set the depth where subsequent text is printed, relative to the current layer.
 (defn paper_ink_height [(z f64)] (-> i64)
@@ -228,15 +240,22 @@
                    :value value
                    :z (.paint-z (scene))
                    :path path
-                   :enabled (.enabled (scene)) :group 0)))
+                   :enabled (.enabled (scene))
+                   :group 0)))
   (when (and (.enabled (scene)) (= id (.focus (host)))) (paper_rule x (+ y (- h 2.0)) w 2.0 0x9c774c))
   0)
 
 (defn paper_enabled [] (-> bool)
   (.enabled (scene)))
 
-(defn paper_selection_hit [(group i64) (id i64) (x f64) (y f64) (w f64) (h f64)
-                          (name (ptr i8)) (selected bool)] (-> i64)
+(defn paper_selection_hit [(group i64)
+                           (id i64)
+                           (x f64)
+                           (y f64)
+                           (w f64)
+                           (h f64)
+                           (name (ptr i8))
+                           (selected bool)] (-> i64)
   (paper_hit id x y w h name 3 (if selected 1.0 0.0))
   (set! (.group (al/al-elem [Hit] (field (scene) hits) (- (al/al-len [Hit] (.hits (scene))) 1))) group)
   0)
@@ -418,18 +437,20 @@
     (when (> (.requested-focus app) 0)
       (when (not (.headless app)) (focus-control (.requested-focus app)) 0)
       (set! (.requested-focus app) 0))
-    (render/render)
+    (render/render-frame (.headless app))
     (when (not (.headless app))
       (for [i 0 (al/al-len [Input] (.inputs app))]
         (let [item (al/al-get [Input] (.inputs app) i)]
           (msg i64 (.view item) (sel c"setHidden:") [bool] (not (.live item)))))
-      (let [image (CGBitmapContextCreateImage (.output-context (scene)))]
-        (msg i64 (class c"CATransaction") (sel c"begin") [])
-        (msg i64 (class c"CATransaction") (sel c"setDisableActions:") [bool] true)
-        (msg i64 (.layer app) (sel c"setContents:") [(ptr i8)] image)
-        (msg i64 (class c"CATransaction") (sel c"commit") [])
-        (CGImageRelease image)
-        0)
+      (if (.available (gpu/gpu))
+          (do (when (not (gpu/present (.layer app))) (paper_redraw)) 0)
+          (let [image (CGBitmapContextCreateImage (.output-context (scene)))]
+            (msg i64 (class c"CATransaction") (sel c"begin") [])
+            (msg i64 (class c"CATransaction") (sel c"setDisableActions:") [bool] true)
+            (msg i64 (.layer app) (sel c"setContents:") [(ptr i8)] image)
+            (msg i64 (class c"CATransaction") (sel c"commit") [])
+            (CGImageRelease image)
+            0))
       (accessibility-refresh)))
   0)
 
@@ -510,8 +531,9 @@
           (and (>= key 123) (<= key 126) (> (.focus app) 0))
             (let [backward (or (= key 123) (= key 125))
                   next (selection-target (.focus app) (selection-backward? key) false)]
-              (if (> next 0) (select-control next)
-                (adjust-control (.focus app) (if backward -0.05 0.05))))
+              (if (> next 0)
+                  (select-control next)
+                  (adjust-control (.focus app) (if backward -0.05 0.05))))
           (and (or (= key 115) (= key 119)) (> (.focus app) 0))
             (select-control (selection-target (.focus app) (= key 115) true))
           (and (or (= key 36) (= key 49)) (> (.focus app) 0)) (activate-control (.focus app))
@@ -526,9 +548,13 @@
   (or (= key 123) (= key 126)))
 
 (defn selection-target [(current i64) (backward bool) (edge bool)] (-> i64)
-  (let [hits (.hits (scene)) count (al/al-len [Hit] hits)
-        (mut group) 0 (mut first) 0 (mut last) 0
-        (mut neighbor) 0 (mut seen) false]
+  (let [hits (.hits (scene))
+        count (al/al-len [Hit] hits)
+        (mut group) 0
+        (mut first) 0
+        (mut last) 0
+        (mut neighbor) 0
+        (mut seen) false]
     (for [i 0 count]
       (let [hit (al/al-get [Hit] hits i)]
         (when (and (= (.id hit) current) (= (.role hit) 3) (.enabled hit))
@@ -544,12 +570,14 @@
             (when (and (not backward) (load seen) (!= (.id hit) current) (= (load neighbor) 0))
               (set! neighbor (.id hit)))
             (set! last (.id hit))))))
-    (if edge (if backward (load first) (load last))
-      (if (> (load neighbor) 0) (load neighbor) (if backward (load last) (load first))))))
+    (if edge
+        (if backward (load first) (load last))
+        (if (> (load neighbor) 0) (load neighbor) (if backward (load last) (load first))))))
 
 (defn select-control [(id i64)] (-> bool)
   (if (and (> id 0) (activate-control id))
-    (do (paper_focus id) true) false))
+      (do (paper_focus id) true)
+      false))
 
 (defn ax-press [(obj (ptr i8)) (selector (ptr i8))] (-> bool)
   (activate-control (ax-id obj)))
@@ -706,7 +734,7 @@
     (render/setup)
     (dispatch 0 (.app-index app) 0.0 0.0)
     (if (.headless app)
-        (do (refresh) (let [status (render/snapshot (utf8 (.snapshot app)))] (release pool) status))
+        (do (refresh) (let [status (render/snapshot (utf8 (.snapshot app)))] (workers/stop) (release pool) status))
         (let [screen (msg CGRect (msg (ptr i8) (class c"NSScreen") (sel c"mainScreen") []) (sel c"visibleFrame") [])
               max-height-scale (/ (- (.h screen) 80.0) (logical-height))
               max-width-scale (/ (- (.w screen) 60.0) (logical-width))
@@ -728,6 +756,7 @@
           (set! (.window-w app) w)
           (set! (.window-h app) h)
           (msg i64 window (sel c"setReleasedWhenClosed:") [bool] false)
+          (msg i64 window (sel c"setAcceptsMouseMovedEvents:") [bool] true)
           (msg i64
                window
                (sel c"setTitle:")
@@ -745,7 +774,10 @@
                (sel c"setAppearance:")
                [(ptr i8)]
                (msg (ptr i8) (class c"NSAppearance") (sel c"appearanceNamed:") [(ptr i8)] (ns c"NSAppearanceNameAqua")))
-          (set! (.layer app) (msg (ptr i8) view (sel c"layer") []))
+          (set! (.layer app)
+                (if (.available (gpu/gpu))
+                    (gpu/create-layer view w h (msg f64 window (sel c"backingScaleFactor") []))
+                    (msg (ptr i8) view (sel c"layer") [])))
           (msg i64 (.layer app) (sel c"setContentsGravity:") [(ptr i8)] (ns c"resize"))
           (msg i64 (.app app) (sel c"setActivationPolicy:") [i64] 0)
           (native-menus)
@@ -755,9 +787,10 @@
           (msg i64 (.app app) (sel c"activateIgnoringOtherApps:") [bool] true)
           (accessibility-init)
           (refresh)
+          (frame-clock/start view (fnptr-of display-frame) (frame-clock/preferred-rate))
           (while (msg bool window (sel c"isVisible") [])
             (let [iteration-pool (new c"NSAutoreleasePool")
-                  deadline (msg (ptr i8) (class c"NSDate") (sel c"dateWithTimeIntervalSinceNow:") [f64] 0.04)
+                  deadline (msg (ptr i8) (class c"NSDate") (sel c"dateWithTimeIntervalSinceNow:") [f64] (/ 1.0 120.0))
                   ev
                     (msg (ptr i8)
                          (.app app)
@@ -784,10 +817,17 @@
                           (primitive/fcmp-ne (.h bounds) (.window-h app)))
                   (set! (.window-w app) (.w bounds))
                   (set! (.window-h app) (.h bounds))
+                  (when (.available (gpu/gpu))
+                    (gpu/layer-size (.layer app)
+                                    (.w bounds)
+                                    (.h bounds)
+                                    (msg f64 window (sel c"backingScaleFactor") [])))
                   (paper_redraw))
                 (when (> (- now (.last-tick app)) 1.0) (set! (.last-tick app) now) (dispatch 6 0 now 0.0)))
-              (when (.dirty (scene)) (refresh))
               (release iteration-pool)))
+          (frame-clock/stop)
+          (gpu/synchronize)
+          (workers/stop)
           (release pool)
           0))))
 
@@ -837,4 +877,10 @@
     (release app-item)
     (release edit-item)
     (release bar))
+  0)
+
+(defn display-frame [] (-> i64)
+  (poll-inputs)
+  (poll-pointer)
+  (when (.dirty (scene)) (refresh))
   0)

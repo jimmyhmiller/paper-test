@@ -1,0 +1,79 @@
+(module papercut.stress)
+(import "paper.scene" :as scene)
+(import "paper.render" :as render)
+(import "paper.workers" :as workers)
+(import "paper.gpu" :as gpu)
+(import "paper.platform" :as host)
+(import "paper.surface" :use *)
+(import "paper.material" :use *)
+(import "paper.geometry" :use [rect])
+(import "paper.objc" :as o)
+(import "paper.ffi" :use *)
+
+(extern printf :cc c [(ptr i8) ...] (-> i32))
+
+(defn draw [(columns i64) (rows i64) (frame i64) (scenario i64)] (-> i64)
+  (host/paper_begin 0xeee8d9)
+  (let [w (/ (cast f64 (.width (scene/scene))) (.scale (scene/scene)))
+        h (/ (cast f64 (.height (scene/scene))) (.scale (scene/scene)))
+        cw (/ w (cast f64 columns))
+        ch (/ h (cast f64 rows))]
+    (for [y 0 rows]
+      (for [x 0 columns]
+        (let [id (+ (* y columns) x)
+              shift
+                (if (or (= scenario 2) (and (= scenario 1) (= id (% frame (* columns rows)))))
+                    (cast f64 (% frame 5))
+                    0.0)
+              left (+ (+ (* (cast f64 x) cw) 2.0) shift)
+              top (+ (* (cast f64 y) ch) 2.0)]
+          (panel (rect left top (- cw 7.0) (- ch 7.0)) 5.0 (+ 4.0 (* (cast f64 (% id 7)) 6.0)) (cream))
+          (host/paper_ink (+ left 3.0) (+ top 3.0) 9.0 0x31352e 0 c"Paper")
+          (host/paper_rule (+ left 3.0) (+ top 18.0) (- cw 15.0) 1.0 0x979385)))))
+  (host/paper_light (+ -600.0 (* (cast f64 frame) 100.0))
+                    -160.0
+                    (if (= scenario 3) 80.0 680.0)
+                    (if (= scenario 3) 2.0 0.82)
+                    1.0)
+  0)
+
+(defn main [] (-> i64)
+  (let [pool (o/new c"NSAutoreleasePool")]
+    (scene/init)
+    (set! (.headless (host/host)) true)
+    (printf c"width,height,sheets,scenario,frame,build_ms,raster_ms,shade_ms,gpu_ms,total_ms\n")
+    (for [size 0 3]
+      (let [w (case size 0 3840 1 5120 7680)
+            h (case size 0 2160 1 2880 4320)
+            columns (case size 0 32 1 48 64)
+            rows (case size 0 18 1 27 36)]
+        (set! (.width (scene/scene)) w)
+        (set! (.height (scene/scene)) h)
+        (render/setup)
+        (for [scenario 0 4]
+          (for [frame 0 40]
+            (let [frame-pool (o/new c"NSAutoreleasePool")
+                  start (CACurrentMediaTime)]
+              (draw columns rows frame scenario)
+              (let [built (CACurrentMediaTime)]
+                (render/rasterize-frame false)
+                (let [rasterized (CACurrentMediaTime)]
+                  (render/render-frame false)
+                  (gpu/synchronize)
+                  (let [done (CACurrentMediaTime)]
+                    (when (>= frame 8)
+                      (printf c"%lld,%lld,%lld,%lld,%lld,%.4f,%.4f,%.4f,%.4f,%.4f\n"
+                              w
+                              h
+                              (* columns rows)
+                              scenario
+                              frame
+                              (* 1000.0 (- built start))
+                              (* 1000.0 (- rasterized built))
+                              (* 1000.0 (- done rasterized))
+                              (.gpu-ms (gpu/gpu))
+                              (* 1000.0 (- done start)))))))
+              (o/release frame-pool))))))
+    (workers/stop)
+    (o/release pool))
+  0)

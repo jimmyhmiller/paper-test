@@ -1,0 +1,130 @@
+(module papercut.native-performance)
+(import "coil.primitive" :as p)
+(import "papercut.main" :as demo)
+(import "papercut.state" :as state)
+(import "papercut.stress" :as stress)
+(import "paper.scene" :as scene)
+(import "paper.render" :as render)
+(import "paper.gpu" :as gpu)
+(import "paper.frame-clock" :as frame-clock)
+(import "paper.platform" :as host)
+(import "paper.workers" :as workers)
+(import "paper.objc" :use *)
+(import "paper.ffi" :use *)
+
+(extern printf :cc c [(ptr i8) ...] (-> i32))
+
+(extern fflush :cc c [(ptr i8)] (-> i32))
+
+(defstruct Sample [(drawable (ptr i8)) (command (ptr i8))])
+
+(defstruct Benchmark [(test i64) (frame i64) (limit i64) (layer (ptr i8)) (samples (array Sample 6))])
+
+(defn benchmark [] (-> (ptr Benchmark))
+  (p/alloc-static Benchmark))
+
+;;; Rendering is driven by the same native display clock as the application.
+;;; Read completed GPU work and actual presentation timestamps six frames
+;;; later; CPU submission time is never reported as GPU rendering time.
+(defn frame [] (-> i64)
+  (let [b (benchmark)
+        test (.test b)
+        frame (.frame b)]
+    (when (< test 7)
+      (let [pool (new c"NSAutoreleasePool")
+            sample (index (field b samples) (% frame 6))
+            presented (msg f64 (.drawable sample) (sel c"presentedTime") [])
+            gpu-ms
+              (if (= (msg i64 (.command sample) (sel c"status") []) 4)
+                  (* 1000.0
+                     (- (msg f64 (.command sample) (sel c"GPUEndTime") [])
+                        (msg f64 (.command sample) (sel c"GPUStartTime") [])))
+                  0.0)]
+        (release (.drawable sample))
+        (release (.command sample))
+        (set! (.drawable sample) (nil))
+        (set! (.command sample) (nil))
+        (when (= frame 0)
+          (set! (.width (scene/scene)) (if (< test 3) 2960 (if (< test 5) 3840 5120)))
+          (set! (.height (scene/scene)) (if (< test 3) 1920 (if (< test 5) 2160 2880)))
+          (render/setup))
+        (let [start (CACurrentMediaTime)]
+          (if (< test 3)
+              (do
+                (set! (.app (state/state)) (if (= test 2) (% frame 4) 0))
+                (set! (.elevation (state/state)) (if (= test 1) 80.0 680.0))
+                (set! (.depth (state/state)) (if (= test 1) 2.0 0.82))
+                (set! (.light-x (state/state)) (+ -600.0 (* (cast f64 (% frame 24)) 130.0)))
+                (demo/draw))
+              (stress/draw (if (< test 5) 32 48) (if (< test 5) 18 27) frame (if (= (% test 2) 0) 2 0)))
+          (render/render-frame false)
+          (assert (gpu/present (.layer b)))
+          (set! (.drawable sample) (retain (.last-drawable (gpu/gpu))))
+          (set! (.command sample) (retain (.last-command (gpu/gpu))))
+          (when (>= frame 32)
+            (printf c"%lld,%lld,%.4f,%.4f,%.9f,%.9f,%.9f\n"
+                    test
+                    frame
+                    (* 1000.0 (- (CACurrentMediaTime) start))
+                    gpu-ms
+                    presented
+                    start
+                    (.timestamp (frame-clock/clock)))))
+        (set! (.frame b) (+ frame 1))
+        (when (= (.frame b) (.limit b)) (set! (.frame b) 0) (set! (.test b) (+ test 1)) (fflush (nil)) 0)
+        (release pool))))
+  0)
+
+(defn main [] (-> i64)
+  (let [pool (new c"NSAutoreleasePool")
+        app (msg (ptr i8) (class c"NSApplication") (sel c"sharedApplication") [])
+        window
+          (msg (ptr i8)
+               (msg (ptr i8) (class c"NSWindow") (sel c"alloc") [])
+               (sel c"initWithContentRect:styleMask:backing:defer:")
+               [CGRect u64 u64 bool]
+               (cgrect 40.0 60.0 1110.0 720.0)
+               15
+               2
+               false)
+        view (msg (ptr i8) window (sel c"contentView") [])]
+    (let [value (gpu/getenv c"PAPER_BENCH_FRAMES")]
+      (set! (.limit (benchmark)) (if (= value (nil)) 192 (msg i64 (ns value) (sel c"integerValue") [])))
+      (assert (and (>= (.limit (benchmark)) 64) (<= (.limit (benchmark)) 10000))))
+    (scene/init)
+    (set! (.headless (host/host)) true)
+    (render/setup)
+    (state/initialize 0)
+    (msg i64 window (sel c"setReleasedWhenClosed:") [bool] false)
+    (msg i64 window (sel c"setTitle:") [(ptr i8)] (ns c"Papercut — native frame benchmark"))
+    (msg i64 view (sel c"setWantsLayer:") [bool] true)
+    (set! (.layer (benchmark)) (gpu/create-layer view 1110.0 720.0 (msg f64 window (sel c"backingScaleFactor") [])))
+    (msg i64 app (sel c"setActivationPolicy:") [i64] 0)
+    (msg i64 app (sel c"finishLaunching") [])
+    (msg i64 window (sel c"makeKeyAndOrderFront:") [(ptr i8)] (nil))
+    (msg i64 app (sel c"activateIgnoringOtherApps:") [bool] true)
+    (printf c"case,frame,cpu_ms,gpu_ms,presented_s,start_s,target_s\n")
+    (frame)
+    (msg i64 app (sel c"updateWindows") [])
+    (msg i64 (class c"CATransaction") (sel c"flush") [])
+    (frame-clock/start view (fnptr-of frame) (frame-clock/preferred-rate))
+    (while (< (.test (benchmark)) 7)
+      (let [event
+              (msg (ptr i8)
+                   app
+                   (sel c"nextEventMatchingMask:untilDate:inMode:dequeue:")
+                   [u64 (ptr i8) (ptr i8) bool]
+                   (cast u64 -1)
+                   (msg (ptr i8) (class c"NSDate") (sel c"dateWithTimeIntervalSinceNow:") [f64] 0.1)
+                   (ns c"kCFRunLoopDefaultMode")
+                   true)]
+        (when (!= event (nil)) (msg i64 app (sel c"sendEvent:") [(ptr i8)] event))))
+    (frame-clock/stop)
+    (gpu/synchronize)
+    (for [i 0 6]
+      (let [sample (index (field (benchmark) samples) i)] (release (.drawable sample)) (release (.command sample))))
+    (msg i64 window (sel c"close") [])
+    (release window)
+    (workers/stop)
+    (release pool))
+  0)

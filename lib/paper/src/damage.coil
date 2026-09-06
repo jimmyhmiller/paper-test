@@ -1,0 +1,167 @@
+(module paper.damage)
+(import "coil.primitive" :as p)
+(import "coil.alloc" :as alloc)
+(import "coil.arraylist" :as al)
+(import "paper.ffi" :use *)
+(import "paper.objc" :as o)
+(import "paper.scene" :use *)
+
+(defstruct Cache
+  [(sheets (al/ArrayList Sheet))
+   (inks (al/ArrayList Ink))
+   (ink-orders (al/ArrayList i64))
+   (ready bool)
+   (valid bool)
+   (background u32)
+   (bounds CGRect)
+   (light-x f64)
+   (light-y f64)
+   (elevation f64)
+   (depth f64)
+   (grain f64)
+   (lit bool)])
+
+(defn cache [] (-> (ptr Cache))
+  (p/alloc-static Cache))
+
+(defn discard [] (-> i64)
+  (let [c (cache)]
+    (when (.ready c)
+      (for [i 0 (al/al-len [Sheet] (.sheets c))]
+        (CGPathRelease (.path (al/al-elem [Sheet] (field c sheets) i))))
+      (for [i 0 (al/al-len [Ink] (.inks c))]
+        (let [ink (al/al-elem [Ink] (field c inks) i)]
+          (o/release (.text ink))
+          (when (!= (.clip ink) (o/nil)) (CGPathRelease (.clip ink)) 0)))
+      (al/al-clear! [Sheet] (mut (.sheets c)))
+      (al/al-clear! [Ink] (mut (.inks c)))
+      0))
+  0)
+
+(defn reset [] (-> i64)
+  (discard)
+  (let [c (cache)]
+    (when (not (.ready c))
+      (set! (.sheets c) (al/al-new [Sheet] (alloc/malloc-allocator)))
+      (set! (.inks c) (al/al-new [Ink] (alloc/malloc-allocator)))
+      (set! (.ink-orders c) (al/al-new [i64] (alloc/malloc-allocator)))
+      (set! (.ready c) true))
+    (set! (.valid c) false)
+    (set! (.lit c) false)
+    (set! (.bounds c) (cgrect 0.0 0.0 0.0 0.0)))
+  0)
+
+(defn include [(r CGRect)] (-> i64)
+  (when (and (> (.w r) 0.0) (> (.h r) 0.0))
+    (let [c (cache)
+          a (.bounds c)]
+      (if (<= (.w a) 0.0)
+          (set! (.bounds c) r)
+          (let [x (if (< (.x a) (.x r)) (.x a) (.x r))
+                y (if (< (.y a) (.y r)) (.y a) (.y r))
+                right (if (> (+ (.x a) (.w a)) (+ (.x r) (.w r))) (+ (.x a) (.w a)) (+ (.x r) (.w r)))
+                bottom (if (> (+ (.y a) (.h a)) (+ (.y r) (.h r))) (+ (.y a) (.h a)) (+ (.y r) (.h r)))]
+            (set! (.bounds c) (cgrect x y (- right x) (- bottom y)))))))
+  0)
+
+(defn sheet-equal [(a Sheet) (b Sheet)] (-> bool)
+  (and (p/fcmp-eq (.z a) (.z b))
+       (= (.order a) (.order b))
+       (= (.color a) (.color b))
+       (p/fcmp-eq (.rough a) (.rough b))
+       (p/fcmp-eq (.fiber a) (.fiber b))
+       (p/fcmp-eq (.seed a) (.seed b))
+       (CGPathEqualToPath (.path a) (.path b))))
+
+(defn ink-equal [(a Ink) (b Ink)] (-> bool)
+  (and (p/fcmp-eq (.x a) (.x b))
+       (p/fcmp-eq (.y a) (.y b))
+       (p/fcmp-eq (.width a) (.width b))
+       (p/fcmp-eq (.height a) (.height b))
+       (p/fcmp-eq (.size a) (.size b))
+       (p/fcmp-eq (.z a) (.z b))
+       (= (.order a) (.order b))
+       (= (.color a) (.color b))
+       (= (.font a) (.font b))
+       (= (.kind a) (.kind b))
+       (or (= (.text a) (.text b))
+           (o/msg bool (.text a) (o/sel c"isEqualToString:") [(ptr i8)] (.text b)))
+       (CGPathEqualToPath (.clip a) (.clip b))))
+
+;;; Compare exact retained commands, including old bounds for removed geometry.
+;;; Clip damage to integral backing pixels so antialiasing remains unchanged.
+(defn measure [] (-> CGRect)
+  (let [c (cache)
+        s (scene)]
+    (set! (.bounds c) (cgrect 0.0 0.0 0.0 0.0))
+    (if (or (not (.valid c)) (!= (.background c) (.background s)))
+        (include (cgrect 0.0 0.0 (/ (cast f64 (.width s)) (.scale s)) (/ (cast f64 (.height s)) (.scale s))))
+        (do
+          (for [i 0 (al/al-len [Sheet] (.sheets s))]
+            (let [a (al/al-get [Sheet] (.sheets s) i)]
+              (if (>= i (al/al-len [Sheet] (.sheets c)))
+                  (include (CGPathGetPathBoundingBox (.path a)))
+                  (let [b (al/al-get [Sheet] (.sheets c) i)]
+                    (when (not (sheet-equal a b))
+                      (include (CGPathGetPathBoundingBox (.path a)))
+                      (include (CGPathGetPathBoundingBox (.path b))))))))
+          (for [i (al/al-len [Sheet] (.sheets s)) (al/al-len [Sheet] (.sheets c))]
+            (include (CGPathGetPathBoundingBox (.path (al/al-elem [Sheet] (field c sheets) i)))))
+          (for [i 0 (al/al-len [Ink] (.inks s))]
+            (let [a (al/al-get [Ink] (.inks s) i)]
+              (if (>= i (al/al-len [Ink] (.inks c)))
+                  (include (.bounds a))
+                  (let [b (al/al-get [Ink] (.inks c) i)]
+                    (when (not (ink-equal a b)) (include (.bounds a)) (include (.bounds b)))))))
+          (for [i (al/al-len [Ink] (.inks s)) (al/al-len [Ink] (.inks c))]
+            (include (.bounds (al/al-elem [Ink] (field c inks) i))))))
+    (let [r (.bounds c)
+          scale (.scale s)]
+      (if (<= (.w r) 0.0)
+          (load r)
+          (let [x (floor (- (* (.x r) scale) 2.0))
+                y (floor (- (* (.y r) scale) 2.0))
+                right (- 0.0 (floor (- 0.0 (+ (* (+ (.x r) (.w r)) scale) 2.0))))
+                bottom (- 0.0 (floor (- 0.0 (+ (* (+ (.y r) (.h r)) scale) 2.0))))]
+            (cgrect (/ x scale) (/ y scale) (/ (- right x) scale) (/ (- bottom y) scale)))))))
+
+(defn remember [] (-> i64)
+  (discard)
+  (let [c (cache)
+        s (scene)]
+    (al/al-clear! [i64] (mut (.ink-orders c)))
+    (for [i 0 (+ (.serial s) 1)] (al/al-push! [i64] (mut (.ink-orders c)) -1))
+    (for [i 0 (al/al-len [Sheet] (.sheets s))]
+      (let [(mut sheet) (al/al-get [Sheet] (.sheets s) i)]
+        (set! (.path sheet) (CGPathCreateCopy (.path sheet)))
+        (al/al-push! [Sheet] (mut (.sheets c)) (load sheet))))
+    (for [i 0 (al/al-len [Ink] (.inks s))]
+      (let [(mut ink) (al/al-get [Ink] (.inks s) i)]
+        (al/al-set! [i64] (mut (.ink-orders c)) (.order ink) i)
+        (set! (.text ink) (o/retain (.text ink)))
+        (when (!= (.clip ink) (o/nil)) (set! (.clip ink) (CGPathCreateCopy (.clip ink))))
+        (al/al-push! [Ink] (mut (.inks c)) (load ink))))
+    (set! (.background c) (.background s))
+    (set! (.valid c) true))
+  0)
+
+(defn light-changed [] (-> bool)
+  (let [c (cache)
+        s (scene)]
+    (or (not (.lit c))
+        (p/fcmp-ne (.light-x c) (.light-x s))
+        (p/fcmp-ne (.light-y c) (.light-y s))
+        (p/fcmp-ne (.elevation c) (.elevation s))
+        (p/fcmp-ne (.depth c) (.depth s))
+        (p/fcmp-ne (.grain c) (.grain s)))))
+
+(defn remember-light [] (-> i64)
+  (let [c (cache)
+        s (scene)]
+    (set! (.light-x c) (.light-x s))
+    (set! (.light-y c) (.light-y s))
+    (set! (.elevation c) (.elevation s))
+    (set! (.depth c) (.depth s))
+    (set! (.grain c) (.grain s))
+    (set! (.lit c) true))
+  0)

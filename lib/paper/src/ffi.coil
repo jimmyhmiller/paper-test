@@ -116,3 +116,15 @@
 (extern objc_registerClassPair :cc c [(ptr i8)] (-> void))
 
 (extern class_addMethod :cc c [(ptr i8) (ptr i8) (ptr i8) (ptr i8)] (-> bool))
+
+(extern CGPathEqualToPath :cc c [(ptr i8) (ptr i8)] (-> bool))
+
+(extern CGPathGetPathBoundingBox :cc c [(ptr i8)] (-> CGRect))
+
+(extern CGContextClipToRect :cc c [(ptr i8) CGRect] (-> void))
+
+(extern CGContextSetBlendMode :cc c [(ptr i8) i32] (-> void))
+
+(extern CGPathCreateCopyByTransformingPath :cc c [(ptr i8) (ref CGAffine)] (-> (ptr i8)))
+
+(extern CGContextSetRGBStrokeColor :cc c [(ptr i8) f64 f64 f64 f64] (-> void))

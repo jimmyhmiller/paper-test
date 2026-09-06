@@ -1,0 +1,108 @@
+(module paper.workers)
+(import "coil.primitive" :as p)
+(import "coil.thread" :as thread)
+(import "coil.sync" :as sync)
+(import "coil.atomic" :as atomic)
+
+(defstruct Pool
+  [(mutex sync/Mutex)
+   (wake sync/Condition)
+   (done sync/Condition)
+   (threads (array thread/Thread 7))
+   (started i64)
+   (initialized bool)
+   (stopping bool)
+   (generation i64)
+   (remaining i64)
+   (next i64)
+   (count i64)
+   (body (fnptr c [(ptr i8) u64] i64))
+   (context (ptr i8))])
+
+(defn pool [] (-> (ptr Pool))
+  (p/alloc-static Pool))
+
+(defn checked [(operation Code)] (-> Code)
+  `(match ~operation (Ok [value] 0) (Err [error] (assert false) 0)))
+
+(extern pthread_set_qos_class_self_np :cc c [u32 i32] (-> i32))
+
+;;; Atomic row claims balance expensive shadow regions across workers. The
+;;; mutex publishes immutable job inputs and the completion barrier; it is
+;;; never acquired in a pixel loop. The calling thread participates as well.
+(defn consume [] (-> i64)
+  (let [p (pool)]
+    (while true
+      (let [row (atomic/atomic-add (field p next) 1)]
+        (when (>= row (.count p)) (break))
+        (p/call-ptr (.body p) (.context p) (cast u64 row)))))
+  0)
+
+(defn worker [(context (ptr i8))] (-> (ptr i8))
+  (pthread_set_qos_class_self_np (cast u32 33) (cast i32 0))
+  (let [p (pool)
+        (mut observed) 0]
+    (checked (sync/mutex-lock! (field p mutex)))
+    (while (not (.stopping p))
+      (while (and (not (.stopping p)) (= (.generation p) (load observed)))
+        (checked (sync/condition-wait! (field p wake) (field p mutex))))
+      (when (.stopping p) (break))
+      (set! observed (.generation p))
+      (checked (sync/mutex-unlock! (field p mutex)))
+      (consume)
+      (checked (sync/mutex-lock! (field p mutex)))
+      (set! (.remaining p) (- (.remaining p) 1))
+      (when (= (.remaining p) 0) (checked (sync/condition-notify-one! (field p done)))))
+    (checked (sync/mutex-unlock! (field p mutex))))
+  (cast (ptr i8) 0))
+
+(defn start [] (-> i64)
+  (let [p (pool)]
+    (when (not (.initialized p))
+      (checked (sync/mutex-init (field p mutex)))
+      (checked (sync/condition-init (field p wake)))
+      (checked (sync/condition-init (field p done)))
+      (set! (.stopping p) false)
+      (set! (.generation p) 0)
+      (set! (.started p) 0)
+      (for [i 0 7]
+        (let [status (thread/thread-spawn (index (field p threads) i) (p/fnptr-of worker) (cast (ptr i8) 0))]
+          (when (!= status (cast i32 0)) (break))
+          (set! (.started p) (+ (.started p) 1))))
+      (set! (.initialized p) true)))
+  0)
+
+;;; A partial thread-creation failure remains correct: the caller and whichever
+;;; workers started consume all rows. Submission is confined to the UI thread.
+(defn apply [(count u64) (context (ptr i8)) (body (fnptr c [(ptr i8) u64] i64))] (-> i64)
+  (start)
+  (let [p (pool)]
+    (checked (sync/mutex-lock! (field p mutex)))
+    (set! (.body p) body)
+    (set! (.context p) context)
+    (set! (.count p) (cast i64 count))
+    (atomic/atomic-store (field p next) 0)
+    (set! (.remaining p) (.started p))
+    (set! (.generation p) (+ (.generation p) 1))
+    (checked (sync/condition-notify-all! (field p wake)))
+    (checked (sync/mutex-unlock! (field p mutex)))
+    (consume)
+    (checked (sync/mutex-lock! (field p mutex)))
+    (while (> (.remaining p) 0)
+      (checked (sync/condition-wait! (field p done) (field p mutex))))
+    (checked (sync/mutex-unlock! (field p mutex))))
+  0)
+
+(defn stop [] (-> i64)
+  (let [p (pool)]
+    (when (.initialized p)
+      (checked (sync/mutex-lock! (field p mutex)))
+      (set! (.stopping p) true)
+      (checked (sync/condition-notify-all! (field p wake)))
+      (checked (sync/mutex-unlock! (field p mutex)))
+      (for [i 0 (.started p)] (assert (= (thread/thread-join (index (field p threads) i)) (cast i32 0))))
+      (checked (sync/condition-destroy! (field p wake)))
+      (checked (sync/condition-destroy! (field p done)))
+      (checked (sync/mutex-destroy! (field p mutex)))
+      (set! (.initialized p) false)))
+  0)

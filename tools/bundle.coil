@@ -46,7 +46,7 @@
           (msg i64 info (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] (ns c"papercut") (ns c"CFBundleExecutable"))
           (msg i64 info (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] (ns c"APPL") (ns c"CFBundlePackageType"))
           (msg i64 info (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] (ns c"0.1.0") (ns c"CFBundleShortVersionString"))
-          (msg i64 info (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] (ns c"13.0") (ns c"LSMinimumSystemVersion"))
+          (msg i64 info (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] (ns c"14.0") (ns c"LSMinimumSystemVersion"))
           (assert (msg bool
                        info
                        (sel c"writeToFile:atomically:")
