@@ -568,6 +568,19 @@
   ; call pointer-event-with-focus with false to keep its native editor active.
   (pointer-event-with-focus event kind true))
 
+;;; Route native wheel and trackpad deltas to the Paper hit beneath the pointer.
+;;; Event kind 7 carries scrollingDeltaX/Y in x/y; the id identifies the scroll
+;;; viewport or child row under the pointer so applications can choose a model.
+(defn scroll-event [(event (ptr i8))] (-> i64)
+  (let [app (host)
+        point (msg CGPoint event (sel c"locationInWindow") [])
+        px (* (/ (.x point) (.window-w app)) (logical-width))
+        py (* (- 1.0 (/ (.y point) (.window-h app))) (logical-height))
+        id (hit-test px py)]
+    (dispatch 7 id (msg f64 event (sel c"scrollingDeltaX") []) (msg f64 event (sel c"scrollingDeltaY") []))
+    (paper_redraw))
+  0)
+
 (defn update-hover [(x f64) (y f64)] (-> i64)
   (let [hover (hit-test x y)]
     (when (!= hover (.hover (host)))
@@ -898,6 +911,7 @@
                         (= kind 6) (pointer-event ev 2)
                         (= kind 2) (pointer-event ev 3)
                         (= kind 10) (set! consumed (key-event ev))
+                        (= kind 22) (do (scroll-event ev) (set! consumed true))
                         :else 0)
                   (when (not (load consumed)) (msg i64 (.app app) (sel c"sendEvent:") [(ptr i8)] ev))))
               (poll-inputs)
