@@ -57,11 +57,7 @@
       (panel (rect (art-x space 484.0) (art-y space 609.0) (art-length space 136.0) (art-length space 18.0))
              (art-length space 5.0)
              42.0
-             (cotton 0xd69a79))
-      (label (art-x space 516.0) (art-y space 653.0) (art-length space 10.0) 0x794d3d 2 c"GROW SLOW")
-      (label (art-x space 355.0) (art-y space 296.0) (art-length space 10.0) 0x6e7a59 2 c"FIG. 0")
-      (number (art-x space 400.0) (art-y space 296.0) (art-length space 10.0) 0x6e7a59 (+ (.plant s) 1))
-      (label (art-x space 349.0) (art-y space 690.0) (art-length space 10.0) 0x6e7a59 2 c"PRESSED & PRESERVED"))
+             (cotton 0xd69a79)))
     0))
 
 (defn sidebar [(bounds Rect)] (-> i64)
@@ -101,7 +97,7 @@
                                 cell
                                 (= i (.plant (state)))
                                 (load style))
-                 (leaf (+ (.x cell) 22.0) (+ (.y cell) 38.0) 18.0 29.0 33.0 (moss)))))
+                 (leaf (+ (.x cell) 22.0) (+ (.y cell) (+ (* (.h cell) 0.5) 14.5)) 18.0 29.0 33.0 (moss)))))
            (caption reminder 12.0 0x576b48 3 c"A gentle reminder")
            (caption quote 13.0 0x5f7152 1 c"“To plant a garden is\nto believe in tomorrow.”")
            (caption credit 10.0 0x7f886c 0 c"— Audrey Hepburn")

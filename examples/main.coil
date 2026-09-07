@@ -153,14 +153,11 @@
               [body
                (row (grow 1.0) (grow 1.0) 20.0)
                [app (box (grow 1.0) (grow 1.0))]
-               [materials (box (fixed 254.0) (grow 1.0))]]
-              [motto (box (grow 1.0) (fixed 20.0))]]
+               [materials (box (fixed 254.0) (grow 1.0))]]]
              (host/paper_drag_area (rect 0.0 0.0 (host/logical-width) (+ (.y header) (.h header))))
              (toolbar header)
              (case (.app s) 0 (agents/draw app) 1 (plants/draw app) 2 (music/draw app) (atlas/draw app))
              (workbench materials)
-             (caption motto 11.0 0x9eaa96 0 c"Real cutouts. Layered fibers. Light you can touch.")
-
              (when (.agent-editor s) (agents/new-agent-dialog app)))
     (when (not (.agent-editor s))
       (light/popover (lighting) 800 (rect (- (host/logical-width) 62.0) 43.0 34.0 34.0))))
