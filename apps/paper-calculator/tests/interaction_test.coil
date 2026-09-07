@@ -6,6 +6,7 @@
 (import "paper.objc" :use *)
 (import "coil.primitive" :as p)
 (import "paper.lighting" :as light)
+(import "paper.geometry" :use [rect])
 
 (defn type-key [(text (ptr i8)) (flags u64)] (-> i64)
   (let [native
@@ -57,6 +58,32 @@
     (assert (host/activate-control id))
     (app/draw))
   0)
+
+(deftest ac-click-clears-and-only-pointer-hold-arms-power
+         (let [pool (new c"NSAutoreleasePool")]
+           (setup)
+           (model/press (app/state) 9)
+           (assert (host/activate-control 116))
+           (assert (not (.active (app/power-hold))))
+           (assert (< (host/fabs (.value (app/state))) 0.001))
+           (set! (.drag (host/host)) 116)
+           (set! (.hover (host/host)) 116)
+           (app/event 1 116 145.0 280.0)
+           (assert (.active (app/power-hold)))
+           (assert (< (.tick-interval (host/host)) 0.03))
+           (set! (.hover (host/host)) 0)
+           (app/event 2 116 50.0 280.0)
+           (assert (not (.active (app/power-hold))))
+           (set! (.hover (host/host)) 116)
+           (app/event 2 116 145.0 280.0)
+           (assert (not (.active (app/power-hold))))
+           (app/event 1 116 145.0 280.0)
+           (assert (.active (app/power-hold)))
+           (app/event 3 116 145.0 280.0)
+           (assert (not (.active (app/power-hold))))
+           (assert (> (.tick-interval (host/host)) 0.99))
+           (set! (.drag (host/host)) 0)
+           (release pool)))
 
 (deftest lighting-popover-drags-resets-and-blocks-calculator-input
          (let [pool (new c"NSAutoreleasePool")]
@@ -127,4 +154,22 @@
              (app/draw)
              (assert (>= (.x (.bounds (app/lighting))) 16.0))
              (assert (>= (.y (.bounds (app/lighting))) 16.0)))
+           (release pool)))
+
+(deftest shaped-casing-has-no-close-target-and-keeps-lighting-inside
+         (let [pool (new c"NSAutoreleasePool")]
+           (setup)
+           (host/paper_window_shape (rect 38.0 52.0 544.0 698.0) 52.0 true)
+           (app/draw)
+           (assert (< (host/hit-test 518.0 68.0) 1))
+           (click 438.0 140.0)
+           (app/event 1 507 180.0 190.0)
+           (app/event 2 507 -1000.0 -1000.0)
+           (app/draw)
+           (assert (>= (.x (.bounds (app/lighting))) 76.0))
+           (assert (>= (.y (.bounds (app/lighting))) 96.0))
+           (set! (.shaped (host/host)) false)
+           (set! (.open (app/lighting)) false)
+           (app/draw)
+           (assert (not (host/activate-control 134)))
            (release pool)))

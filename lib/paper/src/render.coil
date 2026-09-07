@@ -457,11 +457,14 @@
   0)
 
 (defn snapshot [(path (ptr i8))] (-> i64)
+  (snapshot-context (.output-context (scene)) path))
+
+(defn snapshot-context [(context (ptr i8)) (path (ptr i8))] (-> i64)
   (let [url (msg (ptr i8) (class c"NSURL") (sel c"fileURLWithPath:") [(ptr i8)] (ns path))
         dest (CGImageDestinationCreateWithURL url (ns c"public.png") 1 (nil))]
     (if (= dest (nil))
         1
-        (let [image (CGBitmapContextCreateImage (.output-context (scene)))]
+        (let [image (CGBitmapContextCreateImage context)]
           (CGImageDestinationAddImage dest image (nil))
           (let [ok (CGImageDestinationFinalize dest)]
             (CGImageRelease image)

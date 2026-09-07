@@ -48,6 +48,8 @@ The native application stores agent names, care selections, the latest observati
 
 The sun control opens the same reusable lighting popover in Calculator, Terminal, and all four Studio apps. Drag the light position, adjust height and relief, or reset the app's defaults. See [the lighting component](lib/paper/LIGHTING.md) and `examples/minimal.coil` for adding it to another app.
 
+Calculator also tries an opt-in shaped native window. Its transparent exterior follows the paper casing; a five-second hold on AC turns it off, and a View menu switch restores standard macOS chrome. Other apps retain their standard windows. Configure this with `paper_window_shape` before `paper_run`; `window-snapshot` exports the same outline without modifying retained rendering buffers.
+
 ## Build your own interface
 
 Start with [examples/minimal.coil](examples/minimal.coil), a complete 640 × 480 application. Import `paper.flow` for layout, drawing, components, and native text measurement; import `paper.platform` for the application loop and native text input values.

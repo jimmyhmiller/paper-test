@@ -86,7 +86,7 @@
 ;;; A native-surface app should reserve this rectangle beside its native view.
 (defn popover-panel [(s (ptr Lighting)) (base-id i64) (anchor Rect)] (-> i64)
   (when (.open s)
-    (let [v (.viewport s)
+    (let [v (if (> (.w (.drag-limits s)) 0.0) (.drag-limits s) (.viewport s))
           width (clamp (- (.w v) 32.0) 240.0 310.0)
           height (clamp (- (.h v) 32.0) 208.0 310.0)
           preferred-y

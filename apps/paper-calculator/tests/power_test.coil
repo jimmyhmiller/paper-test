@@ -1,0 +1,22 @@
+(module calculator.power-test)
+(import "calculator.power" :as power)
+(import "coil.primitive" :as p)
+
+(deftest power-off-requires-five-continuous-seconds-and-fires-once
+         (let [(mut s) (p/zeroed power/Hold)]
+           (assert (not (power/update s 100.0 true)))
+           (power/start s 100.0)
+           (assert (not (power/update s 104.999 true)))
+           (assert (power/update s 105.0 true))
+           (assert (not (power/update s 106.0 true)))))
+
+(deftest release-or-leaving-key-cancels-without-resuming
+         (let [(mut s) (p/zeroed power/Hold)]
+           (power/start s 10.0)
+           (assert (not (power/update s 14.9 false)))
+           (assert (not (power/update s 20.0 true)))
+           (power/start s 30.0)
+           (power/cancel s)
+           (assert (not (power/update s 35.0 true)))
+           (power/start s 40.0)
+           (assert (power/update s 45.0 true))))

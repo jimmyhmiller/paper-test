@@ -6,6 +6,14 @@
 (import "calculator.model" :as model)
 (import "calculator.lettering" :use [carved])
 (import "paper.lighting" :as light)
+(import "calculator.power" :as power)
+
+(defn power-hold [] (-> (ptr power/Hold))
+  (p/alloc-static power/Hold))
+
+(defn cancel-power [] (-> i64)
+  (power/cancel (power-hold))
+  (host/paper_tick_interval 1.0))
 
 (defn lighting [] (-> (ptr light/Lighting))
   (p/alloc-static light/Lighting))
@@ -62,10 +70,10 @@
 (defn draw [] (-> i64)
   (host/paper_begin 0xeed6b3)
   (light/apply-light (lighting) (rect 0.0 0.0 620.0 790.0))
-  (host/paper_drag_area (rect 0.0 0.0 620.0 58.0))
+  (host/paper_drag_area (rect 38.0 52.0 544.0 35.0))
   (panel (rect 0.0 0.0 620.0 790.0) 0.0 1.0 (cotton 0xeed6b3))
-  (panel (rect 38.0 52.0 544.0 698.0) 78.0 26.0 (cotton 0xf0d9b5))
-  (recess (rect 67.0 82.0 486.0 638.0) 55.0 26.0 15.0 1.0 (cotton 0xfbe8c9) (cotton 0x9d8b72))
+  (panel (rect 38.0 52.0 544.0 698.0) 52.0 26.0 (cotton 0xf0d9b5))
+  (recess (rect 67.0 82.0 486.0 638.0) 30.0 26.0 15.0 1.0 (cotton 0xfbe8c9) (cotton 0x9d8b72))
   (recess (rect 100.0 122.0 420.0 119.0) 32.0 11.0 7.0 1.0 (cotton 0xd6ccb0) (recycled 0xa3a783))
   (ink-height 4.0)
   (label 121.0
@@ -114,6 +122,7 @@
   (ink-height 4.0)
   (label 430.0 131.0 18.0 0x42452f 0 c"☀")
   (hit 500 (rect 424.0 126.0 27.0 29.0) c"Adjust lighting")
+  (set! (.drag-limits (lighting)) (if (host/shaped-window?) (rect 60.0 80.0 500.0 642.0) (rect 0.0 0.0 620.0 790.0)))
   (light/popover-panel (lighting) 500 (rect 424.0 126.0 27.0 29.0))
   0)
 
@@ -146,6 +155,11 @@
   0)
 
 (defn event [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
+  (when (or (= kind 0)
+            (= kind 3)
+            (= kind 4)
+            (and (= kind 2) (not (host/paper_pressed 116))))
+    (cancel-power))
   (cond (= kind 0)
           (do
             (model/reset (state))
@@ -153,7 +167,26 @@
             (set! (.degrees (state)) true)
             (when (= id 1) (set! (.scientific (state)) true))
             0)
+        (= kind 6)
+          (do
+            (when (.active (power-hold))
+              (let [held
+                      (and (host/paper_pressed 116)
+                           (not (.open (lighting)))
+                           (msg bool (.window (host/host)) (sel c"isKeyWindow") [])
+                           (!= (& (msg u64 (class c"NSEvent") (sel c"pressedMouseButtons") []) (cast u64 1))
+                               (cast u64 0)))]
+                (when (power/update (power-hold) x held)
+                  (msg i64 (.window (host/host)) (sel c"close") [])
+                  0))
+              (when (not (.active (power-hold))) (host/paper_tick_interval 1.0)))
+            0)
         (light/handle (lighting) 500 kind id x y) 0
+        (and (= kind 1) (= id 116) (host/paper_pressed 116))
+          (do
+            (power/start (power-hold) (host/CACurrentMediaTime))
+            (host/paper_tick_interval 0.02)
+            0)
         (= kind 3)
           (do
             (cond (= id 132) (set! (.scientific (state)) false)

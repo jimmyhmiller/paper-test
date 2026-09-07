@@ -1,0 +1,19 @@
+(module calculator.power)
+
+;;; One continuous pointer hold. Cancellation never resumes without a new press.
+(defstruct Hold [(active bool) (started f64)])
+
+(defn start [(s (ptr Hold)) (now f64)] (-> i64)
+  (set! (.started s) now)
+  (set! (.active s) true)
+  0)
+
+(defn cancel [(s (ptr Hold))] (-> i64)
+  (set! (.active s) false)
+  0)
+
+(defn update [(s (ptr Hold)) (now f64) (held bool)] (-> bool)
+  (cond (not (.active s)) false
+        (not held) (do (cancel s) false)
+        (>= (- now (.started s)) 5.0) (do (cancel s) true)
+        :else false))

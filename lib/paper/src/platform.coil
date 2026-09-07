@@ -32,6 +32,7 @@
    (window-w f64)
    (window-h f64)
    (last-tick f64)
+   (tick-interval f64)
    (next-frame f64)
    (ax-class (ptr i8))
    (ax-slider-class (ptr i8))
@@ -40,7 +41,12 @@
    (logical-h f64)
    (title (ptr i8))
    (keyboard-focus bool)
-   (drag-area Rect)])
+   (drag-area Rect)
+   (shape-available bool)
+   (shaped bool)
+   (shape Rect)
+   (shape-radius f64)
+   (shape-menu (ptr i8))])
 
 (defn host [] (-> (ptr Host))
   (primitive/alloc-static Host))
@@ -62,6 +68,125 @@
 
 (defn paper_arg_app [] (-> i64)
   (.app-index (host)))
+
+;;; Opt-in native window silhouette. Standard Paper apps keep their existing frame.
+(defn paper_window_shape [(bounds Rect) (radius f64) (enabled bool)] (-> i64)
+  (set! (.shape-available (host)) true)
+  (set! (.shape (host)) bounds)
+  (set! (.shape-radius (host)) radius)
+  (set! (.shaped (host)) enabled)
+  0)
+
+(defn shaped-window? [] (-> bool)
+  (.shaped (host)))
+
+(defn shape-path [(width f64) (height f64) (flipped bool)] (-> (ptr i8))
+  (let [r (.shape (host))
+        sx (/ width (logical-width))
+        sy (/ height (logical-height))
+        path (CGPathCreateMutable)]
+    (CGPathAddRoundedRect path
+                          (cast (ptr CGAffine) 0)
+                          (cgrect (* (.x r) sx)
+                                  (* (if flipped (.y r) (- (logical-height) (+ (.y r) (.h r)))) sy)
+                                  (* (.w r) sx)
+                                  (* (.h r) sy))
+                          (* (.shape-radius (host)) sx)
+                          (* (.shape-radius (host)) sy))
+    path))
+
+;;; The mask runs in Core Animation; interactive rendering stays entirely on GPU.
+(defn update-window-mask [] (-> i64)
+  (let [h (host)]
+    (when (!= (.layer h) (nil))
+      (msg i64 (class c"CATransaction") (sel c"begin") [])
+      (msg i64 (class c"CATransaction") (sel c"setDisableActions:") [bool] true)
+      (if (.shaped h)
+          (let [mask (new c"CAShapeLayer")
+                path (shape-path (.window-w h) (.window-h h) (msg bool (.view h) (sel c"isFlipped") []))]
+            (msg i64 mask (sel c"setFrame:") [CGRect] (cgrect 0.0 0.0 (.window-w h) (.window-h h)))
+            (msg i64 mask (sel c"setPath:") [(ptr i8)] path)
+            (msg i64 mask (sel c"setContentsScale:") [f64] (msg f64 (.window h) (sel c"backingScaleFactor") []))
+            (msg i64 (.layer h) (sel c"setMask:") [(ptr i8)] mask)
+            (CGPathRelease path)
+            (release mask))
+          (do (msg i64 (.layer h) (sel c"setMask:") [(ptr i8)] (nil)) 0))
+      (msg i64 (.layer h) (sel c"setOpaque:") [bool] (not (.shaped h)))
+      (msg i64 (class c"CATransaction") (sel c"commit") [])
+      (msg i64 (.window h) (sel c"invalidateShadow") [])
+      0))
+  0)
+
+(defn apply-window-style [] (-> i64)
+  (let [h (host)]
+    (when (!= (.window h) (nil))
+      (msg i64 (.window h) (sel c"setStyleMask:") [u64] (if (.shaped h) 8 32783))
+      (msg i64 (.window h) (sel c"setOpaque:") [bool] (not (.shaped h)))
+      (msg i64
+           (.window h)
+           (sel c"setBackgroundColor:")
+           [(ptr i8)]
+           (msg (ptr i8) (class c"NSColor") (sel (if (.shaped h) c"clearColor" c"windowBackgroundColor")) []))
+      (msg i64 (.window h) (sel c"setTitlebarAppearsTransparent:") [bool] true)
+      (msg i64 (.window h) (sel c"setTitleVisibility:") [i64] 1)
+      (msg i64 (.window h) (sel c"setHasShadow:") [bool] true)
+      (let [r (msg CGRect (.view h) (sel c"bounds") [])]
+        (set! (.window-w h) (.w r))
+        (set! (.window-h h) (.h r)))
+      (update-window-mask)
+      (msg i64 (.window h) (sel c"makeKeyWindow") [])
+      0)
+    (when (!= (.shape-menu h) (nil))
+      (msg i64 (.shape-menu h) (sel c"setState:") [i64] (if (.shaped h) 1 0))
+      0))
+  (paper_redraw)
+  0)
+
+(defn toggle-window-style [(obj (ptr i8)) (selector (ptr i8)) (sender (ptr i8))] (-> i64)
+  (set! (.shaped (host)) (not (.shaped (host))))
+  (apply-window-style))
+
+(defn shape-window-key [(obj (ptr i8)) (selector (ptr i8))] (-> bool)
+  true)
+
+(defn shape-window-class [] (-> (ptr i8))
+  (when (= (class c"CoilPaperShapeWindow") (nil))
+    (let [cls (objc_allocateClassPair (class c"NSWindow") c"CoilPaperShapeWindow" 0)]
+      (class_addMethod cls (sel c"canBecomeKeyWindow") (cast (ptr i8) (fnptr-of shape-window-key)) c"B@:")
+      (class_addMethod cls (sel c"canBecomeMainWindow") (cast (ptr i8) (fnptr-of shape-window-key)) c"B@:")
+      (class_addMethod cls (sel c"togglePaperWindowStyle:") (cast (ptr i8) (fnptr-of toggle-window-style)) c"v@:@")
+      (objc_registerClassPair cls)
+      0))
+  (class c"CoilPaperShapeWindow"))
+
+(extern CGContextDrawImage :cc c [(ptr i8) CGRect (ptr i8)] (-> void))
+
+;;; Export the same silhouette without modifying the renderer's retained pixels.
+(defn window-snapshot [(path (ptr i8))] (-> i64)
+  (if (not (.shaped (host)))
+      (render/snapshot path)
+      (let [s (scene)
+            cs (CGColorSpaceCreateDeviceRGB)
+            ctx
+              (CGBitmapContextCreate (nil)
+                                     (cast u64 (.width s))
+                                     (cast u64 (.height s))
+                                     8
+                                     (cast u64 (* (.width s) 4))
+                                     cs
+                                     0x4001)
+            image (CGBitmapContextCreateImage (.output-context s))
+            outline (shape-path (cast f64 (.width s)) (cast f64 (.height s)) false)]
+        (assert (!= ctx (nil)))
+        (CGContextAddPath ctx outline)
+        (CGContextEOClip ctx)
+        (CGContextDrawImage ctx (cgrect 0.0 0.0 (cast f64 (.width s)) (cast f64 (.height s))) image)
+        (let [status (render/snapshot-context ctx path)]
+          (CGPathRelease outline)
+          (CGImageRelease image)
+          (CGContextRelease ctx)
+          (CGColorSpaceRelease cs)
+          status))))
 
 (defn paper_arg_snapshot [] (-> i64)
   (if (.headless (host)) 1 0))
@@ -286,6 +411,12 @@
 
 (defn paper_pressed [(id i64)] (-> bool)
   (and (= (.drag (host)) id) (= (.hover (host)) id)))
+
+;;; Change event-6 cadence for timed interactions; the default remains one second.
+(defn paper_tick_interval [(seconds f64)] (-> i64)
+  (assert (>= seconds 0.01))
+  (set! (.tick-interval (host)) seconds)
+  0)
 
 (defn paper_light [(x f64) (y f64) (elevation f64) (depth f64) (grain f64)] (-> i64)
   (let [s (scene)]
@@ -811,7 +942,7 @@
 (defn create-window [(width f64) (height f64)] (-> (ptr i8))
   (let [window
           (msg (ptr i8)
-               (msg (ptr i8) (class c"NSWindow") (sel c"alloc") [])
+               (msg (ptr i8) (if (.shape-available (host)) (shape-window-class) (class c"NSWindow")) (sel c"alloc") [])
                (sel c"initWithContentRect:styleMask:backing:defer:")
                [CGRect u64 u64 bool]
                (cgrect 0.0 0.0 width height)
@@ -839,6 +970,8 @@
               value (msg (ptr i8) args (sel c"objectAtIndex:") [i64] (+ (load i) 1))]
           (cond (= (strcmp arg c"--snapshot") 0) (do (set! (.headless app) true) (set! (.snapshot app) value))
                 (= (strcmp arg c"--app") 0) (set! (.app-index app) (msg i64 value (sel c"integerValue") []))
+                (and (.shape-available app) (= (strcmp arg c"--window") 0))
+                  (set! (.shaped app) (not (= (strcmp (utf8 value) c"standard") 0)))
                 :else 0))
         (set! i (+ (load i) 2))))
     (set! (.width (scene)) (cast i64 (* (logical-width) 2.0)))
@@ -846,7 +979,7 @@
     (render/setup)
     (dispatch 0 (.app-index app) 0.0 0.0)
     (if (.headless app)
-        (do (refresh) (let [status (render/snapshot (utf8 (.snapshot app)))] (workers/stop) (release pool) status))
+        (do (refresh) (let [status (window-snapshot (utf8 (.snapshot app)))] (workers/stop) (release pool) status))
         (let [screen (msg CGRect (msg (ptr i8) (class c"NSScreen") (sel c"mainScreen") []) (sel c"visibleFrame") [])
               max-height-scale (/ (- (.h screen) 80.0) (logical-height))
               max-width-scale (/ (- (.w screen) 60.0) (logical-width))
@@ -883,6 +1016,7 @@
                     (gpu/create-layer view w h (msg f64 window (sel c"backingScaleFactor") []))
                     (msg (ptr i8) view (sel c"layer") [])))
           (msg i64 (.layer app) (sel c"setContentsGravity:") [(ptr i8)] (ns c"resize"))
+          (when (.shape-available app) (apply-window-style))
           (msg i64 (.app app) (sel c"setActivationPolicy:") [i64] 0)
           (native-menus)
           (msg i64 (.app app) (sel c"finishLaunching") [])
@@ -927,8 +1061,11 @@
                                     (.w bounds)
                                     (.h bounds)
                                     (msg f64 window (sel c"backingScaleFactor") [])))
+                  (when (.shape-available app) (update-window-mask))
                   (paper_redraw))
-                (when (> (- now (.last-tick app)) 1.0) (set! (.last-tick app) now) (dispatch 6 0 now 0.0)))
+                (when (>= (- now (.last-tick app)) (if (> (.tick-interval app) 0.0) (.tick-interval app) 1.0))
+                  (set! (.last-tick app) now)
+                  (dispatch 6 0 now 0.0)))
               (release iteration-pool)))
           (frame-clock/stop)
           (gpu/synchronize)
@@ -975,6 +1112,21 @@
     (msg i64 edit-item (sel c"setSubmenu:") [(ptr i8)] edit)
     (msg i64 bar (sel c"addItem:") [(ptr i8)] app-item)
     (msg i64 bar (sel c"addItem:") [(ptr i8)] edit-item)
+    (when (.shape-available (host))
+      (let [view-menu (new c"NSMenu")
+            view-item (native-menu-item c"View" (nil) c"")
+            shape-item (native-menu-item c"Calculator-shaped Window" (sel c"togglePaperWindowStyle:") c"b")]
+        (msg i64 view-menu (sel c"setTitle:") [(ptr i8)] (ns c"View"))
+        (msg i64 shape-item (sel c"setTarget:") [(ptr i8)] (.window (host)))
+        (msg i64 shape-item (sel c"setKeyEquivalentModifierMask:") [u64] 1179648)
+        (msg i64 shape-item (sel c"setState:") [i64] (if (.shaped (host)) 1 0))
+        (set! (.shape-menu (host)) shape-item)
+        (msg i64 view-menu (sel c"addItem:") [(ptr i8)] shape-item)
+        (msg i64 view-item (sel c"setSubmenu:") [(ptr i8)] view-menu)
+        (msg i64 bar (sel c"addItem:") [(ptr i8)] view-item)
+        (release shape-item)
+        (release view-menu)
+        (release view-item)))
     (msg i64 (.app (host)) (sel c"setMainMenu:") [(ptr i8)] bar)
     (release quit)
     (release app-menu)

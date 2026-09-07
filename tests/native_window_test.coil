@@ -8,6 +8,53 @@
 (import "coil.arraylist" :as al)
 (import "coil.alloc" :as alloc)
 
+(deftest shaped-window-masks-content-and-restores-standard-chrome
+         (let [pool (new c"NSAutoreleasePool")
+               app (msg (ptr i8) (class c"NSApplication") (sel c"sharedApplication") [])]
+           (scene/init)
+           (host/paper_configure c"Shaped window test" 620.0 790.0)
+           (host/paper_window_shape (rect 38.0 52.0 544.0 698.0) 52.0 true)
+           (set! (.app (host/host)) app)
+           (let [window (host/create-window 620.0 790.0)
+                 view (msg (ptr i8) window (sel c"contentView") [])]
+             (set! (.window (host/host)) window)
+             (set! (.view (host/host)) view)
+             (set! (.window-w (host/host)) 620.0)
+             (set! (.window-h (host/host)) 790.0)
+             (msg i64 view (sel c"setWantsLayer:") [bool] true)
+             (set! (.layer (host/host)) (msg (ptr i8) view (sel c"layer") []))
+             (host/apply-window-style)
+             (assert (= (msg u64 window (sel c"styleMask") []) (cast u64 8)))
+             (assert (not (msg bool window (sel c"isOpaque") [])))
+             (assert (msg bool window (sel c"canBecomeKeyWindow") []))
+             (assert (msg bool window (sel c"canBecomeMainWindow") []))
+             (let [mask (msg (ptr i8) (.layer (host/host)) (sel c"mask") [])
+                   path (msg (ptr i8) mask (sel c"path") [])
+                   bounds (CGPathGetPathBoundingBox path)]
+               (assert (> (.w bounds) 543.9))
+               (assert (> (.h bounds) 697.9))
+               (assert (not (CGPathContainsPoint path (cast (ptr CGAffine) 0) (CGPoint :x 10.0 :y 10.0) false)))
+               (assert (CGPathContainsPoint path (cast (ptr CGAffine) 0) (CGPoint :x 310.0 :y 395.0) false)))
+             (host/native-menus)
+             (assert (= (msg i64 (.shape-menu (host/host)) (sel c"state") []) 1))
+             (assert (msg bool
+                          app
+                          (sel c"sendAction:to:from:")
+                          [(ptr i8) (ptr i8) (ptr i8)]
+                          (sel c"togglePaperWindowStyle:")
+                          window
+                          (.shape-menu (host/host))))
+             (assert (not (host/shaped-window?)))
+             (assert (= (msg i64 (.shape-menu (host/host)) (sel c"state") []) 0))
+             (assert (= (msg u64 window (sel c"styleMask") []) (cast u64 32783)))
+             (assert (= (msg (ptr i8) (.layer (host/host)) (sel c"mask") []) (nil)))
+             (assert (not (msg bool (msg (ptr i8) window (sel c"standardWindowButton:") [u64] 0) (sel c"isHidden") [])))
+             (host/toggle-window-style window (nil) (nil))
+             (assert (host/shaped-window?))
+             (assert (!= (msg (ptr i8) (.layer (host/host)) (sel c"mask") []) (nil)))
+             (release window))
+           (release pool)))
+
 (deftest native-content-covers-window-and-clipped-field-retains-editing-geometry
          (let [pool (new c"NSAutoreleasePool")
                app (msg (ptr i8) (class c"NSApplication") (sel c"sharedApplication") [])

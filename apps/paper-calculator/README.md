@@ -10,6 +10,16 @@ open 'build/Paper Calculator.app'
 
 Requires macOS 14+, Coil, Python 3, and Apple command-line tools. The signed app bundle includes its icon and has no external runtime resources.
 
+The app starts with a calculator-shaped window: transparent outside the casing, tighter rounded corners, and no native traffic lights. Drag the top rim to move it. Hold AC continuously for five seconds to turn it off; a normal click still clears the calculation. Releasing, moving off AC, or switching away cancels shutdown. Keyboard and accessibility clicks clear normally and do not arm shutdown.
+
+Choose **View → Calculator-shaped Window** or press **⇧⌘B** to switch between the shaped treatment and the standard window with traffic lights. The calculation is preserved. To start in the standard style:
+
+```sh
+open -n 'build/Paper Calculator.app' --args --window standard
+```
+
+The style choice lasts for the current run; `--window shaped` selects the default explicitly. The native mask and snapshot export use the casing's same rounded contour. The GPU rendering path stays on the GPU. The lighting panel stays inside the visible casing when dragged.
+
 The inset `123 / ƒx` selector switches between basic and scientific layouts without clearing the calculation. Scientific mode includes sine, cosine, tangent, natural and base-10 logarithms, powers, square root, square, reciprocal, and π. Click DEG/RAD in the display to change angle units.
 
 Use the number keys, decimal point, `+ - * /`, and Return or `=`. Escape or C clears, Backspace deletes an entry digit, `%` computes a percentage, and S switches modes. Tab navigates controls; Return or Space activates a keyboard-focused control. Click ± to change sign. Operators execute immediately from left to right, like a pocket calculator. Repeated equals repeats the last operation. For addition/subtraction, percentages are relative to the left operand; for multiplication/division they divide the entry by 100.

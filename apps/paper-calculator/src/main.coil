@@ -2,7 +2,9 @@
 (import "coil.primitive" :as p)
 (import "paper.platform" :as host)
 (import "calculator.ui" :as ui)
+(import "paper.geometry" :use [rect])
 
 (defn main [] (-> i64)
   (host/paper_configure c"Paper Calculator" 620.0 790.0)
+  (host/paper_window_shape (rect 38.0 52.0 544.0 698.0) 52.0 true)
   (host/paper_run (p/fnptr-of ui/draw) (p/fnptr-of ui/event)))
