@@ -38,6 +38,9 @@
    (ax-class (ptr i8))
    (ax-slider-class (ptr i8))
    (ax-elements (ptr i8))
+   (responsive bool)
+   (minimum-w f64)
+   (minimum-h f64)
    (logical-w f64)
    (logical-h f64)
    (title (ptr i8))
@@ -66,6 +69,29 @@
   (set! (.logical-w (host)) width)
   (set! (.logical-h (host)) height)
   0)
+
+;;; Opt-in responsive layout. A logical unit is one native point, so text and
+;;; controls retain their size while the application reflows its layout. The
+;;; default remains a scaled design canvas for existing illustration-style apps.
+(defn paper_responsive [(minimum-width f64) (minimum-height f64)] (-> i64)
+  (assert (and (>= minimum-width 320.0) (>= minimum-height 240.0)))
+  (set! (.responsive (host)) true)
+  (set! (.minimum-w (host)) minimum-width)
+  (set! (.minimum-h (host)) minimum-height)
+  0)
+
+(defn resize-responsive [(width f64) (height f64)] (-> bool)
+  (if (and (.responsive (host)) (> width 0.0) (> height 0.0)
+           (or (primitive/fcmp-ne width (logical-width)) (primitive/fcmp-ne height (logical-height))))
+    (do
+      (set! (.logical-w (host)) width)
+      (set! (.logical-h (host)) height)
+      (set! (.width (scene)) (cast i64 (* width (.scale (scene)))))
+      (set! (.height (scene)) (cast i64 (* height (.scale (scene)))))
+      (render/setup)
+      (paper_redraw)
+      true)
+    false))
 
 (defn paper_arg_app [] (-> i64)
   (.app-index (host)))
@@ -957,7 +983,7 @@
                (sel c"initWithContentRect:styleMask:backing:defer:")
                [CGRect u64 u64 bool]
                (cgrect 0.0 0.0 width height)
-               32783  ; titled, closable, miniaturizable, resizable, full-size content
+               (if (.responsive (host)) 15 32783) ; responsive apps use a native title bar
                2
                false)]
     (msg i64 window (sel c"setTitlebarAppearsTransparent:") [bool] true)
@@ -1010,12 +1036,14 @@
                (sel c"setTitle:")
                [(ptr i8)]
                (ns (if (= (.title app) (nil)) c"Papercut Studio — made with Coil" (.title app))))
-          (msg i64 window (sel c"setContentAspectRatio:") [CGSize] (CGSize :w (logical-width) :h (logical-height)))
+          (when (not (.responsive app))
+            (msg i64 window (sel c"setContentAspectRatio:") [CGSize] (CGSize :w (logical-width) :h (logical-height))))
           (msg i64
                window
                (sel c"setContentMinSize:")
                [CGSize]
-               (CGSize :w (* (logical-width) 0.6) :h (* (logical-height) 0.6)))
+               (CGSize :w (if (.responsive app) (.minimum-w app) (* (logical-width) 0.6))
+                       :h (if (.responsive app) (.minimum-h app) (* (logical-height) 0.6))))
           (msg i64 view (sel c"setWantsLayer:") [bool] true)
           (msg i64
                view
@@ -1035,6 +1063,7 @@
           (msg i64 window (sel c"makeKeyAndOrderFront:") [(ptr i8)] (nil))
           (msg i64 (.app app) (sel c"activateIgnoringOtherApps:") [bool] true)
           (accessibility-init)
+          (resize-responsive w h)
           (refresh)
           (frame-clock/start view (fnptr-of display-frame) (frame-clock/preferred-rate))
           (while (msg bool window (sel c"isVisible") [])
@@ -1072,6 +1101,7 @@
                                     (.w bounds)
                                     (.h bounds)
                                     (msg f64 window (sel c"backingScaleFactor") [])))
+                  (resize-responsive (.w bounds) (.h bounds))
                   (when (.shape-available app) (update-window-mask))
                   (paper_redraw))
                 (when (>= (- now (.last-tick app)) (if (> (.tick-interval app) 0.0) (.tick-interval app) 1.0))

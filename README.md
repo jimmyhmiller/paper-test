@@ -167,3 +167,11 @@ The runtime currently owns one window and one global scene. The layout package p
 `coil verify` checks formatting, lint, compilation, and the test suite. Performance regressions cover incremental/full-frame agreement, odd image dimensions, lighting invalidation, accumulated raster damage, worker-pool completion and restart, empty masks, cached readback, fractional mask placement, and viewport clipping. The accelerated GPU shadow result is compared byte-for-byte with all 32 original samples. Tests cover cutout pixels, cuts crossing outside edges, light reversal, zero-depth shadows, ink occlusion, nested elevation scopes, layout bounds, disabled controls, focus order, choice navigation, pagination boundaries, and native decoding of the three generated audio tracks. The original examples were checked through the native UI. The new layout pass adds rendered galleries at three logical viewport sizes; see [current validation and native UI limitations](LAYOUT.md).
 
 The project index is [paper-test](pad://paper-test). It links the implementation notes and screenshots. Compiler integration issues are recorded in [coil-bugs](pad://coil-bugs): local dependency native-link propagation and void-returning function-pointer casts, and duplicate wildcard reexports. The Objective-C bridge follows the existing Jim rewrite's ignored-return convention for void selectors pending that compiler fix.
+
+For applications that need readable text at every window size, call
+`paper.platform/paper_responsive MIN_WIDTH MIN_HEIGHT` after `paper_configure`
+and before `paper_run`. This opts into a standard resizable native window with
+one logical unit per native point. On resize Paper recreates the render targets
+and the draw callback sees the current content width and height; the application
+must lay out its panes from those dimensions. Existing apps retain their fixed
+canvas and aspect ratio unless they opt in.
