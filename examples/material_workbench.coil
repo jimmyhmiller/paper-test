@@ -1,0 +1,154 @@
+(module papercut.material-workbench)
+(import "coil.primitive" :as p)
+(import "paper.ui" :use *)
+(import "paper.platform" :as host)
+(import "paper.lighting" :as light)
+
+(defstruct Workbench
+  [(selected i64) (angle f64) (size f64) (show-finish bool) (lighting light/Lighting)])
+
+(defn workbench [] (-> (ptr Workbench))
+  (p/alloc-static Workbench))
+
+(defn material-name [(index i64)] (-> (ptr i8))
+  (case index 0
+        c"Kraft paper" 1
+        c"Cardstock" 2
+        c"Watercolor" 3
+        c"Laid paper" 4
+        c"Washi" 5
+        c"Newsprint" 6
+        c"Corrugated" 7
+        c"Felt" 8
+        c"Woven linen" 9
+        c"Canvas" 10
+        c"Denim" 11
+        c"Burlap" 12
+        c"Knitted wool" 13
+        c"Cork" 14
+        c"Matte leather" 15
+        c"Suede" 16
+        c"Wood veneer" 17
+        c"Matte rubber" 18
+        c"Velvet" 19
+        c"Brushed aluminum" 20
+        c"Satin" 21
+        c"Glazed ceramic" 22
+        c"Polished leather" c"Varnished wood"))
+
+(defn material-at [(index i64)] (-> Material)
+  (case index 0
+        (kraft 0xc29b66) 1
+        (cardstock 0xd9aaa0) 2
+        (watercolor 0xe9e1cf) 3
+        (laid-paper 0xcad0b7) 4
+        (washi 0xe1d5b9) 5
+        (newsprint 0xc5bfae) 6
+        (corrugated 0xb38c59) 7
+        (felt 0x798a6f) 8
+        (woven-linen 0xd1c2a6) 9
+        (canvas 0xb9b3a0) 10
+        (denim 0x58788d) 11
+        (burlap 0xa18b60) 12
+        (knitted-wool 0xc6a28d) 13
+        (cork 0xb39364) 14
+        (leather 0x8b5f49) 15
+        (suede 0xb49a7e) 16
+        (wood-veneer 0xba8d59) 17
+        (rubber 0x65716e) 18
+        (velvet 0x713e60) 19
+        (brushed-aluminum 0xb7bec5) 20
+        (satin 0xb8909c) 21
+        (glazed-ceramic 0x629c98) 22
+        (polished-leather 0x8b5f49) (varnished-wood 0xba8d59)))
+
+(defn selected-stock [(index i64)] (-> Material)
+  (let [stock (texture-angle (texture-scale (material-at index) (.size (workbench))) (.angle (workbench)))]
+    (if (.show-finish (workbench)) stock (without-finish stock))))
+
+(defn swatch [(index i64) (bounds Rect)] (-> i64)
+  (panel bounds 12.0 7.0 (smooth 0x403c35))
+  (begin-sheet)
+  (rounded-path bounds 12.0)
+  (oval-path (rect (- (+ (.x bounds) (.w bounds)) 49.0) (+ (.y bounds) 17.0) 30.0 30.0))
+  (finish-sheet 15.0 (selected-stock index))
+  (host/paper_hit (+ index 1) (.x bounds) (.y bounds) (.w bounds) (.h bounds) (material-name index) 0 0.0)
+  (label (+ (.x bounds) 2.0) (+ (+ (.y bounds) (.h bounds)) 13.0) 15.0 0x393b32 3 (material-name index))
+  0)
+
+(defn overview [] (-> i64)
+  (for [i 0 24]
+    (swatch i
+            (rect (+ 38.0 (* (cast f64 (% i 6)) 202.0))
+                  (+ 158.0 (* (cast f64 (/ i 6)) 170.0))
+                  188.0
+                  128.0)))
+  (label 38.0
+         862.0
+         14.0
+         0x777366
+         0
+         c"Select a swatch to explore its surface. Every opening reveals the layer underneath.")
+  0)
+
+(defn detail [] (-> i64)
+  (let [index (.selected (workbench))
+        stock (selected-stock index)]
+    (panel (rect 44.0 161.0 808.0 660.0) 24.0 6.0 (smooth 0x45483e))
+    (begin-sheet)
+    (rounded-path (rect 44.0 161.0 808.0 660.0) 24.0)
+    (oval-path (rect 594.0 215.0 190.0 190.0))
+    (finish-sheet 29.0 stock)
+    (panel (rect 91.0 668.0 290.0 99.0) 12.0 38.0 (tint stock 0xffffff 0.15))
+    (label 118.0 699.0 23.0 0x33382e 1 c"Made of something.")
+    (label 892.0 173.0 30.0 0x393b32 1 (material-name index))
+    (label 894.0 236.0 16.0 0x777366 0 c"Move the light across the surface.")
+    (label 894.0 267.0 16.0 0x777366 0 c"Rotate or enlarge the texture.")
+    (label 894.0 298.0 16.0 0x777366 0 c"The raised label shares its stock.")
+    (button 100 (rect 894.0 365.0 285.0 48.0) c"All 24 materials" false (cream))
+    (button 101 (rect 894.0 433.0 285.0 48.0) c"Rotate 30 degrees" false (cream))
+    (button 102 (rect 894.0 501.0 285.0 48.0) c"Change texture size" false (cream))
+    (button 103 (rect 894.0 569.0 285.0 48.0) c"Next material" false (cream))
+    (button 104
+            (rect 894.0 637.0 285.0 48.0)
+            (if (.show-finish (workbench)) c"Finish: on" c"Finish: off")
+            false
+            (cream))
+    (label 44.0
+           861.0
+           14.0
+           0x777366
+           0
+           c"Rotate the texture to turn directional highlights. Toggle the finish to compare with the matte surface."))
+  0)
+
+(defn draw [] (-> i64)
+  (host/paper_begin 0xe7e1d4)
+  (light/apply-light (field (workbench) lighting) (rect 0.0 0.0 1280.0 920.0))
+  (host/paper_drag_area (rect 0.0 0.0 1140.0 72.0))
+  (label 38.0 38.0 14.0 0x817765 3 c"PAPERCUT / MATERIAL LIBRARY")
+  (label 38.0 76.0 43.0 0x383c32 1 c"A different kind of surface.")
+  (if (< (.selected (workbench)) 0) (overview) (detail))
+  (light/popover (field (workbench) lighting) 500 (rect 1197.0 57.0 42.0 42.0))
+  0)
+
+(defn event [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
+  (let [w (workbench)]
+    (when (= kind 0)
+      (set! (.selected w) (if (and (> id 0) (<= id 24)) (- id 1) -1))
+      (set! (.angle w) 0.0)
+      (set! (.size w) 1.0)
+      (set! (.show-finish w) true)
+      (set! (.lighting w) (light/lighting 0.5 0.7 650.0 0.65 1.0)))
+    (when (not (light/handle (field w lighting) 500 kind id x y))
+      (when (= kind 3)
+        (cond (and (>= id 1) (<= id 24)) (set! (.selected w) (- id 1))
+              (= id 100) (set! (.selected w) -1)
+              (= id 101) (set! (.angle w) (+ (.angle w) 30.0))
+              (= id 102) (set! (.size w) (if (>= (.size w) 2.0) 0.5 (* (.size w) 2.0)))
+              (= id 103) (set! (.selected w) (% (+ (.selected w) 1) 24))
+              (= id 104) (set! (.show-finish w) (not (.show-finish w))))
+        (host/paper_redraw))
+      (when (and (= kind 4) (= id 53)) (set! (.selected w) -1) (host/paper_redraw))
+      0))
+  0)

@@ -1,4 +1,5 @@
 (module paper.masks)
+(import "paper.material" :as material)
 (import "coil.primitive" :as p)
 (import "coil.arraylist" :as al)
 (import "coil.alloc" :as alloc)
@@ -32,7 +33,23 @@
    (canvas-w f32)
    (canvas-h f32)
    (pad0 f32)
-   (pad1 f32)])
+   (pad1 f32)
+   (pattern-kind f32)
+   (pattern-size f32)
+   (pattern-angle f32)
+   (pattern-relief f32)
+   (pattern-x f32)
+   (pattern-y f32)
+   (backing-scale f32)
+   (pattern-seed f32)
+   (finish-rough f32)
+   (finish-axis-x f32)
+   (finish-axis-y f32)
+   (finish-pad0 f32)
+   (finish-specular f32)
+   (finish-metallic f32)
+   (finish-sheen f32)
+   (finish-pad1 f32)])
 
 (defstruct ClearColor [(r f64) (g f64) (b f64) (a f64)])
 
@@ -231,9 +248,13 @@
             (mut error) (nil)]
         (msg i64 descriptor (sel c"setVertexFunction:") [(ptr i8)] vertex)
         (msg i64 descriptor (sel c"setFragmentFunction:") [(ptr i8)] fragment)
-        (for [i 0 3]
+        (for [i 0 6]
           (let [color (msg (ptr i8) attachments (sel c"objectAtIndexedSubscript:") [u64] (cast u64 i))]
-            (msg i64 color (sel c"setPixelFormat:") [u64] (if (= i 1) (cast u64 10) (cast u64 70)))
+            (msg i64
+                 color
+                 (sel c"setPixelFormat:")
+                 [u64]
+                 (if (>= i 3) (cast u64 115) (if (= i 1) (cast u64 10) (cast u64 70))))
             (msg i64 color (sel c"setBlendingEnabled:") [bool] true)
             (msg i64 color (sel c"setSourceRGBBlendFactor:") [u64] 1)
             (msg i64 color (sel c"setDestinationRGBBlendFactor:") [u64] 5)
@@ -260,7 +281,9 @@
                  (rough f64)
                  (fiber f64)
                  (seed f64)
-                 (kind f32)] (-> i64)
+                 (kind f32)
+                 (pattern material/Pattern)
+                 (finish material/Finish)] (-> i64)
   (let [s (scene)
         params
           (Draw
@@ -279,9 +302,25 @@
             :canvas-w (cast f32 (.width s))
             :canvas-h (cast f32 (.height s))
             :pad0 0.0
-            :pad1 0.0)]
-    (msg i64 encoder (sel c"setVertexBytes:length:atIndex:") [(ref Draw) u64 u64] params 64 0)
-    (msg i64 encoder (sel c"setFragmentBytes:length:atIndex:") [(ref Draw) u64 u64] params 64 0)
+            :pad1 0.0
+            :pattern-kind (cast f32 (.kind pattern))
+            :pattern-size (cast f32 (.size pattern))
+            :pattern-angle (cast f32 (.angle pattern))
+            :pattern-relief (cast f32 (.relief pattern))
+            :pattern-x (cast f32 (.x pattern))
+            :pattern-y (cast f32 (.y pattern))
+            :backing-scale (cast f32 (.scale s))
+            :pattern-seed (cast f32 seed)
+            :finish-rough (cast f32 (.roughness finish))
+            :finish-axis-x (cast f32 (* (.anisotropy finish) (cos (* 2.0 (.angle pattern)))))
+            :finish-axis-y (cast f32 (* (.anisotropy finish) (sin (* 2.0 (.angle pattern)))))
+            :finish-pad0 0.0
+            :finish-specular (cast f32 (.specular finish))
+            :finish-metallic (cast f32 (.metallic finish))
+            :finish-sheen (cast f32 (.sheen finish))
+            :finish-pad1 0.0)]
+    (msg i64 encoder (sel c"setVertexBytes:length:atIndex:") [(ref Draw) u64 u64] params (cast u64 (p/sizeof Draw)) 0)
+    (msg i64 encoder (sel c"setFragmentBytes:length:atIndex:") [(ref Draw) u64 u64] params (cast u64 (p/sizeof Draw)) 0)
     (msg i64 encoder (sel c"setFragmentTexture:atIndex:") [(ptr i8) u64] texture 0)
     (msg i64 encoder (sel c"drawPrimitives:vertexStart:vertexCount:") [u64 u64 u64] 3 0 6))
   0)
@@ -318,7 +357,17 @@
             :font 0
             :kind 0)
         texture (lookup key (cast i64 (.w b)) (cast i64 (.h b)))]
-    (draw-mask encoder texture b (.color item) (.z item) (.rough item) (.fiber item) (.seed item) 0.0))
+    (draw-mask encoder
+               texture
+               b
+               (.color item)
+               (.z item)
+               (.rough item)
+               (.fiber item)
+               (.seed item)
+               0.0
+               (.pattern item)
+               (.finish item)))
   0)
 
 (defn ink [(encoder (ptr i8)) (item Ink)] (-> i64)
@@ -343,7 +392,7 @@
             :font (.font item)
             :kind (+ (.kind item) 1))
         texture (lookup key (cast i64 (.w b)) (cast i64 (.h b)))]
-    (draw-mask encoder texture b (.color item) 0.0 0.0 0.0 0.0 1.0))
+    (draw-mask encoder texture b (.color item) 0.0 0.0 0.0 0.0 1.0 (material/plain-pattern) (material/matte-finish)))
   0)
 
 (defn render [] (-> i64)
@@ -352,7 +401,7 @@
         command (gpu/command-buffer)
         descriptor (msg (ptr i8) (class c"MTLRenderPassDescriptor") (sel c"renderPassDescriptor") [])
         attachments (msg (ptr i8) descriptor (sel c"colorAttachments") [])]
-    (for [i 0 3]
+    (for [i 0 6]
       (let [color (msg (ptr i8) attachments (sel c"objectAtIndexedSubscript:") [u64] (cast u64 i))
             clear
               (case i 0
@@ -367,12 +416,34 @@
                             :g 0.0
                             :b 0.0
                             :a 1.0))
+                      3
+                    (load (ClearColor
+                            :r 0.0
+                            :g 0.0
+                            :b 0.0
+                            :a 1.0))
+                      4
+                    (load (ClearColor
+                            :r 0.5
+                            :g 0.0
+                            :b 0.0
+                            :a 1.0))
+                      5
+                    (load (ClearColor
+                            :r 0.0
+                            :g 0.0
+                            :b 0.0
+                            :a 1.0))
                       (load (ClearColor
                               :r 0.6
                               :g 0.4
                               :b 0.12
                               :a 1.0)))]
-        (msg i64 color (sel c"setTexture:") [(ptr i8)] (case i 0 (.colors g) 1 (.heights g) (.materials g)))
+        (msg i64
+             color
+             (sel c"setTexture:")
+             [(ptr i8)]
+             (case i 0 (.colors g) 1 (.heights g) 3 (.micro g) 4 (.finish-shape g) 5 (.finish-weight g) (.materials g)))
         (msg i64 color (sel c"setLoadAction:") [u64] 2)
         (msg i64 color (sel c"setStoreAction:") [u64] 1)
         (msg i64 color (sel c"setClearColor:") [ClearColor] clear)))

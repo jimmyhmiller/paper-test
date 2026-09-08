@@ -8,4 +8,5 @@
          (assert (= (p/sizeof g/Runtime) 64))
          (assert (= (p/sizeof g/Target) 16))
          (assert (= (p/sizeof g/Action) 32))
-         (assert (= (p/sizeof g/SurfaceSize) 20)))
+         (assert (= (p/sizeof g/SurfaceSize) 20))
+         (assert (= (p/sizeof g/PaperMaterial) 80)))

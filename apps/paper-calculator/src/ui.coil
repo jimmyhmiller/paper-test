@@ -4,7 +4,7 @@
 (import "paper.platform" :as host)
 (import "paper.objc" :use *)
 (import "calculator.model" :as model)
-(import "calculator.lettering" :use [carved])
+(import "paper.lettering" :use [carved])
 (import "paper.lighting" :as light)
 (import "calculator.power" :as power)
 
@@ -61,7 +61,7 @@
         z (if (host/paper_pressed control) 29.0 (if (host/paper_hovered control) 37.0 35.0))
         material (control-stock control (cotton (if (and (>= id 11) (<= id 15)) 0xed7959 0xf0d9b5)))]
     (panel r 18.0 z material)
-    (carved (inset r 9.0) (key-name id) size z false)
+    (carved (inset r 9.0) (key-name id) size 3 z false (cotton 0x30281b))
     (when (and (> id 0) (= (.operation (state)) id))
       (panel (rect (+ (.x r) 25.0) (- (+ (.y r) (.h r)) 9.0) (- (.w r) 50.0) 2.0) 1.0 z (cotton 0x633621)))
     (hit control r (key-name id)))
@@ -84,7 +84,7 @@
          (if (.error (state))
              c"UNDEFINED RESULT · AC TO CLEAR"
              (if (!= (.operation (state)) 0) (key-name (.operation (state))) c"PAPER / CALCULATOR")))
-  (carved (rect 121.0 158.0 376.0 63.0) (model/display (state)) 68.0 4.0 true)
+  (carved (rect 121.0 158.0 376.0 63.0) (model/display (state)) 68.0 3 4.0 true (cotton 0x30281b))
   (if (.scientific (state))
       (do
         (for [i 0 10]
@@ -167,6 +167,7 @@
             (set! (.degrees (state)) true)
             (when (= id 1) (set! (.scientific (state)) true))
             0)
+        (light/handle (lighting) 500 kind id x y) 0
         (= kind 6)
           (do
             (when (.active (power-hold))
@@ -181,7 +182,6 @@
                   0))
               (when (not (.active (power-hold))) (host/paper_tick_interval 1.0)))
             0)
-        (light/handle (lighting) 500 kind id x y) 0
         (and (= kind 1) (= id 116) (host/paper_pressed 116))
           (do
             (power/start (power-hold) (host/CACurrentMediaTime))

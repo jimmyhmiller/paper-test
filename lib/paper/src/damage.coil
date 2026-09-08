@@ -1,4 +1,5 @@
 (module paper.damage)
+(import "paper.material" :as material)
 (import "coil.primitive" :as p)
 (import "coil.alloc" :as alloc)
 (import "coil.arraylist" :as al)
@@ -71,6 +72,8 @@
        (p/fcmp-eq (.rough a) (.rough b))
        (p/fcmp-eq (.fiber a) (.fiber b))
        (p/fcmp-eq (.seed a) (.seed b))
+       (material/pattern-equal (.pattern a) (.pattern b))
+       (material/finish-equal (.finish a) (.finish b))
        (CGPathEqualToPath (.path a) (.path b))))
 
 (defn ink-equal [(a Ink) (b Ink)] (-> bool)

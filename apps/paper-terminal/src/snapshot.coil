@@ -25,7 +25,7 @@
 
 (defstruct FrameSample [(signature i64) (premultiplication-errors i64)])
 
-(defn sample [(view (ptr i8))] (-> FrameSample)
+(defn sample-region [(view (ptr i8)) (x0 i64) (y0 i64) (width i64) (height i64)] (-> FrameSample)
   ; Inspect the actual published BGRA frame, not the generated shader source.
   (let [layer (o/msg (ptr i8) view (o/sel c"layer") [])
         surface (o/retain (o/msg (ptr i8) layer (o/sel c"contents") []))
@@ -35,19 +35,37 @@
     (assert (= (IOSurfaceLock surface 1 (cast (ptr u32) 0)) (cast i32 0)))
     (let [bytes (cast (ptr u8) (IOSurfaceGetBaseAddress surface))
           stride (cast i64 (IOSurfaceGetBytesPerRow surface))]
-      (for [y 0 (cast i64 (IOSurfaceGetHeight surface))]
-        (for [x 0 (cast i64 (IOSurfaceGetWidth surface))]
+      (assert (>= x0 0))
+      (assert (>= y0 0))
+      (assert (<= (+ x0 width) (cast i64 (IOSurfaceGetWidth surface))))
+      (assert (<= (+ y0 height) (cast i64 (IOSurfaceGetHeight surface))))
+      (for [y
+            y0
+            (if (> height 0)
+                (+ y0 height)
+                (cast i64 (IOSurfaceGetHeight surface)))]
+        (for [x
+              x0
+              (if (> width 0)
+                  (+ x0 width)
+                  (cast i64 (IOSurfaceGetWidth surface)))]
           (let [offset (+ (* y stride) (* x 4))
                 b (cast i64 (load (p/index bytes offset)))
                 g (cast i64 (load (p/index bytes (+ offset 1))))
                 r (cast i64 (load (p/index bytes (+ offset 2))))
                 a (cast i64 (load (p/index bytes (+ offset 3))))]
-            (set! signature (+ (load signature) (* (+ (+ b (* g 3)) (+ (* r 7) (* a 11))) (+ 1 (% x 251)))))
+            (set! signature
+                  (+ (load signature)
+                     (* (+ (+ b (* g 3)) (+ (* r 7) (* a 11))) (+ 1 (% x 251)))))
             (when (or (> r (+ a 1)) (> g (+ a 1)) (> b (+ a 1)))
               (set! errors (+ (load errors) 1)))))))
     (assert (= (IOSurfaceUnlock surface 1 (cast (ptr u32) 0)) (cast i32 0)))
     (o/release surface)
-    (FrameSample :signature (load signature) :premultiplication-errors (load errors))))
+    (FrameSample :signature (load signature)
+      :premultiplication-errors (load errors))))
+
+(defn sample [(view (ptr i8))] (-> FrameSample)
+  (sample-region view 0 0 0 0))
 
 (defn write [(view (ptr i8)) (bounds Rect) (path (ptr i8))] (-> i64)
   (let [layer (o/msg (ptr i8) view (o/sel c"layer") [])
@@ -68,9 +86,13 @@
             output (.output-context (scene/scene))]
         (render/render-frame true)
         (host/CGContextSaveGState output)
-        (host/CGContextTranslateCTM output (.x bounds) (+ (.y bounds) (.h bounds)))
+        (host/CGContextTranslateCTM output
+                                    (.x bounds)
+                                    (+ (.y bounds) (.h bounds)))
         (host/CGContextScaleCTM output 1.0 -1.0)
-        (CGContextDrawImage output (host/cgrect 0.0 0.0 (.w bounds) (.h bounds)) image)
+        (CGContextDrawImage output
+                            (host/cgrect 0.0 0.0 (.w bounds) (.h bounds))
+                            image)
         (host/CGContextRestoreGState output)
         (assert (= (render/snapshot path) 0))
         (host/CGImageRelease image))

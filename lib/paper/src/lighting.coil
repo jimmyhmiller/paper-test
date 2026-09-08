@@ -14,6 +14,19 @@
    (default-y f64)
    (default-height f64)
    (default-depth f64)
+   (default-grain f64)
+   (start-x f64)
+   (start-y f64)
+   (start-height f64)
+   (start-depth f64)
+   (start-grain f64)
+   (target-x f64)
+   (target-y f64)
+   (target-height f64)
+   (target-depth f64)
+   (target-grain f64)
+   (animation-start f64)
+   (animating bool)
    (open bool)
    (positioned bool)
    (dragging bool)
@@ -34,6 +47,19 @@
     :default-y y
     :default-height height
     :default-depth depth
+    :default-grain grain
+    :start-x x
+    :start-y y
+    :start-height height
+    :start-depth depth
+    :start-grain grain
+    :target-x x
+    :target-y y
+    :target-height height
+    :target-depth depth
+    :target-grain grain
+    :animation-start 0.0
+    :animating false
     :open false
     :positioned false
     :dragging false
@@ -42,6 +68,75 @@
     :drag-limits (rect 0.0 0.0 0.0 0.0)
     :bounds (rect 0.0 0.0 0.0 0.0)
     :viewport (rect 0.0 0.0 1.0 1.0)))
+
+(defn mix [(a f64) (b f64) (amount f64)] (-> f64)
+  (+ a (* (- b a) amount)))
+
+;;; Reset over a short ease-out rather than making the paper lighting jump.
+(defn animate-to-at [(s (ptr Lighting))
+                     (x f64)
+                     (y f64)
+                     (height f64)
+                     (depth f64)
+                     (grain f64)
+                     (now f64)] (-> i64)
+  (set! (.start-x s) (.x s))
+  (set! (.start-y s) (.y s))
+  (set! (.start-height s) (.height s))
+  (set! (.start-depth s) (.depth s))
+  (set! (.start-grain s) (.grain s))
+  (set! (.target-x s) x)
+  (set! (.target-y s) y)
+  (set! (.target-height s) height)
+  (set! (.target-depth s) depth)
+  (set! (.target-grain s) grain)
+  (set! (.animation-start s) now)
+  (set! (.animating s) true)
+  (host/paper_tick_interval 0.016)
+  (host/paper_redraw))
+
+(defn animate-to [(s (ptr Lighting))
+                  (x f64)
+                  (y f64)
+                  (height f64)
+                  (depth f64)
+                  (grain f64)] (-> i64)
+  (animate-to-at s x y height depth grain (host/CACurrentMediaTime)))
+
+(defn animate-default-at [(s (ptr Lighting)) (now f64)] (-> i64)
+  (animate-to-at s
+                 (.default-x s)
+                 (.default-y s)
+                 (.default-height s)
+                 (.default-depth s)
+                 (.default-grain s)
+                 now))
+
+(defn animate-default [(s (ptr Lighting))] (-> i64)
+  (animate-default-at s (host/CACurrentMediaTime)))
+
+(defn cancel-animation [(s (ptr Lighting))] (-> i64)
+  (when (.animating s)
+    (set! (.animating s) false)
+    (host/paper_tick_interval 1.0))
+  0)
+
+(defn advance-animation [(s (ptr Lighting)) (now f64)] (-> bool)
+  (if (not (.animating s))
+      false
+      (let [progress (clamp (/ (- now (.animation-start s)) 0.32) 0.0 1.0)
+            remaining (- 1.0 progress)
+            amount (- 1.0 (* remaining (* remaining remaining)))]
+        (set! (.x s) (mix (.start-x s) (.target-x s) amount))
+        (set! (.y s) (mix (.start-y s) (.target-y s) amount))
+        (set! (.height s) (mix (.start-height s) (.target-height s) amount))
+        (set! (.depth s) (mix (.start-depth s) (.target-depth s) amount))
+        (set! (.grain s) (mix (.start-grain s) (.target-grain s) amount))
+        (when (>= progress 1.0)
+          (set! (.animating s) false)
+          (host/paper_tick_interval 1.0))
+        (host/paper_redraw)
+        true)))
 
 (defn apply-light [(s (ptr Lighting)) (viewport Rect)] (-> i64)
   (set! (.viewport s) viewport)
@@ -52,11 +147,15 @@
                     (.grain s)))
 
 (defn map-bounds [(s (ptr Lighting))] (-> Rect)
-  (let [r (.bounds s)] (rect (+ (.x r) 22.0) (+ (.y r) 61.0) (- (.w r) 44.0) (- (.h r) 178.0))))
+  (let [r (.bounds s)]
+    (rect (+ (.x r) 22.0) (+ (.y r) 61.0) (- (.w r) 44.0) (- (.h r) 178.0))))
 
 (defn track-bounds [(s (ptr Lighting)) (row i64)] (-> Rect)
   (let [r (.bounds s)]
-    (rect (+ (.x r) 100.0) (+ (.y r) (+ (- (.h r) 99.0) (* (cast f64 row) 36.0))) (- (.w r) 126.0) 24.0)))
+    (rect (+ (.x r) 100.0)
+          (+ (.y r) (+ (- (.h r) 99.0) (* (cast f64 row) 36.0)))
+          (- (.w r) 126.0)
+          24.0)))
 
 (defn sun [(r Rect) (z f64)] (-> i64)
   (let [x (+ (.x r) (* (.w r) 0.5))
@@ -67,10 +166,14 @@
             dx (host/cos angle)
             dy (host/sin angle)]
         (begin-sheet)
-        (move-to (+ x (- (* dx 7.0) (* dy 0.65))) (+ y (+ (* dy 7.0) (* dx 0.65))))
-        (line-to (+ x (- (* dx 10.0) (* dy 0.65))) (+ y (+ (* dy 10.0) (* dx 0.65))))
-        (line-to (+ x (+ (* dx 10.0) (* dy 0.65))) (+ y (- (* dy 10.0) (* dx 0.65))))
-        (line-to (+ x (+ (* dx 7.0) (* dy 0.65))) (+ y (- (* dy 7.0) (* dx 0.65))))
+        (move-to (+ x (- (* dx 7.0) (* dy 0.65)))
+                 (+ y (+ (* dy 7.0) (* dx 0.65))))
+        (line-to (+ x (- (* dx 10.0) (* dy 0.65)))
+                 (+ y (+ (* dy 10.0) (* dx 0.65))))
+        (line-to (+ x (+ (* dx 10.0) (* dy 0.65)))
+                 (+ y (- (* dy 10.0) (* dx 0.65))))
+        (line-to (+ x (+ (* dx 7.0) (* dy 0.65)))
+                 (+ y (- (* dy 7.0) (* dx 0.65))))
         (close-path)
         (finish-sheet z (cotton 0x796343)))))
   0)
@@ -94,7 +197,9 @@
                 (- (.y anchor) (+ height 16.0))
                 (+ (+ (.y anchor) (.h anchor)) 16.0))
           x
-            (clamp (if (.positioned s) (.x (.bounds s)) (- (+ (.x anchor) (.w anchor)) width))
+            (clamp (if (.positioned s)
+                       (.x (.bounds s))
+                       (- (+ (.x anchor) (.w anchor)) width))
                    (+ (.x v) 16.0)
                    (- (+ (.x v) (.w v)) (+ width 16.0)))
           y
@@ -108,13 +213,20 @@
           map (map-bounds s)]
       (panel r 22.0 48.0 (cotton 0xece0c6))
       (hit (+ base-id 5) r c"Lighting panel")
-      (hit (+ base-id 7) (rect (+ (.x r) 10.0) (+ (.y r) 8.0) (- (.w r) 65.0) 44.0) c"Move lighting panel")
+      (hit (+ base-id 7)
+           (rect (+ (.x r) 10.0) (+ (.y r) 8.0) (- (.w r) 65.0) 44.0)
+           c"Move lighting panel")
       (ink-height 48.0)
       (label (+ (.x r) 22.0) (+ (.y r) 20.0) 18.0 0x493f2e 3 c"Light")
       (label (- (+ (.x r) (.w r)) 40.0) (+ (.y r) 19.0) 20.0 0x796343 0 c"×")
-      (hit base-id (rect (- (+ (.x r) (.w r)) 49.0) (+ (.y r) 9.0) 36.0 36.0) c"Close lighting")
+      (hit base-id
+           (rect (- (+ (.x r) (.w r)) 49.0) (+ (.y r) 9.0) 36.0 36.0)
+           c"Close lighting")
       (recess map 12.0 48.0 3.0 1.0 (cotton 0xc4b89e) (cotton 0xd7cbb1))
-      (frame (rect (+ (.x map) (* (.w map) 0.25)) (+ (.y map) (* (.h map) 0.25)) (* (.w map) 0.5) (* (.h map) 0.5))
+      (frame (rect (+ (.x map) (* (.w map) 0.25))
+                   (+ (.y map) (* (.h map) 0.25))
+                   (* (.w map) 0.5)
+                   (* (.h map) 0.5))
              4.0
              0.8
              46.0
@@ -128,33 +240,57 @@
       (for [i 0 2]
         (let [rtrack (track-bounds s i)]
           (ink-height 48.0)
-          (label (+ (.x r) 22.0) (+ (.y rtrack) 4.0) 12.0 0x6b5d46 0 (if (= i 0) c"Height" c"Relief"))
+          (label (+ (.x r) 22.0)
+                 (+ (.y rtrack) 4.0)
+                 12.0
+                 0x6b5d46
+                 0
+                 (if (= i 0) c"Height" c"Relief"))
           (track (+ base-id (+ 2 i))
                  rtrack
                  (if (= i 0) c"Light height" c"Paper relief")
-                 (if (= i 0) (/ (- (.height s) 200.0) 1800.0) (/ (.depth s) 1.5)))))
+                 (if (= i 0)
+                     (/ (- (.height s) 200.0) 1800.0)
+                     (/ (.depth s) 1.5)))))
       (ink-height 48.0)
-      (label (+ (.x r) 22.0) (+ (.y r) (- (.h r) 28.0)) 11.0 0x796343 0 c"Reset")
-      (hit (+ base-id 4) (rect (+ (.x r) 14.0) (+ (.y r) (- (.h r) 37.0)) 65.0 30.0) c"Reset lighting")))
+      (label (+ (.x r) 22.0)
+             (+ (.y r) (- (.h r) 28.0))
+             11.0
+             0x796343
+             0
+             c"Reset")
+      (hit (+ base-id 4)
+           (rect (+ (.x r) 14.0) (+ (.y r) (- (.h r) 37.0)) 65.0 30.0)
+           c"Reset lighting")))
   0)
 
 ;;; Default launcher; apps may draw a custom icon and call popover-panel instead.
 (defn popover [(s (ptr Lighting)) (base-id i64) (anchor Rect)] (-> i64)
   (popover-panel s base-id anchor)
   (when (not (.open s))
-    (disc (+ (.x anchor) (* 0.5 (- (.w anchor) 28.0)))
-          (+ (.y anchor) (* 0.5 (- (.h anchor) 28.0)))
-          28.0
-          27.0
-          (control-stock base-id (cotton 0xead8b7)))
-    (sun anchor 28.0)
+    ; Keep the launcher in the drawing's ink plane. A raised paper disc at the
+    ; top edge can protrude beyond the window mask and look clipped.
+    (ink-height 4.0)
+    (label (+ (.x anchor) 6.0)
+           (+ (.y anchor) 5.0)
+           18.0
+           0x42452f
+           0
+           c"☀")
     (hit base-id anchor c"Adjust lighting"))
   0)
 
 ;;; Return true when consumed. Sliders support both dragging and keyboard/AX steps.
-(defn handle [(s (ptr Lighting)) (base-id i64) (kind i64) (id i64) (x f64) (y f64)] (-> bool)
-  (cond (or (= kind 0) (= kind 6)) false
-        (and (.open s) (= kind 4) (= id 53)) (do (set! (.open s) false) (host/paper_redraw) true)
+(defn handle [(s (ptr Lighting))
+              (base-id i64)
+              (kind i64)
+              (id i64)
+              (x f64)
+              (y f64)] (-> bool)
+  (cond (= kind 0) false
+        (= kind 6) (advance-animation s x)
+        (and (.open s) (= kind 4) (= id 53))
+          (do (set! (.open s) false) (host/paper_redraw) true)
         (or (< id base-id) (> id (+ base-id 7))) (.open s)
         :else
           (do
@@ -164,33 +300,41 @@
                       (set! (.grab-y s) (- y (.y (.bounds s))))
                       (set! (.dragging s) true))
                   (and (.open s) (.dragging s) (= id (+ base-id 7)) (= kind 2))
-                    (let [v (if (> (.w (.drag-limits s)) 0.0) (.drag-limits s) (.viewport s))
+                    (let [v
+                            (if (> (.w (.drag-limits s)) 0.0)
+                                (.drag-limits s)
+                                (.viewport s))
                           r (.bounds s)]
                       (set! (.bounds s)
-                            (rect (clamp (- x (.grab-x s)) (+ (.x v) 16.0) (- (+ (.x v) (.w v)) (+ (.w r) 16.0)))
-                                  (clamp (- y (.grab-y s)) (+ (.y v) 16.0) (- (+ (.y v) (.h v)) (+ (.h r) 16.0)))
+                            (rect (clamp (- x (.grab-x s))
+                                         (+ (.x v) 16.0)
+                                         (- (+ (.x v) (.w v)) (+ (.w r) 16.0)))
+                                  (clamp (- y (.grab-y s))
+                                         (+ (.y v) 16.0)
+                                         (- (+ (.y v) (.h v)) (+ (.h r) 16.0)))
                                   (.w r)
                                   (.h r)))
                       (set! (.positioned s) true))
-                  (and (= kind 3) (or (= id base-id) (= id (+ base-id 6)))) (set! (.open s) (not (.open s)))
+                  (and (= kind 3) (or (= id base-id) (= id (+ base-id 6))))
+                    (set! (.open s) (not (.open s)))
                   (and (.open s) (= kind 3) (= id (+ base-id 4)))
-                    (do
-                      (set! (.x s) (.default-x s))
-                      (set! (.y s) (.default-y s))
-                      (set! (.height s) (.default-height s))
-                      (set! (.depth s) (.default-depth s)))
+                    (animate-default s)
                   (and (.open s) (or (= kind 1) (= kind 2)))
-                    (cond (= id (+ base-id 1))
-                            (let [r (map-bounds s)]
-                              (set! (.x s) (- (* 3.0 (fraction x (.x r) (.w r))) 1.0))
-                              (set! (.y s) (- (* 3.0 (fraction y (.y r) (.h r))) 1.0)))
-                          (or (= id (+ base-id 2)) (= id (+ base-id 3)))
-                            (let [r (track-bounds s (- id (+ base-id 2)))
-                                  v (fraction x (.x r) (.w r))]
-                              (if (= id (+ base-id 2))
-                                  (set! (.height s) (+ 200.0 (* v 1800.0)))
-                                  (set! (.depth s) (* v 1.5))))
-                          :else 0)
+                    (do
+                      (cancel-animation s)
+                      (cond (= id (+ base-id 1))
+                              (let [r (map-bounds s)]
+                                (set! (.x s)
+                                      (- (* 3.0 (fraction x (.x r) (.w r))) 1.0))
+                                (set! (.y s)
+                                      (- (* 3.0 (fraction y (.y r) (.h r))) 1.0)))
+                            (or (= id (+ base-id 2)) (= id (+ base-id 3)))
+                              (let [r (track-bounds s (- id (+ base-id 2)))
+                                    v (fraction x (.x r) (.w r))]
+                                (if (= id (+ base-id 2))
+                                    (set! (.height s) (+ 200.0 (* v 1800.0)))
+                                    (set! (.depth s) (* v 1.5))))
+                            :else 0))
                   :else 0)
             (when (= kind 3) (set! (.dragging s) false))
             (host/paper_redraw)

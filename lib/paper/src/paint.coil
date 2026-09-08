@@ -12,12 +12,15 @@
   (CGContextSetRGBFillColor ctx (channel rgb 16) (channel rgb 8) (channel rgb 0) 1.0)
   0)
 
+;;; One font table for printed ink, native measurement, and carved lettering.
+(defn type-face [(font i64)] (-> (ptr i8))
+  (cond (= font 1) c"Georgia"
+        (= font 2) c"Menlo"
+        (= font 3) c"HelveticaNeue-Medium"
+        :else c"HelveticaNeue"))
+
 (defn ink-attributes [(ink Ink)] (-> (ptr i8))
-  (let [font-name
-          (cond (= (.font ink) 1) c"Georgia"
-                (= (.font ink) 2) c"Menlo"
-                (= (.font ink) 3) c"HelveticaNeue-Medium"
-                :else c"HelveticaNeue")
+  (let [font-name (type-face (.font ink))
         font (msg (ptr i8) (class c"NSFont") (sel c"fontWithName:size:") [(ptr i8) f64] (ns font-name) (.size ink))
         color
           (msg (ptr i8)

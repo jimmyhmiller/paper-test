@@ -1,15 +1,18 @@
 [package]
 name = "papercut"
 entry = "examples/main.coil"
-source-roots = ["examples", "tests", "tools"]
+source-roots = ["examples", "tests", "tools", "../coil-experiments/src"]
 
 [dependencies]
 paper = { path = "lib/paper" }
 layout = { path = "lib/layout" }
+heap-inspector = { path = "../coil-experiments/src/experiments/heap-inspector" }
+live-repl = { path = "../coil-experiments/src/experiments/live-repl" }
 
 [link]
 frameworks = ["AppKit", "QuartzCore", "CoreGraphics", "CoreText", "ImageIO", "CoreFoundation", "AVFoundation", "Metal"]
 libs = ["objc"]
+flags = ["-Wl,-export_dynamic"]
 
 [test]
 roots = ["tests"]

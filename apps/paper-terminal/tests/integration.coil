@@ -13,8 +13,12 @@
 (defn send [(terminal (ptr term/Terminal)) (text (ptr i8))] (-> i64)
   ; Text input is paste-aware: bracketed-paste shells require a real Return key.
   (let [length (host/strlen text)
-        newline (and (> length 0) (= (load (p/index text (cast i64 (- length 1)))) (cast i8 10)))]
-    (g/ghostty_surface_text (.surface terminal) text (if newline (- length 1) length))
+        newline
+          (and (> length 0)
+               (= (load (p/index text (cast i64 (- length 1)))) (cast i8 10)))]
+    (g/ghostty_surface_text (.surface terminal)
+                            text
+                            (if newline (- length 1) length))
     (when newline
       (let [(mut key) (zeroed g/Key)]
         (set! (.action key) 1)
@@ -29,7 +33,11 @@
 
 (defn until-text [(terminal (ptr term/Terminal)) (text (ptr i8))] (-> i64)
   (let [deadline (+ (host/CACurrentMediaTime) 10.0)]
-    (while (not (o/msg bool (content terminal) (o/sel c"containsString:") [(ptr i8)] (o/ns text)))
+    (while (not (o/msg bool
+                       (content terminal)
+                       (o/sel c"containsString:")
+                       [(ptr i8)]
+                       (o/ns text)))
       (assert (< (host/CACurrentMediaTime) deadline))
       (let [pool (o/new c"NSAutoreleasePool")] (app/pump) (o/release pool))))
   0)
@@ -48,21 +56,6 @@
       (set! after (snapshot/sample view)))
     (assert (= (.premultiplication-errors after) 0)))
   0)
-
-(defn generated-material [] (-> (ptr i8))
-  (o/msg (ptr i8)
-         (o/class c"NSString")
-         (o/sel c"stringWithContentsOfFile:encoding:error:")
-         [(ptr i8) u64 (ptr i8)]
-         (o/msg (ptr i8)
-                (.material-directory (app/app))
-                (o/sel c"stringByAppendingPathComponent:")
-                [(ptr i8)]
-                (o/ns (if (= (.material-slot (app/app)) 0)
-                          c"paper-terminal-material-a.glsl"
-                          c"paper-terminal-material-b.glsl")))
-         (cast u64 4)
-         (o/nil)))
 
 (defn mouse-event [(x f64) (y f64)] (-> (ptr i8))
   (o/msg (ptr i8)
@@ -84,11 +77,15 @@
     (app/initialize true)
     (let [first (app/current)]
       (send first
-            c"printf '\\033[2J\\033[H%s_%s\\n' PAPER PTY_A; printf '%s%s\\n' UNICODE: 'café λ 日本語'; printf '\\033]2;First sheet\\007'\n")
+            c"printf '\\033[2J\\033[H%s_%s\\n' PAPER PTY_A; printf '%s%s\\n' UNICODE: 'café λ 日本語'; printf '\\033[41m NATIVE BACKGROUND \\033[0m\\n'; printf '\\033]2;First sheet\\007'\n")
       (until-text first c"PAPER_PTY_A")
       (until-text first c"UNICODE:café λ 日本語")
       (settle)
-      (assert (o/msg bool (.title first) (o/sel c"isEqualToString:") [(ptr i8)] (o/ns c"First sheet")))
+      (assert (o/msg bool
+                     (.title first)
+                     (o/sel c"isEqualToString:")
+                     [(ptr i8)]
+                     (o/ns c"First sheet")))
       ; A material gesture must change the frame Ghostty actually published.
       ; Source-string assertions alone missed the former broken controls.
       (let [before (snapshot/sample (.view first))
@@ -102,12 +99,95 @@
             (app/pump)
             (set! after (snapshot/sample (.view first))))
           (assert (= (.premultiplication-errors after) 0)))
-        (assert (o/msg bool (content first) (o/sel c"isEqualToString:") [(ptr i8)] saved))
+        (assert (o/msg bool
+                       (content first)
+                       (o/sel c"isEqualToString:")
+                       [(ptr i8)]
+                       saved))
         (app/event 3 208 0.0 0.0)
         (settle)
         (o/release saved))
+      ; At zero recess depth opaque cell pixels remain native. Restoring
+      ; physical depth must visibly recess the same region without losing text.
+      (set! (.background-depth (app/app)) 0.0)
+      (set! (.selection-depth (app/app)) 0.0)
+      (app/event 3 206 0.0 0.0)
+      (settle)
+      (let [size (g/ghostty_surface_size (.surface first))
+            padding (cast i64 (* 12.0 (.material-scale (app/app))))
+            cell-w (cast i64 (.cell-width size))
+            cell-h (cast i64 (.cell-height size))
+            native
+              (snapshot/sample-region (.view first)
+                                      padding
+                                      (+ padding (* cell-h 2))
+                                      (* cell-w 19)
+                                      cell-h)
+            before (snapshot/sample (.view first))]
+        (app/event 3 214 0.0 0.0)
+        (until-frame-changes (.view first) (.signature before))
+        (let [paper
+                (snapshot/sample-region (.view first)
+                                        padding
+                                        (+ padding (* cell-h 2))
+                                        (* cell-w 19)
+                                        cell-h)]
+          (assert (= (.signature native) (.signature paper))))
+        (let [before (snapshot/sample (.view first))]
+          (set! (.background-depth (app/app)) 1.2)
+          (set! (.selection-depth (app/app)) 2.5)
+          (app/apply-material)
+          (until-frame-changes (.view first) (.signature before)))
+        (let [pressed
+                (snapshot/sample-region (.view first)
+                                        padding
+                                        (+ padding (* cell-h 2))
+                                        (* cell-w 19)
+                                        cell-h)]
+          (assert (!= (.signature native) (.signature pressed)))))
+      (app/event 3 208 0.0 0.0)
+      (settle)
+      ; Cut paper has independent gap and thickness, and switching modes
+      ; preserves the live shell and its text. Exercise the published frame.
+      (app/event 3 4 0.0 0.0)
+      (app/refresh)
+      (settle)
+      (let [saved (o/retain (content first))
+            before (snapshot/sample (.view first))]
+        (app/event 3 214 0.0 0.0)
+        (until-frame-changes (.view first) (.signature before))
+        (assert (.cut-paper (app/app)))
+        (let [track (app/material-track (.lab-bounds (app/app)) 1)
+              contact-before (snapshot/sample (.view first))]
+          (app/event 3 201 (.x track) (.y track))
+          (until-frame-changes (.view first) (.signature contact-before))
+          (assert (< (.text-gap (app/app)) 0.001))
+          (let [contact (snapshot/sample (.view first))]
+            (app/event 3 201 (+ (.x track) (* (.w track) 0.75)) (.y track))
+            (until-frame-changes (.view first) (.signature contact)))
+          (assert (> (.text-gap (app/app)) 5.99))
+          (assert (< (.text-thickness (app/app)) 0.56)))
+        (let [track (app/material-track (.lab-bounds (app/app)) 2)
+              thin (snapshot/sample (.view first))]
+          (app/event 3 202 (+ (.x track) (.w track)) (.y track))
+          (until-frame-changes (.view first) (.signature thin))
+          (assert (> (.text-thickness (app/app)) 1.49))
+          (assert (> (.text-gap (app/app)) 5.99)))
+        (assert (o/msg bool
+                       (content first)
+                       (o/sel c"isEqualToString:")
+                       [(ptr i8)]
+                       saved))
+        (o/release saved))
+      (let [matte (snapshot/sample (.view first))]
+        (app/event 3 225 0.0 0.0)
+        (until-frame-changes (.view first) (.signature matte)))
+      (app/event 3 224 0.0 0.0)
+      (app/event 3 208 0.0 0.0)
+      (assert (not (.cut-paper (app/app))))
+      (app/event 3 299 0.0 0.0)
       ; A drag changes the Paper light and the completed Ghostty frame before
-      ; mouse-up. Check world coordinates and height in the generated shader.
+      ; mouse-up, using live world-coordinate light uniforms.
       (app/event 3 4 0.0 0.0)
       (app/event 3 210 0.0 0.0)
       (app/refresh)
@@ -115,22 +195,21 @@
       (let [before (snapshot/sample (.view first))
             map (app/light-map-bounds (.lab-bounds (app/app)))
             viewport (.viewport (app/app))
-            event (mouse-event (+ (.x map) (* (.w map) 0.9)) (+ (.y map) (* (.h map) 0.9)))]
-        (assert (= (o/msg (ptr i8) (.window (host/host)) (o/sel c"firstResponder") []) (.view first)))
+            event
+              (mouse-event (+ (.x map) (* (.w map) 0.9))
+                           (+ (.y map) (* (.h map) 0.9)))]
+        (assert (= (o/msg (ptr i8)
+                          (.window (host/host))
+                          (o/sel c"firstResponder")
+                          [])
+                   (.view first)))
         (app/paper-pointer event 1)
-        (assert (= (o/msg (ptr i8) (.window (host/host)) (o/sel c"firstResponder") []) (.view first)))
+        (assert (= (o/msg (ptr i8)
+                          (.window (host/host))
+                          (o/sel c"firstResponder")
+                          [])
+                   (.view first)))
         (until-frame-changes (.view first) (.signature before))
-        (let [shader (generated-material)]
-          (assert (o/msg bool
-                         shader
-                         (o/sel c"containsString:")
-                         [(ptr i8)]
-                         (app/constant-line c"LIGHT_X" (* (.w viewport) 1.3))))
-          (assert (o/msg bool
-                         shader
-                         (o/sel c"containsString:")
-                         [(ptr i8)]
-                         (app/constant-line c"LIGHT_Y" (* (.h viewport) 1.3)))))
         (assert (> (.light-x (scene/scene)) (.w viewport)))
         (assert (> (.light-y (scene/scene)) (.h viewport)))
         (app/paper-pointer event 3))
@@ -138,11 +217,25 @@
             track (app/light-height-track (.lab-bounds (app/app)))]
         (app/event 2 212 (+ (.x track) (* (.w track) 0.25)) (.y track))
         (until-frame-changes (.view first) (.signature before))
-        (assert (o/msg bool
-                       (generated-material)
-                       (o/sel c"containsString:")
-                       [(ptr i8)]
-                       (o/ns c"LIGHT_HEIGHT = 550.0000;"))))
+        (assert (> (.light-height (app/app)) 549.9))
+        (assert (< (.light-height (app/app)) 550.1)))
+      ; Live lighting must not serialize 60 shader compilations or touch
+      ; config files. Bound both input cost and final published-frame latency.
+      (let [map (app/light-map-bounds (.lab-bounds (app/app)))
+            before (snapshot/sample (.view first))
+            start (host/CACurrentMediaTime)]
+        (for [i 0 60]
+          (app/event 2
+                     211
+                     (+ (.x map) (* (.w map) (/ (cast f64 i) 60.0)))
+                     (+ (.y map) (* (.h map) 0.25))))
+        (let [submitted (host/CACurrentMediaTime)]
+          (assert (< (- submitted start) 0.25))
+          (until-frame-changes (.view first) (.signature before))
+          (n/printf c"LIVE MATERIAL: 60 updates %.2f ms; publish %.2f ms\n"
+                    (* (- submitted start) 1000.0)
+                    (* (- (host/CACurrentMediaTime) submitted) 1000.0))
+          (assert (< (- (host/CACurrentMediaTime) submitted) 0.25))))
       (app/event 3 213 0.0 0.0)
       (app/event 3 299 0.0 0.0)
       (app/refresh)
@@ -151,12 +244,20 @@
       (app/refresh)
       (settle)
       (assert (.open (app/lighting)))
-      (assert (<= (+ (.x (.terminal-bounds (app/app))) (.w (.terminal-bounds (app/app)))) (.x (.bounds (app/lighting)))))
+      (assert (<= (+ (.x (.terminal-bounds (app/app)))
+                     (.w (.terminal-bounds (app/app))))
+                  (.x (.bounds (app/lighting)))))
       (let [before (snapshot/sample (.view first))
             map (light/map-bounds (app/lighting))
-            gesture (mouse-event (+ (.x map) (* (.w map) 0.8)) (+ (.y map) (* (.h map) 0.8)))]
+            gesture
+              (mouse-event (+ (.x map) (* (.w map) 0.8))
+                           (+ (.y map) (* (.h map) 0.8)))]
         (app/paper-pointer gesture 1)
-        (assert (= (o/msg (ptr i8) (.window (host/host)) (o/sel c"firstResponder") []) (.view first)))
+        (assert (= (o/msg (ptr i8)
+                          (.window (host/host))
+                          (o/sel c"firstResponder")
+                          [])
+                   (.view first)))
         (until-frame-changes (.view first) (.signature before))
         (app/paper-pointer gesture 3))
       (app/event 3 504 0.0 0.0)
@@ -164,17 +265,41 @@
       (app/refresh)
       (settle)
       (assert (not (.open (app/lighting))))
+      ; Actual terminal selection uses its own recess, not an ANSI-colour
+      ; guess with the foreground/background uniform slots reversed.
+      (assert (g/ghostty_surface_binding_action (.surface first)
+                                                c"select_all"
+                                                10))
+      (settle)
+      (let [selected (snapshot/sample (.view first))]
+        (set! (.selection-depth (app/app)) 0.0)
+        (app/apply-material)
+        (until-frame-changes (.view first) (.signature selected)))
+      (let [flat (snapshot/sample (.view first))]
+        (set! (.selection-depth (app/app)) 2.5)
+        (app/apply-material)
+        (until-frame-changes (.view first) (.signature flat)))
+      (send first c"\n")
+      (settle)
       (assert (app/new-tab c"/bin/sh -i"))
       (let [second (app/current)]
         (send second c"printf '\\033[2J\\033[H%s_%s\\n' PAPER PTY_B\n")
         (until-text second c"PAPER_PTY_B")
-        (assert (not (o/msg bool (content second) (o/sel c"containsString:") [(ptr i8)] (o/ns c"PAPER_PTY_A"))))
+        (assert (not (o/msg bool
+                            (content second)
+                            (o/sel c"containsString:")
+                            [(ptr i8)]
+                            (o/ns c"PAPER_PTY_A"))))
         (assert (o/msg bool (.view first) (o/sel c"isHidden") []))
         (app/focus-tab 0)
         (assert (not (o/msg bool (.view first) (o/sel c"isHidden") [])))
         (until-text first c"PAPER_PTY_A")
         (let [before (g/ghostty_surface_size (.surface first))]
-          (o/msg i64 (.window (host/host)) (o/sel c"setContentSize:") [host/CGSize] (host/CGSize :w 880.0 :h 640.0))
+          (o/msg i64
+                 (.window (host/host))
+                 (o/sel c"setContentSize:")
+                 [host/CGSize]
+                 (host/CGSize :w 880.0 :h 640.0))
           (settle)
           (let [after (g/ghostty_surface_size (.surface first))]
             (assert (< (.columns after) (.columns before)))
@@ -221,13 +346,18 @@
       (assert (app/new-tab (o/nil)))
       (send (app/current) c"printf '%s_%s\\n' LOGIN SHELL_OK\n")
       (until-text (app/current) c"LOGIN_SHELL_OK")
-      (send (app/current) c"cd /tmp; printf '\\033]7;file://localhost/tmp\\007'; printf '%s_%s\\n' DIRECTORY READY\n")
+      (send (app/current)
+            c"cd /tmp; printf '\\033]7;file://localhost/tmp\\007'; printf '%s_%s\\n' DIRECTORY READY\n")
       (until-text (app/current) c"DIRECTORY_READY")
       (settle)
       (assert (app/new-tab (o/nil)))
       (send (app/current) c"printf '%s:' INHERITED; pwd\n")
       (until-text (app/current) c"INHERITED:/")
-      (assert (or (o/msg bool (content (app/current)) (o/sel c"containsString:") [(ptr i8)] (o/ns c"INHERITED:/tmp"))
+      (assert (or (o/msg bool
+                         (content (app/current))
+                         (o/sel c"containsString:")
+                         [(ptr i8)]
+                         (o/ns c"INHERITED:/tmp"))
                   (o/msg bool
                          (content (app/current))
                          (o/sel c"containsString:")
@@ -239,7 +369,8 @@
       (let [deadline (+ (host/CACurrentMediaTime) 10.0)]
         (while (= (app/tab-count) 3)
           (when (>= (host/CACurrentMediaTime) deadline)
-            (n/printf c"WAITING FOR EXIT: %s\n" (o/utf8 (content (app/current)))))
+            (n/printf c"WAITING FOR EXIT: %s\n"
+                      (o/utf8 (content (app/current)))))
           (assert (< (host/CACurrentMediaTime) deadline))
           (app/pump)))
       (assert (= (app/tab-count) 2))
@@ -248,7 +379,8 @@
       (let [deadline (+ (host/CACurrentMediaTime) 10.0)]
         (while (not (.quitting (app/app)))
           (when (>= (host/CACurrentMediaTime) deadline)
-            (n/printf c"WAITING FOR EXIT: %s\n" (o/utf8 (content (app/current)))))
+            (n/printf c"WAITING FOR EXIT: %s\n"
+                      (o/utf8 (content (app/current)))))
           (assert (< (host/CACurrentMediaTime) deadline))
           (app/pump)))
       (assert (= (app/tab-count) 0))

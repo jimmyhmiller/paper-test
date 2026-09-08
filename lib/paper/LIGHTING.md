@@ -4,7 +4,7 @@ Import `paper.lighting` alongside `paper.flow`. Each app owns a `Lighting` insta
 
 Call `apply-light state viewport` after `paper_begin`, then draw the app. Call `popover state base-id anchor` last; the anchor rectangle is the sun's hit area. Reserve eight consecutive control IDs starting at base-id. For a custom launcher, draw the icon and register base-id yourself, then call `popover-panel` last. Calculator uses this to print a fixed sun indicator inside its display, without hover feedback. The popover fits viewports down to Paper's minimum 320 × 240 logical points.
 
-Drag the panel header to move it. The panel remembers its position across close/reopen and stays inside the viewport. An optional `drag-limits` rectangle restricts movement; Terminal uses its reserved strip to keep the panel clear of the native terminal view. Reset changes lighting values, preserving panel placement.
+Drag the panel header to move it. The panel remembers its position across close/reopen and stays inside the viewport. An optional `drag-limits` rectangle restricts movement; Terminal uses its reserved strip to keep the panel clear of the native terminal view. Reset eases the lighting values back to their defaults over 320 milliseconds while preserving panel placement.
 
 Route events through `handle state base-id kind id x y` before application controls. A true return means consumed. It supports drag updates, native slider accessibility/keyboard adjustments, reset, outside-click dismissal, and Escape. Ticks continue while the panel is open. The panel establishes a modal Paper input scope so covered controls cannot activate. Its light position map marks the viewport with an inner rectangle and permits positions from −1 to +2 viewport sizes.
 

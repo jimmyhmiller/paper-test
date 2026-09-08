@@ -4,8 +4,18 @@
 (import "coil.arraylist" :as al)
 (import "paper.ffi" :use *)
 (import "paper.objc" :as objc)
+(import "paper.material" :use [Pattern Finish])
 
-(defstruct Sheet [(path (ptr i8)) (z f64) (order i64) (color u32) (rough f64) (fiber f64) (seed f64)])
+(defstruct Sheet
+  [(path (ptr i8))
+   (z f64)
+   (order i64)
+   (color u32)
+   (rough f64)
+   (fiber f64)
+   (seed f64)
+   (pattern Pattern)
+   (finish Finish)])
 
 (defstruct Ink
   [(x f64)

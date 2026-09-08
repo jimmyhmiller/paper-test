@@ -1,0 +1,136 @@
+(module paper.finish-light)
+(import "paper.ffi" :use [sqrt pow])
+(import "paper.texture" :use [tex-min tex-max])
+
+;;; Single-source reflection kernels, generated to Metal with the texture kernels.
+;;; Anisotropic GGX D and height-correlated Smith G follow PBRT's microfacet
+;;; formulation. View direction is fixed at (0,0,1), matching the top-down camera.
+;;; See MATERIALS.md for sources and the stylized light-intensity convention.
+(defn fin-alpha-u [(roughness f64) (anisotropy f64)] (-> f64)
+  (tex-min 1.0 (tex-max 0.08 (* roughness (+ 1.0 anisotropy)))))
+
+(defn fin-alpha-v [(roughness f64) (anisotropy f64)] (-> f64)
+  (tex-min 1.0 (tex-max 0.08 (* roughness (- 1.0 anisotropy)))))
+
+;;; The azimuth is represented by anisotropy * (cos(2 angle), sin(2 angle)).
+;;; This survives coverage blending without a discontinuity at the angle wrap.
+(defn fin-quadratic [(x f64) (y f64) (a f64) (b f64) (axis-x f64) (axis-y f64)] (-> f64)
+  (let [amount (sqrt (+ (* axis-x axis-x) (* axis-y axis-y)))
+        c (if (> amount 0.00001) (/ axis-x amount) 1.0)
+        s (if (> amount 0.00001) (/ axis-y amount) 0.0)
+        sum (* 0.5 (+ a b))
+        difference (* 0.5 (- a b))]
+    (+ (* sum (+ (* x x) (* y y)))
+       (* difference (+ (* c (- (* x x) (* y y))) (* (* 2.0 s) (* x y)))))))
+
+(defn fin-specular [(dx f64)
+                    (dy f64)
+                    (lx f64)
+                    (ly f64)
+                    (lz f64)
+                    (roughness f64)
+                    (axis-x f64)
+                    (axis-y f64)] (-> f64)
+  (let [n (sqrt (+ 1.0 (+ (* dx dx) (* dy dy))))
+        t (sqrt (+ 1.0 (* dx dx)))
+        length (sqrt (+ (* lx lx) (+ (* ly ly) (* lz lz))))
+        ux (/ lx length)
+        uy (/ ly length)
+        uz (/ lz length)
+        nl (/ (- uz (+ (* dx ux) (* dy uy))) n)
+        nv (/ 1.0 n)
+        hl (sqrt (+ (* ux ux) (+ (* uy uy) (* (+ uz 1.0) (+ uz 1.0)))))
+        hx (/ ux hl)
+        hy (/ uy hl)
+        hz (/ (+ uz 1.0) hl)
+        ht (/ (+ hx (* dx hz)) t)
+        hb (/ (+ (- (* (+ 1.0 (* dx dx)) hy) (* (* dx dy) hx)) (* dy hz)) (* n t))
+        hn (/ (- hz (+ (* dx hx) (* dy hy))) n)
+        lt (/ (+ ux (* dx uz)) t)
+        lb (/ (+ (- (* (+ 1.0 (* dx dx)) uy) (* (* dx dy) ux)) (* dy uz)) (* n t))
+        vt (/ dx t)
+        vb (/ dy (* n t))
+        amount (tex-min 0.9 (sqrt (+ (* axis-x axis-x) (* axis-y axis-y))))
+        au (fin-alpha-u roughness amount)
+        av (fin-alpha-v roughness amount)
+        au2 (* au au)
+        av2 (* av av)
+        q (+ (fin-quadratic ht hb (/ 1.0 au2) (/ 1.0 av2) axis-x axis-y) (* hn hn))
+        d (/ 1.0 (* (* 3.141592653589793 (* au av)) (* q q)))
+        lambda-l
+          (* 0.5
+             (- (sqrt (+ 1.0
+                         (/ (fin-quadratic lt lb au2 av2 axis-x axis-y)
+                            (tex-max 0.000001 (* nl nl)))))
+                1.0))
+        lambda-v (* 0.5 (- (sqrt (+ 1.0 (/ (fin-quadratic vt vb au2 av2 axis-x axis-y) (* nv nv)))) 1.0))
+        g (/ 1.0 (+ 1.0 (+ lambda-l lambda-v)))]
+    (if (<= nl 0.0) 0.0 (/ (* 3.141592653589793 (* d g)) (* 4.0 nv)))))
+
+(defn fin-fresnel [(lx f64) (ly f64) (lz f64)] (-> f64)
+  (let [length (sqrt (+ (* lx lx) (+ (* ly ly) (* lz lz))))
+        cosine (sqrt (* 0.5 (+ 1.0 (/ lz length))))
+        f (- 1.0 cosine)
+        f2 (* f f)]
+    (* (* f2 f2) f)))
+
+;;; Charlie's grazing distribution with the Neubelt visibility approximation.
+;;; A bounded azimuthal modulation supplies the directional pile response.
+(defn fin-sheen [(dx f64)
+                 (dy f64)
+                 (lx f64)
+                 (ly f64)
+                 (lz f64)
+                 (roughness f64)
+                 (axis-x f64)
+                 (axis-y f64)] (-> f64)
+  (let [n (sqrt (+ 1.0 (+ (* dx dx) (* dy dy))))
+        length (sqrt (+ (* lx lx) (+ (* ly ly) (* lz lz))))
+        ux (/ lx length)
+        uy (/ ly length)
+        uz (/ lz length)
+        nl (/ (- uz (+ (* dx ux) (* dy uy))) n)
+        nv (/ 1.0 n)
+        hl (sqrt (+ (* ux ux) (+ (* uy uy) (* (+ uz 1.0) (+ uz 1.0)))))
+        hn (/ (- (+ uz 1.0) (+ (* dx ux) (* dy uy))) (* n hl))
+        inverse (/ 1.0 (tex-max 0.12 roughness))
+        d (/ (* (+ 2.0 inverse) (pow (tex-max 0.0 (- 1.0 (* hn hn))) (* 0.5 inverse))) 6.283185307179586)
+        horizontal (+ (* ux ux) (* uy uy))
+        directional
+          (+ 1.0
+             (/ (+ (* axis-x (- (* ux ux) (* uy uy))) (* (* 2.0 axis-y) (* ux uy)))
+                (tex-max 0.000001 horizontal)))
+        visibility (/ 1.0 (tex-max 0.00001 (* 4.0 (- (+ nl nv) (* nl nv)))))]
+    (if (<= nl 0.0) 0.0 (* 3.141592653589793 (* (* d visibility) (* nl directional))))))
+
+(defn fin-base [(specular f64) (metallic f64) (sheen f64)] (-> f64)
+  (* (- 1.0 (* 0.04 specular)) (* (- 1.0 (* 0.75 (* metallic specular))) (- 1.0 (* 0.45 sheen)))))
+
+(defstruct Reflection [(base f64) (pigment f64) (white f64)])
+
+(defn evaluate [(dx f64)
+                (dy f64)
+                (lx f64)
+                (ly f64)
+                (lz f64)
+                (roughness f64)
+                (axis-x f64)
+                (axis-y f64)
+                (specular f64)
+                (metallic f64)
+                (sheen f64)] (-> Reflection)
+  (let [lobe (if (> specular 0.0) (* specular (fin-specular dx dy lx ly lz roughness axis-x axis-y)) 0.0)
+        fuzz (if (> sheen 0.0) (* sheen (fin-sheen dx dy lx ly lz roughness axis-x axis-y)) 0.0)
+        fresnel (fin-fresnel lx ly lz)
+        dielectric (* 0.04 (- 1.0 metallic))]
+    (Reflection
+      :base (fin-base specular metallic sheen)
+      :pigment (+ (* lobe (* metallic (- 1.0 fresnel))) (* 2.0 fuzz))
+      :white (* lobe (+ dielectric (* (- 1.0 dielectric) fresnel))))))
+
+;;; Compress only reflected light into the display range. This leaves the matte
+;;; baseline alone and retains gradation in bright metallic highlights.
+(defn fin-channel [(pigment f64) (base f64) (reflection f64) (white f64)] (-> f64)
+  (let [diffuse (tex-min 1.0 (tex-max 0.0 (* pigment base)))
+        reflected (tex-max 0.0 (+ (* pigment reflection) white))]
+    (/ (+ diffuse reflected) (+ 1.0 reflected))))

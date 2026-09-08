@@ -1,0 +1,197 @@
+(module papercut.material-test)
+(import "coil.primitive" :as p)
+(import "coil.alloc" :as alloc)
+(import "coil.arraylist" :as al)
+(import "paper.ui" :use *)
+(import "paper.texture" :as texture)
+(import "paper.micro-raster" :as micro)
+(import "paper.scene" :as scene)
+(import "paper.platform" :as host)
+(import "paper.render" :as render)
+(import "paper.gpu" :as gpu)
+(import "paper.damage" :as damage)
+(import "paper.masks" :as masks)
+(import "paper.objc" :as o)
+(import "paper.ffi" :use *)
+
+(extern memcpy :cc c [(ptr u8) (ptr u8) u64] (-> (ptr u8)))
+
+(extern memcmp :cc c [(ptr u8) (ptr u8) u64] (-> i32))
+
+(extern setenv :cc c [(ptr i8) (ptr i8) i32] (-> i32))
+
+(extern unsetenv :cc c [(ptr i8)] (-> i32))
+
+(defn setup [] (-> i64)
+  (scene/init)
+  (set! (.width (scene/scene)) 401)
+  (set! (.height (scene/scene)) 241)
+  (set! (.scale (scene/scene)) 1.0)
+  (render/setup))
+
+(defn swatches [] (-> i64)
+  (host/paper_begin 0xdddddd)
+  (host/paper_light -130.0 -80.0 230.0 0.7 1.0)
+  (for [i 0 18]
+    (panel (rect (+ 5.0 (* (cast f64 (% i 6)) 66.0)) (+ 5.0 (* (cast f64 (/ i 6)) 80.0)) 58.0 70.0)
+           4.0
+           20.0
+           (texture-angle (textured-stock 0xb7a58d (+ i 1) 0.375 0.6) 17.0)))
+  0)
+
+(deftest material-modifiers-and-tint-preserve-the-surface
+         (let [original (texture-offset (texture-angle (texture-scale (felt 0x779966) 1.75) 37.0) -3.0 5.0)
+               tinted (tint original 0xffffff 0.3)]
+           (assert (pattern-equal (.pattern original) (.pattern tinted)))
+           (assert (p/fcmp-eq (.seed original) (.seed tinted)))
+           (assert (!= (.pigment original) (.pigment tinted)))
+           (assert (= (.kind (.pattern original)) 8))
+           (assert (p/fcmp-eq (.size (.pattern original)) 1.75))
+           (assert (p/fcmp-eq (.x (.pattern original)) -3.0))))
+
+(deftest procedural-surfaces-are-finite-distinct-and-seeded
+         (let [(mut previous) 0.0]
+           (for [kind 1 23]
+             (let [stock (textured-stock 0xaaaaaa kind 0.31 0.5)
+                   (mut variance) 0.0
+                   (mut changes) 0.0
+                   (mut slopes) 0.0]
+               (for [i 0 80]
+                 (let [x (+ -31.7 (* (cast f64 i) 1.73))
+                       y (+ -17.9 (* (cast f64 (% i 13)) 2.31))
+                       a (texture/sample (.pattern stock) 0.31 x y 2.0)
+                       b (texture/sample (.pattern stock) 0.81 x y 2.0)]
+                   (assert (and (>= (.grain a) -0.7) (<= (.grain a) 0.7)))
+                   (assert (and (>= (.dx a) -3.0) (<= (.dx a) 3.0)))
+                   (assert (and (>= (.dy a) -3.0) (<= (.dy a) 3.0)))
+                   (set! variance (+ (load variance) (* (.grain a) (.grain a))))
+                   (set! changes (+ (load changes) (texture/tex-abs (- (.grain a) (.grain b)))))
+                   (set! slopes (+ (load slopes) (+ (texture/tex-abs (.dx a)) (texture/tex-abs (.dy a)))))))
+               (assert (> (load variance) 0.0001))
+               (assert (> (load changes) 0.001))
+               (assert (> (load slopes) 0.001))
+               (assert (> (texture/tex-abs (- (load previous) (load variance))) 0.000001))
+               (set! previous (load variance))))))
+
+(deftest texture-origin-survives-cuts-and-follows-sheet-movement
+         (setup)
+         (host/paper_begin 0xdddddd)
+         (panel (rect 13.5 17.25 220.0 170.0) 7.0 24.0 (texture-offset (felt 0x778866) 2.0 -4.0))
+         (let [before (.pattern (al/al-elem [scene/Sheet] (field (scene/scene) sheets) 0))]
+           (assert (p/fcmp-eq (.x before) 15.5))
+           (assert (p/fcmp-eq (.y before) 13.25))
+           (begin-sheet)
+           (rounded-path (rect 0.0 0.0 60.0 240.0) 0.0)
+           (cut-through 0.0)
+           (assert (pattern-equal before (.pattern (al/al-elem [scene/Sheet] (field (scene/scene) sheets) 0))))
+           (host/paper_begin 0xdddddd)
+           (panel (rect 43.5 27.25 220.0 170.0) 7.0 24.0 (texture-offset (felt 0x778866) 2.0 -4.0))
+           (let [after (.pattern (al/al-elem [scene/Sheet] (field (scene/scene) sheets) 0))
+                 a (texture/sample before 0.43 83.0 76.0 2.0)
+                 b (texture/sample after 0.43 113.0 86.0 2.0)]
+             (assert (< (texture/tex-abs (- (.grain a) (.grain b))) 0.000001))
+             (assert (< (texture/tex-abs (- (.dx a) (.dx b))) 0.000001)))))
+
+(defn variant [(i i64)] (-> Material)
+  (case i 0
+        (woven-linen 0xb7a58d) 1
+        (texture-scale (woven-linen 0xb7a58d) 1.7) 2
+        (texture-angle (woven-linen 0xb7a58d) 31.0) 3
+        (texture-offset (woven-linen 0xb7a58d) 0.8 1.3) 4
+        (texture-seed (woven-linen 0xb7a58d) 0.87) 5
+        (texture-relief (woven-linen 0xb7a58d) 0.0) 6
+        (felt 0xb7a58d) (cream)))
+
+(deftest material-only-changes-invalidate-and-match-full-redraws
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (setup)
+           (let [bytes (cast u64 (* (* 401 241) 4))
+                 previous (cast (ptr u8) (alloc/malloc (cast isize bytes)))
+                 current (cast (ptr u8) (alloc/malloc (cast isize bytes)))]
+             (for [i 0 8]
+               (host/paper_begin 0xdddddd)
+               (host/paper_light -130.0 -80.0 230.0 0.7 1.0)
+               (panel (rect 19.25 21.5 341.0 195.0) 11.0 18.0 (variant i))
+               (panel (rect 69.0 61.0 171.0 110.0) 9.0 31.0 (smooth 0xa0b0a0))
+               (begin-sheet)
+               (oval-path (rect 112.0 87.0 53.0 57.0))
+               (cut-through 18.0)
+               (render/render)
+               (memcpy current (CGBitmapContextGetData (.output-context (scene/scene))) bytes)
+               (when (> i 0) (assert (!= (memcmp previous current bytes) (cast i32 0))))
+               (memcpy previous current bytes)
+               (set! (.valid (damage/cache)) false)
+               (set! (.geometry-dirty (scene/scene)) true)
+               (masks/reset)
+               (render/render)
+               (assert (= (memcmp current (CGBitmapContextGetData (.output-context (scene/scene))) bytes) (cast i32 0))))
+             (render/free (cast (ptr i8) previous))
+             (render/free (cast (ptr i8) current)))
+           (o/release pool)))
+
+(deftest all-materials-agree-between-metal-and-cpu
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (setup)
+           (when (.available (gpu/gpu))
+             (swatches)
+             (render/render)
+             (let [bytes (cast u64 (* (* 401 241) 4))
+                   copy (cast (ptr u8) (alloc/malloc (cast isize bytes)))]
+               (memcpy copy (CGBitmapContextGetData (.output-context (scene/scene))) bytes)
+               (setenv c"PAPER_RENDERER" c"cpu" 1)
+               (set! (.available (gpu/gpu)) false)
+               (render/setup)
+               (swatches)
+               (render/render)
+               (let [cpu (CGBitmapContextGetData (.output-context (scene/scene)))
+                     (mut maximum) 0]
+                 (for [i 0 18]
+                   (let [(mut material-max) 0]
+                     (for [y (+ 16 (* (/ i 6) 80)) (+ 64 (* (/ i 6) 80))]
+                       (for [x (+ 15 (* (% i 6) 66)) (+ 48 (* (% i 6) 66))]
+                         (for [channel 0 3]
+                           (let [pos (+ (* (+ (* y 401) x) 4) channel)
+                                 difference (- (cast i64 (load (index copy pos))) (cast i64 (load (index cpu pos))))
+                                 absolute (if (< difference 0) (- 0 difference) difference)]
+                             (when (> absolute (load maximum)) (set! maximum absolute))
+                             (when (> absolute (load material-max)) (set! material-max absolute))))))
+                     (println "Material {} difference {}" (+ i 1) (load material-max))))
+                 (println "Maximum material RGB difference: {}" (load maximum))
+                 ;; Rasterizers have different edge antialiasing; interior surfaces should
+                 ;; agree within two eight-bit levels, including half-float storage.
+                 (assert (<= (load maximum) 2)))
+               (unsetenv c"PAPER_RENDERER")
+               (render/free (cast (ptr i8) copy)))
+             0)
+           (o/release pool)))
+
+(deftest micro-relief-survives-zero-sheet-depth-and-disables-with-grain
+         (setup)
+         (host/paper_begin 0xdddddd)
+         (panel (rect 0.0 0.0 401.0 241.0) 0.0 20.0 (watercolor 0xaaaaaa))
+         (host/paper_light -150.0 120.0 160.0 0.0 1.0)
+         (render/render)
+         (let [bytes (cast u64 (* (* 401 241) 4))
+               copy (cast (ptr u8) (alloc/malloc (cast isize bytes)))]
+           (memcpy copy (CGBitmapContextGetData (.output-context (scene/scene))) bytes)
+           (host/paper_light 551.0 120.0 160.0 0.0 1.0)
+           (render/render)
+           (assert (!= (memcmp copy (CGBitmapContextGetData (.output-context (scene/scene))) bytes) (cast i32 0)))
+           (host/paper_light 200.0 120.0 160.0 0.0 0.0)
+           (render/render)
+           (let [pixels (CGBitmapContextGetData (.output-context (scene/scene)))
+                 a (load (index pixels (* (+ (* 100 401) 180) 4)))
+                 b (load (index pixels (* (+ (* 100 401) 220) 4)))]
+             (assert (= a b)))
+           (render/free (cast (ptr i8) copy))))
+
+(deftest logical-texture-size-is-stable-across-backing-scales
+         (let [stock (texture-angle (felt 0xaaaaaa) 23.0)
+               larger (texture-scale stock 2.0)
+               a (texture/sample (.pattern stock) 0.43 12.75 19.25 2.0)
+               b (texture/sample (.pattern stock) 0.43 12.75 19.25 3.0)
+               c (texture/sample (.pattern larger) 0.43 25.5 38.5 1.0)]
+           (assert (< (texture/tex-abs (- (.grain a) (.grain b))) 0.000001))
+           (assert (< (texture/tex-abs (- (.grain a) (.grain c))) 0.000001))
+           (assert (< (texture/tex-abs (- (.dx a) (* (.dx c) 2.0))) 0.000001))
+           (assert (< (texture/tex-abs (- (.dy a) (* (.dy c) 2.0))) 0.000001))))

@@ -88,11 +88,19 @@
 
 (extern ghostty_surface_mouse_scroll :cc c [(ptr i8) f64 f64 i32] (-> void))
 
-(extern ghostty_surface_ime_point :cc c [(ptr i8) (ptr f64) (ptr f64) (ptr f64) (ptr f64)] (-> void))
+(extern ghostty_surface_ime_point
+        :cc
+        c
+        [(ptr i8) (ptr f64) (ptr f64) (ptr f64) (ptr f64)]
+        (-> void))
 
 (extern ghostty_surface_binding_action :cc c [(ptr i8) (ptr i8) u64] (-> bool))
 
-(extern ghostty_surface_complete_clipboard_request :cc c [(ptr i8) (ptr i8) (ptr i8) bool] (-> void))
+(extern ghostty_surface_complete_clipboard_request
+        :cc
+        c
+        [(ptr i8) (ptr i8) (ptr i8) bool]
+        (-> void))
 
 (extern ghostty_surface_process_exited :cc c [(ptr i8)] (-> bool))
 
@@ -102,7 +110,13 @@
 
 (extern ghostty_surface_refresh :cc c [(ptr i8)] (-> void))
 
-(defstruct SurfaceSize [(columns u16) (rows u16) (width u32) (height u32) (cell-width u32) (cell-height u32)])
+(defstruct SurfaceSize
+  [(columns u16)
+   (rows u16)
+   (width u32)
+   (height u32)
+   (cell-width u32)
+   (cell-height u32)])
 
 (extern ghostty_surface_size :cc c [(ptr i8)] (-> SurfaceSize))
 
@@ -116,8 +130,42 @@
 
 (defstruct TextSelection [(top TextPoint) (bottom TextPoint) (rectangle bool)])
 
-(defstruct Text [(x f64) (y f64) (offset u32) (length u32) (text (ptr i8)) (size u64)])
+(defstruct Text
+  [(x f64) (y f64) (offset u32) (length u32) (text (ptr i8)) (size u64)])
 
-(extern ghostty_surface_read_text :cc c [(ptr i8) TextSelection (ptr Text)] (-> bool))
+(extern ghostty_surface_read_text
+        :cc
+        c
+        [(ptr i8) TextSelection (ptr Text)]
+        (-> bool))
 
 (extern ghostty_surface_free_text :cc c [(ptr i8) (ptr Text)] (-> void))
+
+;;; Paper extension: five std140 vec4 values, passed by pointer (80 bytes).
+(defstruct PaperMaterial
+  [(light-x f32)
+   (light-y f32)
+   (light-height f32)
+   (raster-scale f32)
+   (terminal-x f32)
+   (terminal-y f32)
+   (relief f32)
+   (paper-fill f32)
+   (bevel f32)
+   (grain f32)
+   (cursor-lift f32)
+   (cursor-fold f32)
+   (cut-paper f32)
+   (gap f32)
+   (thickness f32)
+   (shine f32)
+   (roughness f32)
+   (background-depth f32)
+   (selection-depth f32)
+   (reserved f32)])
+
+(extern ghostty_surface_set_paper_material
+        :cc
+        c
+        [(ptr i8) (ptr PaperMaterial)]
+        (-> void))

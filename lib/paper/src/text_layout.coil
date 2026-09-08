@@ -2,6 +2,7 @@
 (import "layout.core" :use [Extent unlimited minimum maximum measure-data])
 (import "paper.objc" :as o)
 (import "paper.ffi" :use [CGSize CGRect])
+(import "paper.paint" :use [type-face])
 (import "coil.primitive" :as p)
 
 ;;; Borrowed UTF-8 and font settings. Keep this value alive through arrange/solve.
@@ -17,7 +18,7 @@
 ;;; the same AppKit layout options as paper.text-box. No estimated glyph widths.
 (defn measure-uncached [(data (ptr i8)) (width f64)] (-> Extent)
   (let [m (cast (ptr TextMeasure) data)
-        font-name (case (.font m) 1 c"Georgia" 2 c"Menlo" 3 c"HelveticaNeue-Medium" c"HelveticaNeue")
+        font-name (type-face (.font m))
         font
           (o/msg (ptr i8) (o/class c"NSFont") (o/sel c"fontWithName:size:") [(ptr i8) f64] (o/ns font-name) (.size m))
         attrs (o/new c"NSMutableDictionary")]

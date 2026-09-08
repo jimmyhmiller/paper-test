@@ -6,6 +6,7 @@
 (import "paper.ffi" :use * :reexport)
 (import "paper.scene" :use *)
 (import "paper.render" :as render)
+(import "paper.material" :as material)
 (import "paper.workers" :as workers)
 (import "paper.gpu" :as gpu)
 (import "paper.frame-clock" :as frame-clock)
@@ -235,15 +236,25 @@
   0)
 
 (defn paper_sheet [(z f64) (color u32) (rough f64) (fiber f64) (seed f64)] (-> i64)
+  (paper_material_sheet z (material/stock color rough fiber seed)))
+
+(defn paper_material_sheet [(z f64) (stock material/Material)] (-> i64)
   (set! (.paint-z (scene)) (clamp (+ z (.offset (scene))) 0.0 64.0))
-  (add-sheet (Sheet
-               :path (clipped-path (.path (scene)))
-               :z (.paint-z (scene))
-               :order (next-order)
-               :color color
-               :rough (clamp rough 0.0 1.0)
-               :fiber (clamp fiber 0.0 1.0)
-               :seed (clamp seed 0.0 1.0))))
+  (let [bounds (CGPathGetPathBoundingBox (.path (scene)))
+        (mut pattern) (.pattern stock)]
+    (when (> (.kind pattern) 0)
+      (set! (.x pattern) (+ (.x bounds) (.x pattern)))
+      (set! (.y pattern) (+ (.y bounds) (.y pattern))))
+    (add-sheet (Sheet
+                 :path (clipped-path (.path (scene)))
+                 :z (.paint-z (scene))
+                 :order (next-order)
+                 :color (.pigment stock)
+                 :rough (clamp (.roughness stock) 0.0 1.0)
+                 :fiber (clamp (.fiber stock) 0.0 1.0)
+                 :seed (clamp (.seed stock) 0.0 1.0)
+                 :pattern (load pattern)
+                 :finish (.finish stock)))))
 
 ;;; Remove the current aperture from every already-submitted sheet above floor.
 ;;; Boolean subtraction also handles apertures crossing a sheet's outside edge.
@@ -1208,7 +1219,9 @@
                    :color 0x879775
                    :rough 0.7
                    :fiber 0.0
-                   :seed 0.0))
+                   :seed 0.0
+                   :pattern (material/plain-pattern)
+                   :finish (material/matte-finish)))
       (CGPathRelease path)
       0))
   0)

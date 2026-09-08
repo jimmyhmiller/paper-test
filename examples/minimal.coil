@@ -13,19 +13,22 @@
 (defn draw [] (-> i64)
   (host/paper_begin 0x343d34)
   (light/apply-light (lighting) (rect 0.0 0.0 (host/logical-width) (host/logical-height)))
-  (let [(mut title) (text-measure c"A sheet. A cut. A light." 32.0 1)
+  (let [title-text c"A sheet. A cut. A light."
+        description-text c"The aperture reveals the clay sheet below. Its edge casts a shadow into the opening."
+        (mut title) (text-measure title-text 32.0 1)
         (mut prose)
-          (text-measure c"The aperture reveals the clay sheet below. Its edge casts a shadow into the opening." 17.0 0)]
+        (text-measure description-text 17.0 0)]
     (arrange (rect 0.0 0.0 (host/logical-width) (host/logical-height))
              [canvas
               (padded (column (grow 1.0) (grow 1.0) 0.0) (padding 24.0))
               [sheet
+               
                (padded (column (grow 1.0) (grow 1.0) 24.0) (padding 30.0))
                [heading (box (grow 1.0) (fit)) :measure (primitive/fnptr-of measure-text) (text-data title)]
                [body
                 (row (grow 1.0) (grow 1.0) 36.0)
                 [description (box (grow 1.0) (fit)) :measure (primitive/fnptr-of measure-text) (text-data prose)]
-                [aperture (aspect (box (percent 0.4) (fit)) 1.0)]]
+                (aperture (aspect (box (percent 0.4) (fit)) 1.0))]
                [stocks (box (grow 1.0) (fixed 51.0))]]]
              (host/paper_drag_area (rect 0.0 0.0 (host/logical-width) (.y heading)))
              (panel sheet 28.0 10.0 (clay))
@@ -33,12 +36,12 @@
              (rounded-path sheet 28.0)
              (oval-path aperture)
              (finish-sheet 28.0 (case (load (choice)) 0 (cream) 1 (linen 0xdbbd9a) (recycled 0xa9bb8a)))
-             (caption heading 32.0 0x384730 1 c"A sheet. A cut. A light.")
+             (caption heading 32.0 0x384730 1 title-text)
              (caption description
                       17.0
                       0x687657
                       0
-                      c"The aperture reveals the clay sheet below. Its edge casts a shadow into the opening.")
+                      description-text)
              (for [i 0 3]
                (button (+ i 1)
                        (row-cell stocks 3 12.0 i)
@@ -48,13 +51,21 @@
   (light/popover (lighting) 500 (rect 575.0 20.0 34.0 34.0))
   0)
 
+(defn dec [(i i64)] (-> i64)
+  (- i 1))
+
 (defn event [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
-  (when (= kind 0) (store! (lighting) (light/lighting 0.125 (/ -100.0 480.0) 600.0 0.8 1.0)))
-  (when (and (not (light/handle (lighting) 500 kind id x y)) (= kind 3) (>= id 1) (<= id 3))
-    (set! (index (choice) 0) (- id 1))
-    (host/paper_redraw))
-  0)
+      (when (= kind 0) (store! (lighting) (light/lighting 0.125 (/ -100.0 480.0) 600.0 0.8 1.0)))
+      (when (and (not (light/handle (lighting) 500 kind id x y)) (= kind 3) (>= id 1) (<= id 3))
+        (set! (index (choice) 0) (dec id))
+        (host/paper_redraw))
+      0)
 
 (defn main [] (-> i64)
   (host/paper_configure c"Papercut — a first sheet" 640.0 480.0)
   (host/paper_run (primitive/fnptr-of draw) (primitive/fnptr-of event)))
+
+;;; The nREPL host calls this after an accepted live edit. The live metaprogram
+;;; publishes it through the same stable slot machinery as every other function.
+(defn redraw [] (-> i64)
+  (host/paper_redraw))

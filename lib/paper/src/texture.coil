@@ -1,0 +1,264 @@
+(module paper.texture)
+(import "paper.ffi" :use [floor sqrt sin cos])
+(import "paper.material" :use [Pattern])
+
+;;; These pure scalar kernels are the source for the generated Metal section.
+;;; Regenerate with python3 tools/generate-material-shader.py after editing.
+;;; Hash arithmetic is explicitly unsigned and shared between both renderers.
+(defn tex-hash [(x i64) (y i64) (seed i64)] (-> f64)
+  (let [a
+          (^ (* (cast u32 x) (cast u32 374761393))
+             (^ (* (cast u32 y) (cast u32 668265263)) (* (cast u32 seed) (cast u32 1274126177))))
+        b (* (^ a (>> a (cast u32 13))) (cast u32 1274126177))]
+    (/ (cast f64 (& (^ b (>> b (cast u32 16))) (cast u32 65535))) 65535.0)))
+
+(defn tex-fract [(x f64)] (-> f64)
+  (- x (floor x)))
+
+(defn tex-abs [(x f64)] (-> f64)
+  (if (< x 0.0) (- 0.0 x) x))
+
+(defn tex-min [(x f64) (y f64)] (-> f64)
+  (if (< x y) x y))
+
+(defn tex-max [(x f64) (y f64)] (-> f64)
+  (if (> x y) x y))
+
+(defn tex-smooth [(x f64)] (-> f64)
+  (let [t (tex-max 0.0 (tex-min 1.0 x))] (* (* t t) (- 3.0 (* 2.0 t)))))
+
+(defn tex-mix [(a f64) (b f64) (t f64)] (-> f64)
+  (+ a (* (- b a) t)))
+
+(defn tex-noise [(x f64) (y f64) (seed i64)] (-> f64)
+  (let [ix (cast i64 (floor x))
+        iy (cast i64 (floor y))
+        u (tex-smooth (tex-fract x))
+        v (tex-smooth (tex-fract y))]
+    (- (tex-mix (tex-mix (tex-hash ix iy seed) (tex-hash (+ ix 1) iy seed) u)
+                (tex-mix (tex-hash ix (+ iy 1) seed) (tex-hash (+ ix 1) (+ iy 1) seed) u)
+                v)
+       0.5)))
+
+;;; Rounded threads with a controllable gap. Distances are periodic, not tiled images.
+(defn tex-thread [(x f64) (gap f64)] (-> f64)
+  (let [d (tex-abs (- (tex-fract x) 0.5))]
+    (tex-smooth (/ (- 0.5 d) gap))))
+
+(defn tex-weave [(x f64) (y f64) (seed i64) (spacing f64) (irregular f64) (gap f64)] (-> f64)
+  (let [u (+ (/ x spacing) (* irregular (tex-noise (/ y 18.0) (/ x 40.0) seed)))
+        v (+ (/ y spacing) (* irregular (tex-noise (/ x 21.0) (/ y 37.0) (+ seed 7))))
+        warp (tex-thread u gap)
+        weft (tex-thread v gap)
+        crossing (tex-fract (* (+ (floor u) (floor v)) 0.5))
+        top (if (< crossing 0.25) warp weft)
+        lower (if (< crossing 0.25) weft warp)
+        fibers (tex-noise (* x 1.6) (/ y 8.0) (+ seed 17))]
+    (+ (- (+ (* top 0.65) (* (* lower (- 1.0 top)) 0.35)) 0.4) (* fibers 0.045))))
+
+(defn tex-cell-distance [(x f64) (y f64) (ix i64) (iy i64) (seed i64)] (-> f64)
+  (let [dx (- x (+ (cast f64 ix) (+ 0.2 (* 0.6 (tex-hash ix iy seed)))))
+        dy (- y (+ (cast f64 iy) (+ 0.2 (* 0.6 (tex-hash ix iy (+ seed 31))))))]
+    (+ (* dx dx) (* dy dy))))
+
+(defn tex-cells [(x f64) (y f64) (seed i64)] (-> f64)
+  (let [ix (cast i64 (floor x))
+        iy (cast i64 (floor y))
+        a
+          (tex-min (tex-cell-distance x y (- ix 1) (- iy 1) seed)
+                   (tex-min (tex-cell-distance x y ix (- iy 1) seed) (tex-cell-distance x y (+ ix 1) (- iy 1) seed)))
+        b
+          (tex-min (tex-cell-distance x y (- ix 1) iy seed)
+                   (tex-min (tex-cell-distance x y ix iy seed) (tex-cell-distance x y (+ ix 1) iy seed)))
+        c
+          (tex-min (tex-cell-distance x y (- ix 1) (+ iy 1) seed)
+                   (tex-min (tex-cell-distance x y ix (+ iy 1) seed) (tex-cell-distance x y (+ ix 1) (+ iy 1) seed)))]
+    (sqrt (tex-min a (tex-min b c)))))
+
+(defn tex-chip [(x f64) (y f64) (seed i64)] (-> f64)
+  (let [ix (cast i64 (floor x))
+        iy (cast i64 (floor y))
+        a (tex-cell-distance x y (- ix 1) (- iy 1) seed)
+        b (tex-cell-distance x y ix (- iy 1) seed)
+        c (tex-cell-distance x y (+ ix 1) (- iy 1) seed)
+        d (tex-cell-distance x y (- ix 1) iy seed)
+        e (tex-cell-distance x y ix iy seed)
+        f (tex-cell-distance x y (+ ix 1) iy seed)
+        g (tex-cell-distance x y (- ix 1) (+ iy 1) seed)
+        h (tex-cell-distance x y ix (+ iy 1) seed)
+        i (tex-cell-distance x y (+ ix 1) (+ iy 1) seed)
+        best (tex-min (tex-min a (tex-min b c)) (tex-min (tex-min d (tex-min e f)) (tex-min g (tex-min h i))))
+        cx
+          (if (<= a best)
+              (- ix 1)
+              (if (<= b best)
+                  ix
+                  (if (<= c best)
+                      (+ ix 1)
+                      (if (<= d best)
+                          (- ix 1)
+                          (if (<= e best)
+                              ix
+                              (if (<= f best)
+                                  (+ ix 1)
+                                  (if (<= g best) (- ix 1) (if (<= h best) ix (+ ix 1)))))))))]
+    ;; Resolve the row explicitly; equal distances consistently prefer the earlier cell.
+    (- (tex-hash cx
+                 (if (<= (tex-min a (tex-min b c)) best)
+                     (- iy 1)
+                     (if (<= (tex-min d (tex-min e f)) best) iy (+ iy 1)))
+                 (+ seed 73))
+       0.5)))
+
+;;; Height is a fine surface profile, never written into the sheet-height field.
+(defn tex-height [(kind i64) (x f64) (y f64) (seed i64)] (-> f64)
+  (case kind 1
+        (+ (* 0.10 (tex-noise (/ x 7.0) (/ y 9.0) seed))
+           (+ (* 0.15 (tex-noise (/ x 0.7) (/ y 3.7) (+ seed 5)))
+              (* 0.11 (tex-noise (/ x 1.5) (/ y 0.5) (+ seed 8)))))
+          2
+        (+ (* 0.09 (tex-noise (* x 1.8) (* y 1.8) seed))
+           (* 0.045 (tex-noise (/ x 5.0) (/ y 5.0) (+ seed 3))))
+          3
+        (+ (* 0.32 (tex-noise (/ x 1.6) (/ y 1.6) seed))
+           (+ (* 0.09 (tex-noise (/ x 6.0) (/ y 6.0) (+ seed 5)))
+              (* 0.12 (tex-noise (* x 1.2) (* y 1.2) (+ seed 11)))))
+          4
+        (+ (* 0.13 (cos (* y 3.141592653589793)))
+           (+ (* 0.07 (tex-thread (/ x 26.0) 0.07)) (* 0.07 (tex-noise x y seed))))
+          5
+        (+ (* 0.14 (tex-noise (/ (+ x (* y 0.31)) 0.65) (/ y 19.0) seed))
+           (+ (* 0.12 (tex-noise (/ (- x (* y 0.7)) 0.8) (/ y 13.0) (+ seed 6)))
+              (* 0.09 (tex-noise (/ x 13.0) (/ y 13.0) (+ seed 12)))))
+          6
+        (+ (* 0.10 (tex-noise (* x 1.5) (* y 1.5) seed))
+           (+ (* 0.12 (tex-noise (/ x 11.0) (/ y 9.0) (+ seed 3)))
+              (* -0.18 (tex-smooth (* (- (tex-noise x y (+ seed 9)) 0.22) 5.0)))))
+          7
+        (+ (* 0.42 (cos (+ (* x 0.6981317007977318) (* 0.06 (tex-noise (/ x 30.0) (/ y 20.0) seed)))))
+           (* 0.08 (tex-noise (* x 1.2) (/ y 3.0) (+ seed 8))))
+          8
+        (+ (* 0.21
+              (tex-noise (/ (+ (+ x (* y 0.6)) (* 1.5 (tex-noise (/ x 6.0) (/ y 6.0) (+ seed 3)))) 0.55) (/ y 4.5) seed))
+           (+ (* 0.20
+                 (tex-noise (/ (+ (- x (* y 0.8)) (* 1.3 (tex-noise (/ x 5.0) (/ y 5.0) (+ seed 11)))) 0.6)
+                            (/ y 5.5)
+                            (+ seed 7)))
+              (+ (* 0.18 (tex-noise (/ (+ y (* x 0.3)) 0.5) (/ x 4.0) (+ seed 17)))
+                 (* 0.10 (tex-noise (/ x 8.0) (/ y 8.0) (+ seed 21))))))
+          9
+        (tex-weave x y seed 3.2 0.28 0.36) 10
+        (tex-weave x y seed 2.6 0.035 0.42) 11
+        (let [u (/ x 2.0)
+              v (/ y 2.0)
+              twill (tex-fract (/ (+ (floor u) (floor v)) 3.0))
+              warp (tex-thread u 0.38)
+              weft (tex-thread v 0.38)]
+          (+ (- (if (< twill 0.6)
+                    (+ (* warp 0.7) (* (* weft (- 1.0 warp)) 0.2))
+                    (+ (* weft 0.45) (* (* warp (- 1.0 weft)) 0.2)))
+                0.35)
+             (* 0.08 (tex-noise (* x 2.0) (/ y 7.0) seed))))
+          12
+        (+ (tex-weave x y seed 5.2 0.38 0.48)
+           (* 0.10 (tex-noise (* x 1.7) (/ y 2.0) (+ seed 27))))
+          13
+        (let [u (- (tex-fract (/ x 6.0)) 0.5)
+              v (tex-fract (/ y 8.0))
+              center (+ 0.06 (* 0.29 (sin (* v 3.141592653589793))))
+              distance (tex-abs (- (tex-abs u) center))
+              yarn (tex-smooth (/ (- 0.21 distance) 0.15))
+              rib (cos (+ (* v 31.41592653589793) (* u 27.0)))]
+          (+ (- (* yarn (+ 0.62 (* rib 0.055))) 0.3)
+             (* 0.07 (tex-noise (* x 1.6) (* y 1.6) seed))))
+          14
+        (+ (* 0.52 (tex-chip (/ x 5.5) (/ y 5.5) seed))
+           (+ (* 0.15 (tex-noise (/ x 2.0) (/ y 2.0) (+ seed 5)))
+              (* 0.12 (tex-noise (* x 1.5) (* y 1.5) (+ seed 11)))))
+          15
+        (let [cells (tex-cells (/ x 2.8) (/ y 2.8) seed)]
+          (+ (- (* 0.45 (- 1.0 (tex-smooth (* cells 1.8)))) 0.25)
+             (* 0.09 (tex-noise (* x 1.8) (* y 1.8) (+ seed 9)))))
+          16
+        (+ (* 0.18 (tex-noise (* x 2.2) (/ y 1.6) seed))
+           (* 0.12 (tex-noise (/ x 9.0) (/ y 16.0) (+ seed 17))))
+          17
+        (let [cx (- x (+ 32.0 (* 48.0 (tex-hash 0 0 seed))))
+              cy (- y (+ 70.0 (* 120.0 (tex-hash 1 0 seed))))
+              radius (sqrt (+ (* cx cx) (* (* cy cy) 0.045)))
+              warp (* 2.4 (tex-noise (/ x 32.0) (/ y 75.0) seed))
+              rings (+ (* radius 0.7) warp)
+              lines (tex-smooth (* (- (sin rings) 0.48) 2.1))
+              fine (tex-noise (* x 1.2) (/ y 18.0) (+ seed 21))]
+          (+ (- 0.08 (* 0.23 lines)) (+ (* 0.09 fine) (* 0.10 (tex-noise (/ x 12.0) (/ y 45.0) (+ seed 9))))))
+          18
+        (+ (* 0.13 (tex-noise (* x 1.7) (* y 1.7) seed))
+           (* 0.04 (tex-noise (/ x 6.0) (/ y 6.0) (+ seed 3))))
+          19
+        (+ (* 0.10 (tex-noise (* x 2.0) (/ y 2.8) seed))
+           (* 0.08 (tex-noise (/ x 12.0) (/ y 22.0) (+ seed 9))))
+          20
+        (+ (* 0.11 (tex-noise (* x 2.5) (/ y 35.0) seed))
+           (* 0.025 (tex-noise (* x 0.7) (/ y 90.0) (+ seed 11))))
+          21
+        (+ (* 0.15 (tex-weave x y seed 1.8 0.08 0.28))
+           (* 0.06 (tex-noise (* x 1.5) (/ y 18.0) (+ seed 9))))
+          22
+        (+ (* 0.05 (tex-noise (/ x 6.0) (/ y 6.0) seed))
+           (* 0.025 (tex-noise (* x 1.4) (* y 1.4) (+ seed 3))))
+          0.0))
+
+(defn tex-contrast [(kind i64)] (-> f64)
+  (case kind 1
+        0.65 2
+        0.35 3
+        0.22 4
+        0.3 5
+        0.55 6
+        0.6 7
+        0.35 8
+        0.65 9
+        0.6 10
+        0.55 11
+        0.75 12
+        0.8 13
+        0.65 14
+        0.85 15
+        0.3 16
+        0.6 17
+        0.8 18
+        0.4 19
+        0.35 20
+        0.45 21
+        0.4 22
+        0.3 0.0))
+
+(defstruct MicroSurface [(dx f64) (dy f64) (grain f64)])
+
+;;; The footprint suppresses detail when a texture becomes smaller than a pixel.
+;;; Finite differences measure slope in logical points, independent of DPI.
+(defn sample [(pattern Pattern) (seed f64) (x f64) (y f64) (backing-scale f64)] (-> MicroSurface)
+  (let [c (cos (.angle pattern))
+        s (sin (.angle pattern))
+        px (- x (.x pattern))
+        py (- y (.y pattern))
+        u (/ (+ (* c px) (* s py)) (.size pattern))
+        v (/ (- (* c py) (* s px)) (.size pattern))
+        key (cast i64 (floor (+ (* seed 65535.0) 0.5)))
+        footprint (/ 1.0 (* backing-scale (.size pattern)))
+        step (tex-max 0.25 (* footprint 0.5))
+        attenuation (/ 1.0 (tex-max 1.0 footprint))
+        h (tex-height (.kind pattern) u v key)
+        dx
+          (/ (- (tex-height (.kind pattern) (+ u step) v key)
+                (tex-height (.kind pattern) (- u step) v key))
+             (* (* 2.0 step) (.size pattern)))
+        dy
+          (/ (- (tex-height (.kind pattern) u (+ v step) key)
+                (tex-height (.kind pattern) u (- v step) key))
+             (* (* 2.0 step) (.size pattern)))
+        relief (* attenuation (.relief pattern))]
+    (MicroSurface
+      :dx (* relief (- (* c dx) (* s dy)))
+      :dy (* relief (+ (* s dx) (* c dy)))
+      :grain (* (* attenuation (tex-contrast (.kind pattern))) h))))

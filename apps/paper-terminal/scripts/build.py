@@ -2,12 +2,16 @@
 """Build and bundle Paper Terminal, including runtime resources."""
 from pathlib import Path
 import plistlib
+import hashlib
 import shutil
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-if not (ROOT / 'build/ghostty/lib/libghostty-internal.a').is_file():
-    raise SystemExit('Run python3 scripts/prepare-ghostty.py first.')
+patch_digest = hashlib.sha256((ROOT / 'vendor/patches/paper-glyph-layer.patch').read_bytes()).hexdigest()
+revision = ROOT / 'build/ghostty/revision'
+if (not (ROOT / 'build/ghostty/lib/libghostty-internal.a').is_file()
+        or not revision.is_file() or patch_digest not in revision.read_text().splitlines()):
+    subprocess.run(['python3', 'scripts/prepare-ghostty.py'], cwd=ROOT, check=True)
 subprocess.run(['coil', 'build'], cwd=ROOT, check=True)
 app = ROOT / 'build/Paper Terminal.app'
 contents = app / 'Contents'

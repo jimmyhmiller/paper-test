@@ -1,8 +1,9 @@
-(module calculator.lettering)
+(module paper.lettering)
 (import "paper.flow" :use *)
 (import "paper.ffi" :use *)
 (import "paper.objc" :use *)
 (import "paper.scene" :use [scene])
+(import "paper.paint" :use [type-face])
 
 (extern CTFontCreateWithName :cc c [(ptr i8) f64 (ptr CGAffine)] (-> (ptr i8)))
 
@@ -20,8 +21,9 @@
 
 ;;; Real outline apertures share the paper renderer's material and lighting.
 ;;; CoreText selects fallback fonts for symbols and provides their native advances.
-(defn carved [(r Rect) (text (ptr i8)) (size f64) (z f64) (right bool)] (-> i64)
-  (let [font (CTFontCreateWithName (ns c"HelveticaNeue-Medium") size (cast (ptr CGAffine) 0))
+;;; The cut floor sits 3.8 points below z; material fills the exposed letter faces.
+(defn carved [(r Rect) (text (ptr i8)) (size f64) (font-index i64) (z f64) (right bool) (material Material)] (-> i64)
+  (let [font (CTFontCreateWithName (ns (type-face font-index)) size (cast (ptr CGAffine) 0))
         string (ns text)
         count (msg i64 string (sel c"length") [])
         (mut width) 0.0]
@@ -57,6 +59,6 @@
             (set! x (+ (load x) (* scale (CTFontGetAdvancesForGlyphs face 0 glyph (cast (ptr CGSize) 0) 1))))
             (CFRelease face))))
       (cut-through (- z 3.8))
-      (finish-sheet (- z 3.8) (cotton 0x30281b)))
+      (finish-sheet (- z 3.8) material))
     (CFRelease font))
   0)

@@ -2,4 +2,5 @@
 .claude/settings.local.json
 /build/
 /.coil/
+/.nrepl-port
 /.worktrees/

@@ -17,8 +17,8 @@ def run(*args):
 
 run('coil', 'verify')
 run('cc', '-std=c11', '-fsyntax-only', '-Ivendor', 'tests/abi.c')
-run('coil', 'build', 'tests/integration.coil', '-o', str(BUILD / 'integration'))
 run('python3', 'scripts/build.py')
+run('coil', 'build', 'tests/integration.coil', '-o', str(BUILD / 'integration'))
 # A separate bundle exercises NSBundle resolution without changing the production app.
 app = BUILD / 'Integration.app'
 if app.exists():
@@ -52,6 +52,11 @@ if '/Integration.app/Contents/Resources/config/cursor.glsl' not in output:
 # Ghostty must reap every direct shell process owned by the test.
 pids = [int(x) for x in re.findall(r'started subcommand .* pid=(\d+)', output)]
 assert len(pids) == 4, pids
+# One shader load per created surface. All tested material/light/finish drags
+# must reuse those programs; recompilation was the former interaction stall.
+shader_loads = output.count('loaded custom shader path=')
+assert shader_loads == len(pids), f'{shader_loads} shader loads for {len(pids)} surfaces'
+assert 'LIVE MATERIAL:' in output
 for pid in pids:
     deadline = time.monotonic() + 3
     while True:

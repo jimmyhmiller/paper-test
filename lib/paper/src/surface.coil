@@ -62,11 +62,7 @@
 ;;; Elevation is absolute, in paper points, in [0,64]. Rendering sorts by elevation.
 ;;; Submit low base sheets as well as cut upper sheets to reveal real lower material.
 (defn finish-sheet [(z f64) (material Material)] (-> i64)
-  (host/paper_sheet z
-                    (.pigment material)
-                    (.roughness material)
-                    (.fiber material)
-                    (.seed material))
+  (host/paper_material_sheet z material)
   0)
 
 (defn panel [(r Rect) (radius f64) (z f64) (material Material)] (-> i64)

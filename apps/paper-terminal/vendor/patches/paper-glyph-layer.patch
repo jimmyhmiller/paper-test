@@ -1,0 +1,279 @@
+--- a/src/renderer/generic.zig
++++ b/src/renderer/generic.zig
+@@ -159,6 +159,14 @@
+ 
+         /// Custom shader uniform values.
+         custom_shader_uniforms: shadertoy.Uniforms,
++        // A separate tiny lock protects only the latest 80-byte material.
++        // App input never waits on the draw mutex, a GPU frame, or compilation.
++        paper_mutex: std.Io.Mutex = .init,
++        paper_material: [5][4]f32 = .{
++            .{ -180, -260, 820, 1 }, .{ 46, 224, -0.85, 0.72 },
++            .{ 1.7, 0.1, 3, 0.35 },  .{ 0, 2, 0.55, 0 },
++            .{ 0.38, 1.2, 2.5, 0 },
++        },
+ 
+         /// Timestamp we rendered out first frame.
+         ///
+@@ -436,12 +444,21 @@
+         };
+ 
+         /// State relevant to our custom shaders if we have any.
++        pub fn setPaperMaterial(self: *Self, values: *const [20]f32) void {
++            for (values) |v| if (!std.math.isFinite(v)) return;
++            self.paper_mutex.lockUncancelable(global.io());
++            defer self.paper_mutex.unlock(global.io());
++            for (&self.paper_material, 0..) |*row, i| row.* = values[i * 4 ..][0..4].*;
++        }
++
+         const CustomShaderState = struct {
+             /// When we have a custom shader state, we maintain a front
+             /// and back texture which we use as a swap chain to render
+             /// between when multiple custom shaders are defined.
+             front_texture: Texture,
+             back_texture: Texture,
++            paper_glyph_texture: Texture,
++            paper_background_texture: Texture,
+ 
+             /// Shadertoy uses a sampler for accessing the various channel
+             /// textures. In Metal, we need to explicitly create these since
+@@ -487,12 +504,19 @@
+                 );
+                 errdefer back_texture.deinit();
+ 
++                const paper_glyph_texture = try Texture.init(api.textureOptions(), 1, 1, null);
++                errdefer paper_glyph_texture.deinit();
++
++                const paper_background_texture = try Texture.init(api.textureOptions(), 1, 1, null);
++                errdefer paper_background_texture.deinit();
+                 const sampler = try Sampler.init(api.samplerOptions());
+                 errdefer sampler.deinit();
+ 
+                 return .{
+                     .front_texture = front_texture,
+                     .back_texture = back_texture,
++                    .paper_glyph_texture = paper_glyph_texture,
++                    .paper_background_texture = paper_background_texture,
+                     .sampler = sampler,
+                     .uniforms = uniforms,
+                 };
+@@ -501,6 +525,8 @@
+             pub fn deinit(self: *CustomShaderState) void {
+                 self.front_texture.deinit();
+                 self.back_texture.deinit();
++                self.paper_glyph_texture.deinit();
++                self.paper_background_texture.deinit();
+                 self.sampler.deinit();
+                 self.uniforms.deinit();
+             }
+@@ -526,8 +552,17 @@
+                 );
+                 errdefer back_texture.deinit();
+ 
++                const paper_glyph_texture = try Texture.init(api.textureOptions(), @intCast(width), @intCast(height), null);
++                errdefer paper_glyph_texture.deinit();
++
++                const paper_background_texture = try Texture.init(api.textureOptions(), @intCast(width), @intCast(height), null);
++                errdefer paper_background_texture.deinit();
++                self.paper_background_texture.deinit();
++                self.paper_background_texture = paper_background_texture;
+                 self.front_texture.deinit();
+                 self.back_texture.deinit();
++                self.paper_glyph_texture.deinit();
++                self.paper_glyph_texture = paper_glyph_texture;
+ 
+                 self.front_texture = front_texture;
+                 self.back_texture = back_texture;
+@@ -1690,6 +1725,37 @@
+ 
+             // If we have custom shaders, then we render them.
+             if (frame.custom_shader_state) |*state| {
++                // Paper owns material rendering from an isolated glyph layer.
++                // The atlas, shaping, grid, cursor and PTY remain Ghostty's.
++                // This target is per swap-chain frame, resized and released
++                // with the postprocess textures; no CPU readback is involved.
++                if (comptime @hasField(@TypeOf(self.shaders.pipelines), "paper_glyph")) {
++                    var glyph_pass = frame_ctx.renderPass(&.{.{
++                        .target = .{ .texture = state.paper_glyph_texture },
++                        .clear_color = .{ 0.0, 0.0, 0.0, 0.0 },
++                    }});
++                    defer glyph_pass.complete();
++                    glyph_pass.step(.{
++                        .pipeline = self.shaders.pipelines.paper_glyph,
++                        .uniforms = frame.uniforms.buffer,
++                        .buffers = &.{ frame.cells.buffer, frame.cells_bg.buffer },
++                        .textures = &.{ frame.grayscale, frame.color },
++                        .draw = .{ .type = .triangle_strip, .vertex_count = 4, .instance_count = fg_count },
++                    });
++                }
++                {
++                    var background_pass = frame_ctx.renderPass(&.{.{
++                        .target = .{ .texture = state.paper_background_texture },
++                        .clear_color = .{ 0.0, 0.0, 0.0, 0.0 },
++                    }});
++                    defer background_pass.complete();
++                    background_pass.step(.{
++                        .pipeline = self.shaders.pipelines.cell_bg,
++                        .uniforms = frame.uniforms.buffer,
++                        .buffers = &.{ null, frame.cells_bg.buffer },
++                        .draw = .{ .type = .triangle, .vertex_count = 3 },
++                    });
++                }
+                 // Sync our uniforms.
+                 try state.uniforms.sync(&.{self.custom_shader_uniforms});
+ 
+@@ -1708,8 +1774,8 @@
+                     pass.step(.{
+                         .pipeline = pipeline,
+                         .uniforms = state.uniforms.buffer,
+-                        .textures = &.{state.back_texture},
+-                        .samplers = &.{state.sampler},
++                        .textures = &.{ state.back_texture, state.paper_glyph_texture, state.paper_background_texture },
++                        .samplers = &.{ state.sampler, state.sampler, state.sampler },
+                         .draw = .{
+                             .type = .triangle,
+                             .vertex_count = 3,
+@@ -2108,6 +2174,11 @@
+             if (!self.has_custom_shaders) return;
+ 
+             const uniforms: *shadertoy.Uniforms = &self.custom_shader_uniforms;
++            {
++                self.paper_mutex.lockUncancelable(global.io());
++                defer self.paper_mutex.unlock(global.io());
++                uniforms.paper_material = self.paper_material;
++            }
+ 
+             const now: std.Io.Timestamp = .now(global.io(), .awake);
+             defer self.last_frame_time = now;
+@@ -2140,6 +2211,8 @@
+                 1,
+                 0,
+             };
++            uniforms.channel_resolution[1] = uniforms.channel_resolution[0];
++            uniforms.channel_resolution[2] = uniforms.channel_resolution[0];
+ 
+             if (self.cells.getCursorGlyph()) |cursor| {
+                 const cursor_width: f32 = @floatFromInt(cursor.glyph_size[0]);
+--- a/src/renderer/metal/shaders.zig
++++ b/src/renderer/metal/shaders.zig
+@@ -26,6 +26,13 @@
+             .vertex_attributes = CellText,
+             .vertex_fn = "cell_text_vertex",
+             .fragment_fn = "cell_text_fragment",
++            .step_fn = .per_instance,
++            .blending_enabled = true,
++        } },
++        .{ "paper_glyph", .{
++            .vertex_attributes = CellText,
++            .vertex_fn = "cell_text_vertex",
++            .fragment_fn = "paper_glyph_fragment",
+             .step_fn = .per_instance,
+             .blending_enabled = true,
+         } },
+--- a/src/renderer/shaders/shaders.metal
++++ b/src/renderer/shaders/shaders.metal
+@@ -275,6 +275,7 @@
+ struct BgImageVertexOut {
+   float4 position [[position]];
+   float4 bg_color [[flat]];
++  bool paper_eligible [[flat]];
+   float2 offset [[flat]];
+   float2 scale [[flat]];
+   float opacity [[flat]];
+@@ -550,6 +551,7 @@
+   uint8_t atlas [[flat]];
+   float4 color [[flat]];
+   float4 bg_color [[flat]];
++  bool paper_eligible [[flat]];
+   float2 tex_coord;
+ };
+ 
+@@ -661,6 +663,12 @@
+       uniforms.cursor_wide &&
+         in.grid_pos.x == uniforms.cursor_pos.x + 1
+     ) && in.grid_pos.y == uniforms.cursor_pos.y;
++
++  // Only monochrome text on transparent cells is material geometry.
++  // Keep selected/ANSI backgrounds, emoji and every cursor native.
++  out.paper_eligible = in.atlas == ATLAS_GRAYSCALE &&
++    out.bg_color.a == 0.0 && !is_cursor_pos &&
++    (in.bools & IS_CURSOR_GLYPH) == 0;
+ 
+   // If this cell is the cursor cell, but we're not processing
+   // the cursor glyph itself, then we need to change the color.
+@@ -759,6 +767,27 @@
+     }
+   }
+ }
++// Uncorrected atlas coverage is geometric coverage. The normal text pass
++// applies foreground-dependent contrast correction for ink, which must not
++// alter the thickness of a cut-paper silhouette or its cast shadow.
++fragment float4 paper_glyph_fragment(
++  CellTextVertexOut in [[stage_in]],
++  texture2d<float> textureGrayscale [[texture(0)]],
++  texture2d<float> textureColor [[texture(1)]],
++  constant Uniforms& uniforms [[buffer(1)]]
++) {
++  if (!in.paper_eligible) return float4(0.0);
++  constexpr sampler atlasSampler(coord::pixel, address::clamp_to_edge, filter::nearest);
++  float a = textureGrayscale.sample(atlasSampler, in.tex_coord).r;
++  float4 color = in.color;
++  if (!uniforms.use_linear_blending && color.a > 0.0) {
++    color.rgb /= color.a;
++    color = unlinearize(color);
++    color.rgb *= color.a;
++  }
++  return color * a;
++}
++
+ //-------------------------------------------------------------------
+ // Image Shader
+ //-------------------------------------------------------------------
+--- a/src/renderer/shaders/shadertoy_prefix.glsl
++++ b/src/renderer/shaders/shadertoy_prefix.glsl
+@@ -28,6 +28,7 @@
+     uniform vec3  iCursorText;
+     uniform vec3  iSelectionForegroundColor;
+     uniform vec3  iSelectionBackgroundColor;
++    uniform vec4  iPaperMaterial[5];
+ };
+ 
+ #define CURSORSTYLE_BLOCK        0
+@@ -39,8 +40,8 @@
+ layout(binding = 0) uniform sampler2D iChannel0;
+ 
+ // These are unused currently by Ghostty:
+-// layout(binding = 1) uniform sampler2D iChannel1;
+-// layout(binding = 2) uniform sampler2D iChannel2;
++layout(binding = 1) uniform sampler2D iChannel1; // isolated Paper glyph RGBA
++layout(binding = 2) uniform sampler2D iChannel2; // native cell backgrounds
+ // layout(binding = 3) uniform sampler2D iChannel3;
+ 
+ layout(location = 0) in vec4 gl_FragCoord;
+--- a/src/renderer/shadertoy.zig
++++ b/src/renderer/shadertoy.zig
+@@ -37,8 +37,9 @@
+     foreground_color: [4]f32 align(16),
+     cursor_color: [4]f32 align(16),
+     cursor_text: [4]f32 align(16),
++    selection_foreground_color: [4]f32 align(16),
+     selection_background_color: [4]f32 align(16),
+-    selection_foreground_color: [4]f32 align(16),
++    paper_material: [5][4]f32 align(16) = @splat(@splat(0)),
+ };
+ 
+ /// The target to load shaders for.
+--- a/src/apprt/embedded.zig
++++ b/src/apprt/embedded.zig
+@@ -1675,6 +1675,11 @@
+     }
+ 
+     /// Tell the surface that it needs to schedule a render
++    export fn ghostty_surface_set_paper_material(surface: *Surface, values: *const [20]f32) void {
++        surface.core_surface.renderer.setPaperMaterial(values);
++        surface.refresh();
++    }
++
+     export fn ghostty_surface_refresh(surface: *Surface) void {
+         surface.refresh();
+     }

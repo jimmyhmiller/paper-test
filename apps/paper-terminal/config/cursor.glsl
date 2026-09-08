@@ -1,21 +1,26 @@
 // A cut into a sheet, or a raised piece of that sheet. Ghostty supplies the
 // original antialiased coverage and colours; it still owns all text layout.
 // Distances are framebuffer pixels. The controls specialize these constants.
-const float TEXT_RELIEF = -0.8500;
-const float TEXT_PAPER_FILL = 0.2500;
-const float TEXT_EDGE_PX = 1.7000;
-const float TEXT_GRAIN = 0.1000;
-const float CURSOR_LIFT_PX = 3.0000;
-const float CURSOR_FOLD = 0.3500;
-const float RASTER_SCALE = 1.0000;
-// Paper scene coordinates are logical points, with +Y down. The host writes
-// these from the same light state it passes to paper_light, plus the native
-// terminal view origin. Normalize the light separately at each fragment.
-const float LIGHT_X = -180.0000;
-const float LIGHT_Y = -260.0000;
-const float LIGHT_HEIGHT = 820.0000;
-const float TERMINAL_X = 46.0000;
-const float TERMINAL_Y = 224.0000;
+// Live native uniforms. Light/material drags never rebuild this program.
+#define LIGHT_X iPaperMaterial[0].x
+#define LIGHT_Y iPaperMaterial[0].y
+#define LIGHT_HEIGHT iPaperMaterial[0].z
+#define RASTER_SCALE iPaperMaterial[0].w
+#define TERMINAL_X iPaperMaterial[1].x
+#define TERMINAL_Y iPaperMaterial[1].y
+#define TEXT_RELIEF iPaperMaterial[1].z
+#define TEXT_PAPER_FILL iPaperMaterial[1].w
+#define TEXT_EDGE_PX iPaperMaterial[2].x
+#define TEXT_GRAIN iPaperMaterial[2].y
+#define CURSOR_LIFT_PX iPaperMaterial[2].z
+#define CURSOR_FOLD iPaperMaterial[2].w
+#define TEXT_CUT_PAPER iPaperMaterial[3].x
+#define TEXT_GAP_PT iPaperMaterial[3].y
+#define TEXT_THICKNESS_PT iPaperMaterial[3].z
+#define SHINE iPaperMaterial[3].w
+#define ROUGHNESS iPaperMaterial[4].x
+#define BACKGROUND_DEPTH iPaperMaterial[4].y
+#define SELECTION_DEPTH iPaperMaterial[4].z
 
 vec3 lightAt(vec2 coord) {
     vec2 world = coord / (RASTER_SCALE * 2.0) + vec2(TERMINAL_X, TERMINAL_Y);
@@ -71,88 +76,248 @@ float paperDistance(vec2 p, vec4 b, float fold) {
 }
 
 float glyph(vec2 p) {
-    // A block cursor is geometry, not a giant rectangular glyph. Exclude it
-    // from neighbouring letter rims and shadows before reconstructing it.
-    if (hasPaperCursor() && boxDistance(p, cursorBox()) < 0.0) return 0.0;
-    return texture(iChannel0, p / iResolution.xy).a;
+    // Supplied by Paper's native Metal glyph pass, before ink-dependent
+    // coverage correction. Backgrounds, emoji and cursors are not geometry.
+    if (any(lessThan(p, vec2(0.0))) || any(greaterThanEqual(p, iResolution.xy))) return 0.0;
+    return texture(iChannel1, p / iResolution.xy).a;
 }
 
-float softGlyph(vec2 p, vec2 radius) {
-    return glyph(p) * 0.40 +
-           (glyph(p + vec2(radius.x, 0)) + glyph(p - vec2(radius.x, 0)) +
-            glyph(p + vec2(0, radius.y)) + glyph(p - vec2(0, radius.y))) * 0.15;
+vec3 paperPigment(vec3 ink) {
+    // Pigment dyes the stock rather than darkening every paper face into ink.
+    vec3 dye = ink / max(max(ink.r, ink.g), max(ink.b, 0.001));
+    return vec3(0.96, 0.91, 0.81) * mix(vec3(1.0), dye, 0.32);
+}
+
+// A dielectric coating, with GGX distribution, Smith masking and Schlick
+// Fresnel (F0=0.04). Roughness controls highlight width; the coat is optional.
+// See PBRT, Roughness Using Microfacet Theory and Rough Dielectric BSDF.
+vec3 coated(vec3 base, vec3 n, vec3 l, float visibility) {
+    if (SHINE <= 0.0) return base;
+    vec3 h = normalize(l + vec3(0.0, 0.0, 1.0));
+    float nv = max(n.z, 0.001), nl = max(dot(n, l), 0.0);
+    float nh = max(dot(n, h), 0.0), vh = max(h.z, 0.0);
+    float alpha = max(ROUGHNESS * ROUGHNESS, 0.025);
+    float a2 = alpha * alpha;
+    float d = nh * nh * (a2 - 1.0) + 1.0;
+    float distribution = a2 / (3.14159265 * d * d);
+    float masking = 0.5 / max(nl * sqrt(a2 + (1.0 - a2) * nv * nv) +
+                              nv * sqrt(a2 + (1.0 - a2) * nl * nl), 0.001);
+    float fresnel = 0.04 + 0.96 * pow(1.0 - vh, 5.0);
+    float reflected = distribution * masking * fresnel * nl * visibility * 3.14159265;
+    return base * (1.0 - SHINE * fresnel) + vec3(1.0, 0.98, 0.93) * reflected * SHINE;
+}
+
+vec4 backgroundAt(vec2 p) {
+    if (any(lessThan(p, vec2(0))) || any(greaterThanEqual(p, iResolution.xy))) return vec4(0);
+    return texture(iChannel2, p / iResolution.xy);
+}
+
+float backgroundHeight(vec2 p) {
+    vec4 bg = backgroundAt(p);
+    if (bg.a < 0.001) return 0.0;
+    vec3 pigment = bg.rgb / bg.a;
+    float selected = 1.0 - smoothstep(0.005, 0.025, length(pigment - iSelectionBackgroundColor));
+    float density = 1.0 - dot(pigment, vec3(0.2126, 0.7152, 0.0722));
+    float depth = mix(BACKGROUND_DEPTH * (0.35 + 0.65 * density), SELECTION_DEPTH, selected);
+    return -depth * 2.0 * RASTER_SCALE * bg.a;
+}
+
+vec4 recessedBackground(vec4 source, vec2 p, vec3 light) {
+    float r = max(0.75, 1.25 * RASTER_SCALE);
+    float height = backgroundHeight(p);
+    vec2 gradient = vec2(backgroundHeight(p + vec2(r, 0)) - backgroundHeight(p - vec2(r, 0)),
+                         backgroundHeight(p + vec2(0, r)) - backgroundHeight(p - vec2(0, r))) / (2.0 * r);
+    vec3 normal = normalize(vec3(-gradient, 1.0));
+    float visibility = 1.0;
+    // Recessed cell surfaces shadow one another at colour boundaries.
+    if (height < -0.001) {
+        vec2 towardLight = light.xy / max(light.z, 0.08);
+        for (int i = 1; i <= 4; ++i) {
+            float rise = -height * float(i) / 4.0;
+            float blocker = backgroundHeight(p + towardLight * rise);
+            visibility = min(visibility, smoothstep(-r * 0.3, r * 0.3, height + rise - blocker));
+        }
+    }
+    float diffuse = (0.28 + 0.72 * max(dot(normal, light), 0.0) * visibility) / (0.28 + 0.72 * light.z);
+    diffuse *= 1.0 - min(-height / (2.0 * RASTER_SCALE), 6.0) * 0.025;
+    if (source.a > 0.0) {
+        vec3 stock = source.rgb / source.a * diffuse;
+        stock *= 1.0 + fibre(p / RASTER_SCALE) * TEXT_GRAIN;
+        vec3 face = coated(stock, normal, light, visibility);
+        return vec4(clamp(face, 0.0, 1.0) * source.a, source.a);
+    }
+    // The exposed outer lip belongs to the surrounding paper.
+    vec4 rim = over(vec4(0), vec3(0.14, 0.10, 0.055), clamp(1.0 - diffuse, 0.0, 1.0) * 0.8);
+    return over(rim, vec3(1.0, 0.98, 0.91), clamp(diffuse - 1.0, 0.0, 1.0));
+}
+
+float paperShadow(vec2 p, vec2 offset, float radius) {
+    // Deterministic area-light integration. The face is never blurred. The
+    // shadow's penumbra grows with the gap, independently of sheet thickness.
+    float result = 0.0;
+    const float angle = 2.39996323;
+    for (int i = 0; i < 16; ++i) {
+        float r = sqrt((float(i) + 0.5) / 16.0) * radius;
+        vec2 disk = vec2(cos(float(i) * angle), sin(float(i) * angle)) * r;
+        result += glyph(p - offset + disk);
+    }
+    return result / 16.0;
+}
+
+vec4 cutPaper(vec2 p, vec4 pigment, vec3 light) {
+    float scale = RASTER_SCALE * 2.0;
+    float thickness = TEXT_THICKNESS_PT * scale;
+    float height = (TEXT_GAP_PT + TEXT_THICKNESS_PT) * scale;
+    vec2 shadowOffset = -light.xy / max(light.z, 0.08) * height;
+    float shadow = paperShadow(p, shadowOffset, (0.18 + TEXT_GAP_PT * 0.12) * scale);
+    vec4 result = over(vec4(0.0), vec3(0.15, 0.115, 0.065), shadow * 0.52);
+
+    // A thin sheet has a cut sidewall, not an extrusion down to the ground.
+    // This small fixed view slope reveals its bottom edge. Gap never changes
+    // this geometry: the open space must remain visibly open.
+    vec2 edgeOffset = vec2(0.22, 0.86) * thickness;
+    float side = 0.0;
+    for (int i = 1; i <= 4; ++i) {
+        side = max(side, glyph(p - edgeOffset * (float(i) / 4.0)));
+    }
+    vec3 edgeStock = vec3(0.54, 0.43, 0.28) * (0.65 + 0.35 * max(light.y, 0.0));
+    float coverage = max(side, pigment.a);
+    vec4 sheet = vec4(edgeStock * max(side - pigment.a, 0.0), coverage);
+
+    if (pigment.a > 0.0001) {
+        vec3 ink = pigment.rgb / pigment.a;
+        vec3 face = mix(ink, paperPigment(ink), TEXT_PAPER_FILL);
+        float r = 0.45 * scale;
+        vec2 gradient = vec2(glyph(p + vec2(r, 0)) - glyph(p - vec2(r, 0)),
+                             glyph(p + vec2(0, r)) - glyph(p - vec2(0, r)));
+        float edgeLight = dot(-gradient, light.xy);
+        // Only the very edge turns toward the light. Flat, unbroken paper
+        // occupies the rest of a stroke, even at the smallest font sizes.
+        face *= 0.94 + 0.06 * light.z;
+        face += vec3(0.12, 0.105, 0.08) * max(edgeLight, 0.0);
+        face -= vec3(0.07, 0.06, 0.04) * max(-edgeLight, 0.0);
+        face *= 1.0 + fibre(p / RASTER_SCALE) * TEXT_GRAIN;
+        vec3 normal = normalize(vec3(-gradient * 0.55, 1.0));
+        face = coated(face, normal, light, 1.0);
+        sheet.rgb += clamp(face, 0.0, 1.0) * pigment.a;
+    }
+    // Face and side partition one silhouette. Over-compositing both masks
+    // would count fractional edge coverage twice and fatten small glyphs.
+    return sheet + result * (1.0 - coverage);
+}
+
+// A separable binomial filter reconstructs coverage as a compact height field.
+// Its central-difference gradient uses the same nine samples as its height, so
+// diagonal walls and corners have continuous normals, not offset outlines.
+// This is a local coverage reconstruction, not a font distance field.
+vec3 reliefField(vec2 p, float radius) {
+    vec3 field = vec3(0.0);
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            vec2 offset = vec2(float(x), float(y));
+            float wx = x == 0 ? 0.5 : 0.25;
+            float wy = y == 0 ? 0.5 : 0.25;
+            float a = glyph(p + offset * radius);
+            field.x += a * wx * wy;
+            field.yz += a * offset * vec2(wy, wx) * (0.5 / radius);
+        }
+    }
+    return field;
+}
+
+// March toward the light across the same reconstructed surface. A growing
+// penumbra approximates finite light size without blurring the glyph.
+float reliefVisibility(vec2 p, float height, float signedDepth,
+                       float radius, vec3 light) {
+    float visibility = 1.0;
+    float travel = abs(signedDepth) * length(light.xy) / max(light.z, 0.08) + radius * 2.0;
+    vec2 direction = light.xy / max(length(light.xy), 0.0001);
+    for (int i = 1; i <= 6; ++i) {
+        float t = travel * float(i) / 6.0;
+        float surface = reliefField(p + direction * t, radius).x * signedDepth;
+        float ray = height + t * light.z / max(length(light.xy), 0.0001);
+        float penumbra = 0.20 * RASTER_SCALE + t * 0.16;
+        visibility = min(visibility, smoothstep(-penumbra, penumbra, ray - surface));
+    }
+    return visibility;
 }
 
 void mainImage(out vec4 color, in vec2 coord) {
     vec4 source = texture(iChannel0, coord / iResolution.xy);
-    float mask = glyph(coord);
+    vec4 pigment = texture(iChannel1, coord / iResolution.xy);
+    float mask = pigment.a;
     float depth = abs(TEXT_RELIEF);
     vec3 toLight = lightAt(coord);
     vec3 light = normalize(toLight);
-    float sideways = length(light.xy);
-    float strength = smoothstep(0.0, 0.45, depth) * clamp(sideways * 1.4, 0.0, 1.0);
-    vec2 down = -light.xy / max(sideways, 0.0001);
-    float projection = length(toLight.xy) / toLight.z;
-    // The host provides backingScaleFactor / 2. Thickness belongs to the
-    // paper, independently of font zoom or an application's cursor style.
+    // The host provides backingScaleFactor / 2. All relief dimensions are
+    // physical paper dimensions, independent of the font and cursor style.
     float pixelScale = RASTER_SCALE;
-    float bevel = TEXT_EDGE_PX * pixelScale;
-    float upper = glyph(coord - down * bevel);
-    float lower = glyph(coord + down * bevel);
-    float upperInside = max(mask - upper, 0.0);
-    float lowerInside = max(mask - lower, 0.0);
-    float lowerOutside = max(upper - mask, 0.0);
-    float upperOutside = max(lower - mask, 0.0);
+    float bevel = max(TEXT_EDGE_PX * pixelScale, 0.65);
     vec3 stock = vec3(0.91, 0.85, 0.73);
     vec3 warmShadow = vec3(0.105, 0.080, 0.047);
-
-    // Both the sampled frame and the completed CALayer use premultiplied
-    // alpha. Work on straight pigment only while shading, then premultiply
-    // once. This preserves the original glyph antialiasing at every edge.
     vec3 ink = source.a > 0.0001 ? source.rgb / source.a : vec3(0.0);
-    color = vec4(0.0);
-    bool raised = TEXT_RELIEF > 0.0;
-    if (depth > 0.001) {
-        if (raised) {
-            float distance = (0.45 + depth * 1.05) * pixelScale * projection;
-            float shadow = softGlyph(coord - down * distance,
-                                     vec2((0.50 + depth * 0.30) * pixelScale));
-            color = over(color, warmShadow, shadow * strength * 0.38);
-            // A close contact seam anchors the paper edge to the sheet.
-            color = over(color, warmShadow, lowerOutside * strength * 0.16);
-        } else {
-            // The light catches the lower outside lip of a cut. It is one
-            // continuous contour, clipped outside the original glyph—not a
-            // second offset copy of the entire letter.
-            color = over(color, vec3(1.0, 0.98, 0.91), lowerOutside * strength * 0.92);
-            color = over(color, warmShadow, upperOutside * strength * 0.09);
+    color = source;
+    if (TEXT_CUT_PAPER > 0.5) {
+        color = cutPaper(coord, pigment, light);
+    } else if (depth > 0.001) {
+        bool raised = TEXT_RELIEF > 0.0;
+        // Estimate available stroke width before choosing the bevel radius.
+        // Thin strokes keep a narrow edge instead of becoming rounded tubes.
+        vec3 broad = reliefField(coord, bevel);
+        float room = smoothstep(0.65, 0.98, broad.x);
+        bevel = mix(min(bevel, 0.55 * pixelScale), bevel, room);
+        float signedDepth = TEXT_RELIEF * 3.2 * pixelScale;
+        vec3 field = reliefField(coord, bevel);
+        vec3 normal = normalize(vec3(-signedDepth * field.yz, 1.0));
+        float wall = 1.0 - normal.z;
+        // A receiver at the maximum possible surface height cannot be
+        // shadowed. In carved mode this skips the march on blank paper.
+        float visibility = 1.0;
+        if ((raised && field.x < 0.9999) || (!raised && field.x > 0.0001)) {
+            visibility = reliefVisibility(coord, field.x * signedDepth,
+                                          signedDepth, bevel, light);
+        }
+        // Ambient keeps dyed paper legible; directional diffuse describes the
+        // cut walls. Normalize against the flat sheet's illumination.
+        float diffuse = (0.30 + 0.70 * max(dot(normal, light), 0.0) * visibility) /
+                        (0.30 + 0.70 * light.z);
+        float cavity = raised ? 0.0 : field.x * (1.0 - field.x) * 4.0;
+        float occlusion = 1.0 - 0.24 * cavity * min(depth, 1.0);
+        vec3 halfVector = normalize(light + vec3(0.0, 0.0, 1.0));
+        float sheen = pow(max(dot(normal, halfVector), 0.0), 18.0) * wall * visibility;
+        // Outside the ink silhouette these are the compressed stock walls of
+        // the impression, or the foot and shadow of the raised letter.
+        color = vec4(0.0);
+        float darkness = clamp(1.0 - diffuse * occlusion, 0.0, 1.0);
+        float brightness = clamp((diffuse - 1.0) * 0.85 + sheen * 0.22, 0.0, 1.0);
+        color = over(color, warmShadow, darkness * 0.85);
+        color = over(color, vec3(1.0, 0.98, 0.91), brightness);
+        if (mask > 0.0001) {
+            // Ink settles in the floor; sloping walls expose more of the
+            // underlying stock. This makes depth visible even in dark text.
+            vec3 dye = pigment.rgb / mask;
+            vec3 face = mix(dye, paperPigment(dye), TEXT_PAPER_FILL);
+            face = mix(face, paperPigment(dye), wall * 0.25);
+            face *= diffuse * occlusion;
+            face += stock * sheen * 0.08;
+            face = coated(face, normal, light, visibility);
+            face *= 1.0 + fibre(coord / pixelScale) * TEXT_GRAIN * 1.2;
+            color = over(color, clamp(face, 0.0, 1.0), mask);
         }
     }
 
-    if (mask > 0.0001) {
-        // Preserve ANSI hue. At the paper end of the control the pigment is
-        // a dyed paper face with enough contrast for terminal-size letters.
-        vec3 face = mix(ink, mix(ink, stock, raised ? 0.79 : 0.45), TEXT_PAPER_FILL);
-        face *= 1.0 + fibre(coord) * TEXT_GRAIN * 1.8;
-        if (raised) {
-            face += stock * (upperInside / mask) * strength * 0.15;
-            face *= 1.0 - (lowerInside / mask) * strength * 0.30;
-        } else if (depth > 0.001) {
-            float interior = max(mask - softGlyph(coord - down * (0.6 + depth * 1.65) * pixelScale * projection,
-                                                  vec2(0.50 * pixelScale)), 0.0);
-            face *= 1.0 - (interior / mask) * strength * 0.70;
-            face += stock * (lowerInside / mask) * strength * 0.105;
+    // Native content excluded by the glyph pass keeps its original pixels.
+    // In particular, selected/ANSI backgrounds and colour emoji never become
+    // rectangular paper cutouts. No neighbourhood-based background guessing.
+    if (mask == 0.0 && source.a > 0.0) color = source;
+    if (BACKGROUND_DEPTH > 0.0 || SELECTION_DEPTH > 0.0) {
+        vec4 bg = backgroundAt(coord);
+        if (bg.a > 0.001) color = recessedBackground(source, coord, light);
+        else {
+            vec4 lip = recessedBackground(vec4(0.0), coord, light);
+            color = color + lip * (1.0 - color.a);
         }
-        color = over(color, clamp(face, 0.0, 1.0), mask);
     }
-
-    // Opaque selected/coloured backgrounds retain their native rasterization.
-    // There is no hidden glyph mask behind their completed alpha, so avoid
-    // inventing lettering from colour or applying paper fill to a whole cell.
-    float backgroundRadius = 6.0 * pixelScale;
-    float solid = min(min(glyph(coord + vec2(0, backgroundRadius)), glyph(coord - vec2(0, backgroundRadius))),
-                      min(glyph(coord + vec2(backgroundRadius, 0)), glyph(coord - vec2(backgroundRadius, 0))));
-    if (solid > 0.999 && source.a > 0.999) color = source;
 
     if (!hasPaperCursor()) return;
     vec4 cursor = cursorBox();

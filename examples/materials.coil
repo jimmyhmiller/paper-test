@@ -1,0 +1,11 @@
+(module papercut.materials)
+(import "coil.primitive" :as p)
+(import "papercut.material-workbench" :as gallery)
+(import "paper.platform" :as host)
+
+(defn main [] (-> i64)
+  (host/paper_configure c"Papercut — Material Library" 1280.0 920.0)
+  (host/paper_run (p/fnptr-of gallery/draw) (p/fnptr-of gallery/event)))
+
+(defn redraw [] (-> i64)
+  (host/paper_redraw))

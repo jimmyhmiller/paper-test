@@ -1,4 +1,6 @@
 (module paper.render)
+(import "paper.finish-light" :as finish)
+(import "paper.micro-raster" :as micro)
 (import "coil.primitive" :as primitive)
 (import "coil.arraylist" :as al)
 (import "coil.alloc" :as alloc)
@@ -30,7 +32,7 @@
     (CGContextScaleCTM ctx (.scale s) (- 0.0 (.scale s)))
     ctx))
 
-(defstruct RasterBand [(color (ptr i8)) (height (ptr i8)) (material (ptr i8)) (bounds CGRect)])
+(defstruct RasterBand [(color (ptr i8)) (height (ptr i8)) (material (ptr i8)) (micro-mask (ptr i8)) (bounds CGRect)])
 
 (defstruct RasterBands [(items (al/ArrayList RasterBand)) (ready bool)])
 
@@ -45,6 +47,7 @@
             (let [band (al/al-get [RasterBand] (.items b) i)]
               (CGContextRelease (.color band))
               (CGContextRelease (.height band))
+              (CGContextRelease (.micro-mask band))
               (CGContextRelease (.material band))))
           (al/al-clear! [RasterBand] (mut (.items b)))
           0)
@@ -84,6 +87,7 @@
                        :color (band-context (.color-context s) y height false)
                        :height (band-context (.height-context s) y height true)
                        :material (band-context (.material-context s) y height false)
+                       :micro-mask (band-context (.mask (micro/state)) y height true)
                        :bounds
                          (cgrect 0.0
                                  (/ (cast f64 y) (.scale s))
@@ -103,6 +107,7 @@
                             (.color band)
                             (.height band)
                             (.material band))
+        (micro/raster (cgrect (.x region) top (.w region) (- bottom top)) (.micro-mask band))
         (release pool))))
   0)
 
@@ -126,6 +131,7 @@
   (masks/reset)
   (release-raster-bands)
   (gpu/setup)
+  (micro/setup (not (.available (gpu/gpu))))
   (let [tiles (height-tiles)]
     (free (cast (ptr i8) (.data tiles)))
     (free (cast (ptr i8) (.minimum tiles)))
@@ -187,6 +193,7 @@
 
 (defn rasterize-region [(region CGRect)] (-> i64)
   (let [s (scene)] (rasterize-contexts region (.color-context s) (.height-context s) (.material-context s)))
+  (when (!= (.mask (micro/state)) (nil)) (micro/raster region (.mask (micro/state))))
   0)
 
 (defn rasterize-contexts [(region CGRect) (c (ptr i8)) (h (ptr i8)) (m (ptr i8))] (-> i64)
@@ -383,6 +390,53 @@
       0)
     (load visibility)))
 
+(defn reflection-at [(pos i64) (x i64) (y i64)] (-> finish/Reflection)
+  (let [s (scene)
+        m (micro/state)
+        specular (cast f64 (load (index (.specular m) pos)))
+        sheen (cast f64 (load (index (.sheen m) pos)))]
+    (if (and (<= specular 0.0) (<= sheen 0.0))
+        (load (finish/Reflection
+                :base 1.0
+                :pigment 0.0
+                :white 0.0))
+        (finish/evaluate (+ (* (cast f64 (load (index (.dx (height-tiles)) pos))) (.depth s))
+                            (* (cast f64 (load (index (.dx m) pos))) (.grain s)))
+                         (+ (* (cast f64 (load (index (.dy (height-tiles)) pos))) (.depth s))
+                            (* (cast f64 (load (index (.dy m) pos))) (.grain s)))
+                         (- (.light-x s) (/ (cast f64 x) (.scale s)))
+                         (- (.light-y s) (/ (cast f64 y) (.scale s)))
+                         (.elevation s)
+                         (cast f64 (load (index (.finish-rough m) pos)))
+                         (cast f64 (load (index (.finish-axis-x m) pos)))
+                         (cast f64 (load (index (.finish-axis-y m) pos)))
+                         specular
+                         (cast f64 (load (index (.metallic m) pos)))
+                         sheen))))
+
+;;; Preserve four-wide diffuse/shadow work; evaluate reflection once per lane,
+;;; then combine it before the single color quantization.
+(defn finish-four [(x i64)
+                   (y i64)
+                   (pos i64)
+                   (shade (vec f32 4))
+                   (visibility (vec f32 4))
+                   (colors (ptr u8))
+                   (output (ptr u8))] (-> i64)
+  (let [(mut base) (zeroed (array f32 4))
+        (mut pigment) (zeroed (array f32 4))
+        (mut white) (zeroed (array f32 4))]
+    (for [i 0 4]
+      (let [reflection (reflection-at (+ pos i) (+ x i) y)]
+        (set! (index base i) (cast f32 (.base reflection)))
+        (set! (index pigment i) (cast f32 (.pigment reflection)))
+        (set! (index white i) (cast f32 (* 255.0 (.white reflection))))))
+    (v/write-reflected-colors (index colors (* pos 4))
+                              (index output (* pos 4))
+                              (v/mul shade (v/read-floats (index base 0)))
+                              (v/mul visibility (v/read-floats (index white 0)))
+                              (v/mul visibility (v/read-floats (index pigment 0))))))
+
 (defn shade-four [(x i64) (y i64) (maximum f64) (heights (ptr u8)) (colors (ptr u8)) (output (ptr u8))] (-> i64)
   (let [s (scene)
         pos (+ (* y (.width s)) x)
@@ -394,8 +448,12 @@
         ly (v/splat (- (.light-y s) (/ (cast f64 y) (.scale s))))
         horizontal2 (v/add (v/add (v/mul lx lx) (v/mul ly ly)) (v/splat 0.001))
         norm (v/root (v/add horizontal2 (v/mul elevation elevation)))
-        dx (v/mul (v/read-floats (index (.dx (height-tiles)) pos)) depth)
-        dy (v/mul (v/read-floats (index (.dy (height-tiles)) pos)) depth)
+        dx
+          (v/add (v/mul (v/read-floats (index (.dx (height-tiles)) pos)) depth)
+                 (v/mul (v/read-floats (index (.dx (micro/state)) pos)) (v/splat (.grain s))))
+        dy
+          (v/add (v/mul (v/read-floats (index (.dy (height-tiles)) pos)) depth)
+                 (v/mul (v/read-floats (index (.dy (micro/state)) pos)) (v/splat (.grain s))))
         n (v/root (v/add (v/splat 1.0) (v/add (v/mul dx dx) (v/mul dy dy))))
         diffuse
           (v/add (v/splat 0.80)
@@ -417,7 +475,12 @@
         shade
           (v/mul (v/splat 1.07)
                  (v/add (v/mul diffuse (v/add (v/splat 0.53) (v/mul (v/splat 0.47) visibility))) texture))]
-    (v/write-colors (index colors (* pos 4)) (index output (* pos 4)) shade)))
+    (if (or (v/any (v/greater (v/read-floats (index (.specular (micro/state)) pos)) (v/splat 0.0)))
+            (v/any (v/greater (v/read-floats (index (.sheen (micro/state)) pos)) (v/splat 0.0))))
+        (finish-four x y pos shade visibility colors output)
+        (v/write-colors (index colors (* pos 4))
+                        (index output (* pos 4))
+                        (v/choose (v/greater shade (v/splat 0.0)) shade (v/splat 0.0))))))
 
 ;;; Odd-width canvas tails use the scalar form without overreading.
 (defn shade-pixel [(x i64) (y i64) (maximum f64) (heights (ptr u8)) (colors (ptr u8)) (output (ptr u8))] (-> i64)
@@ -429,15 +492,29 @@
         ly (- (.light-y s) (/ (cast f64 y) (.scale s)))
         horizontal (sqrt (+ (+ (* lx lx) (* ly ly)) 0.001))
         norm (sqrt (+ (* horizontal horizontal) (* (.elevation s) (.elevation s))))
-        dx (* (- (height-at heights (+ x 1) y w h) (height-at heights (- x 1) y w h)) (.depth s))
-        dy (* (- (height-at heights x (+ y 1) w h) (height-at heights x (- y 1) w h)) (.depth s))
+        dx
+          (+ (* (- (height-at heights (+ x 1) y w h) (height-at heights (- x 1) y w h)) (.depth s))
+             (* (cast f64 (load (index (.dx (micro/state)) pos))) (.grain s)))
+        dy
+          (+ (* (- (height-at heights x (+ y 1) w h) (height-at heights x (- y 1) w h)) (.depth s))
+             (* (cast f64 (load (index (.dy (micro/state)) pos))) (.grain s)))
         n (sqrt (+ 1.0 (+ (* dx dx) (* dy dy))))
         diffuse (+ 0.80 (* 0.20 (clamp (/ (+ (- 0.0 (+ (* dx lx) (* dy ly))) (.elevation s)) (* n norm)) 0.0 1.0)))
         texture (* (.grain s) (load (index (.texture (height-tiles)) pos)))
-        shade (* 1.07 (+ (* diffuse (+ 0.53 (* 0.47 (shadow x y heights maximum)))) texture))]
+        visibility (shadow x y heights maximum)
+        shade (* 1.07 (+ (* diffuse (+ 0.53 (* 0.47 visibility))) texture))
+        reflection (reflection-at pos x y)
+        multiplier (* shade (.base reflection))
+        addition (* visibility (.white reflection))]
     (for [channel 0 3]
-      (set! (index output (+ (* pos 4) channel))
-            (cast u8 (clamp (* (cast f64 (load (index colors (+ (* pos 4) channel)))) shade) 0.0 255.0))))
+      (let [pigment (cast f64 (load (index colors (+ (* pos 4) channel))))
+            value
+              (if (or (> (load (index (.specular (micro/state)) pos)) (cast f32 0.0))
+                      (> (load (index (.sheen (micro/state)) pos)) (cast f32 0.0)))
+                  (* 255.0
+                     (finish/fin-channel (/ pigment 255.0) multiplier (* visibility (.pigment reflection)) addition))
+                  (* pigment shade))]
+        (set! (index output (+ (* pos 4) channel)) (cast u8 (clamp value 0.0 255.0)))))
     (set! (index output (+ (* pos 4) 3)) (cast u8 255)))
   0)
 
@@ -567,7 +644,8 @@
             (set! (index (.dy tiles) pos)
                   (cast f32 (- (height-at heights x (+ y 1) w h) (height-at heights x (- y 1) w h))))
             (set! (index (.texture tiles) pos)
-                  (* rough (+ (* pulp 0.10) (+ (* strands (* fiber 0.07)) (* cloud 0.018))))))))))
+                  (+ (cast f64 (load (index (.grain (micro/state)) pos)))
+                     (* rough (+ (* pulp 0.10) (+ (* strands (* fiber 0.07)) (* cloud 0.018)))))))))))
   0)
 
 ;;; A worker owns a complete band of rows. Neighboring tile columns can share

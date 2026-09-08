@@ -1,15 +1,43 @@
 (module paper.material)
+(import "coil.primitive" :as p)
 
 ;;; Pigment and microstructure belong to each sheet, independently of the light.
 ;;; roughness and fiber are in [0,1]; seed is a stable per-material grain offset.
-(defstruct Material [(pigment u32) (roughness f64) (fiber f64) (seed f64)])
+;;; Pattern 0 preserves the original paper shader. Other patterns use logical
+;;; points, an angle in radians, and fine relief independent of sheet elevation.
+(defstruct Pattern [(kind i64) (size f64) (angle f64) (relief f64) (x f64) (y f64)])
+
+(defn plain-pattern [] (-> Pattern)
+  (Pattern
+    :kind 0
+    :size 1.0
+    :angle 0.0
+    :relief 0.0
+    :x 0.0
+    :y 0.0))
+
+;;; Finish roughness controls the highlight width, separately from paper grain.
+(defstruct Finish [(roughness f64) (specular f64) (metallic f64) (sheen f64) (anisotropy f64)])
+
+(defn matte-finish [] (-> Finish)
+  (Finish
+    :roughness 0.5
+    :specular 0.0
+    :metallic 0.0
+    :sheen 0.0
+    :anisotropy 0.0))
+
+(defstruct Material
+  [(pigment u32) (roughness f64) (fiber f64) (seed f64) (pattern Pattern) (finish Finish)])
 
 (defn stock [(pigment u32) (roughness f64) (fiber f64) (seed f64)] (-> Material)
   (Material
     :pigment pigment
     :roughness roughness
     :fiber fiber
-    :seed seed))
+    :seed seed
+    :pattern (plain-pattern)
+    :finish (matte-finish)))
 
 ;;; Mix pigments without replacing the stock's texture or grain seed.
 (defn tint [(material Material) (pigment u32) (amount f64)] (-> Material)
@@ -20,7 +48,9 @@
             a (cast f64 (& (>> (cast i64 (.pigment material)) shift) 255))
             b (cast f64 (& (>> (cast i64 pigment) shift) 255))]
         (set! color (| (load color) (<< (cast i64 (+ a (* (- b a) amount))) shift)))))
-    (stock (cast u32 (load color)) (.roughness material) (.fiber material) (.seed material))))
+    (let [(mut result) (load material)]
+      (set! (.pigment result) (cast u32 (load color)))
+      (load result))))
 
 (defn cotton [(pigment u32)] (-> Material)
   (stock pigment 0.78 0.8 0.13))
@@ -54,3 +84,172 @@
 
 (defn ink-stock [] (-> Material)
   (linen 0x303936))
+
+;;; Create an opaque procedural stock. Kind is 1..22; seed is in [0,1].
+(defn textured-stock [(pigment u32) (kind i64) (seed f64) (relief f64)] (-> Material)
+  (assert (and (>= kind 1) (<= kind 22) (>= seed 0.0) (<= seed 1.0) (>= relief 0.0) (<= relief 2.0)))
+  (Material
+    :pigment pigment
+    :roughness 0.0
+    :fiber 0.0
+    :seed seed
+    :pattern
+      (Pattern
+        :kind kind
+        :size 1.0
+        :angle 0.0
+        :relief relief
+        :x 0.0
+        :y 0.0)
+    :finish (matte-finish)))
+
+;;; Scale the pattern in logical points; existing paper stocks retain their grain.
+(defn texture-scale [(material Material) (size f64)] (-> Material)
+  (assert (and (>= size 0.25) (<= size 16.0)))
+  (let [(mut result) (load material)]
+    (set! (.size (.pattern result)) size)
+    (load result)))
+
+;;; Rotate the surface pattern clockwise in degrees.
+(defn texture-angle [(material Material) (degrees f64)] (-> Material)
+  (let [(mut result) (load material)]
+    (set! (.angle (.pattern result)) (* degrees 0.017453292519943295))
+    (load result)))
+
+;;; Offset the material origin relative to the uncut sheet's bounds.
+(defn texture-offset [(material Material) (x f64) (y f64)] (-> Material)
+  (let [(mut result) (load material)]
+    (set! (.x (.pattern result)) x)
+    (set! (.y (.pattern result)) y)
+    (load result)))
+
+(defn texture-relief [(material Material) (amount f64)] (-> Material)
+  (assert (and (>= amount 0.0) (<= amount 2.0)))
+  (let [(mut result) (load material)]
+    (set! (.relief (.pattern result)) amount)
+    (load result)))
+
+(defn texture-seed [(material Material) (seed f64)] (-> Material)
+  (assert (and (>= seed 0.0) (<= seed 1.0)))
+  (let [(mut result) (load material)]
+    (set! (.seed result) seed)
+    (load result)))
+
+(defn pattern-equal [(a Pattern) (b Pattern)] (-> bool)
+  (and (= (.kind a) (.kind b))
+       (p/fcmp-eq (.size a) (.size b))
+       (p/fcmp-eq (.angle a) (.angle b))
+       (p/fcmp-eq (.relief a) (.relief b))
+       (p/fcmp-eq (.x a) (.x b))
+       (p/fcmp-eq (.y a) (.y b))))
+
+(defn kraft [(pigment u32)] (-> Material)
+  (textured-stock pigment 1 0.147 0.25))
+
+(defn cardstock [(pigment u32)] (-> Material)
+  (textured-stock pigment 2 0.184 0.12))
+
+(defn watercolor [(pigment u32)] (-> Material)
+  (textured-stock pigment 3 0.221 0.4))
+
+(defn laid-paper [(pigment u32)] (-> Material)
+  (textured-stock pigment 4 0.258 0.45))
+
+(defn washi [(pigment u32)] (-> Material)
+  (textured-stock pigment 5 0.295 0.3))
+
+(defn newsprint [(pigment u32)] (-> Material)
+  (textured-stock pigment 6 0.332 0.15))
+
+(defn corrugated [(pigment u32)] (-> Material)
+  (textured-stock pigment 7 0.369 0.9))
+
+(defn felt [(pigment u32)] (-> Material)
+  (textured-stock pigment 8 0.406 0.3))
+
+(defn woven-linen [(pigment u32)] (-> Material)
+  (textured-stock pigment 9 0.443 0.65))
+
+(defn canvas [(pigment u32)] (-> Material)
+  (textured-stock pigment 10 0.48 0.65))
+
+(defn denim [(pigment u32)] (-> Material)
+  (textured-stock pigment 11 0.517 0.5))
+
+(defn burlap [(pigment u32)] (-> Material)
+  (textured-stock pigment 12 0.554 0.8))
+
+(defn knitted-wool [(pigment u32)] (-> Material)
+  (textured-stock pigment 13 0.591 0.85))
+
+(defn cork [(pigment u32)] (-> Material)
+  (textured-stock pigment 14 0.628 0.15))
+
+(defn leather [(pigment u32)] (-> Material)
+  (textured-stock pigment 15 0.665 0.4))
+
+(defn suede [(pigment u32)] (-> Material)
+  (textured-stock pigment 16 0.702 0.22))
+
+(defn wood-veneer [(pigment u32)] (-> Material)
+  (textured-stock pigment 17 0.739 0.12))
+
+(defn rubber [(pigment u32)] (-> Material)
+  (textured-stock pigment 18 0.776 0.2))
+
+;;; Add a finish without changing pigment, microstructure, or its origin.
+;;; Roughness is a microfacet width in [0.12,1]; the other controls are in [0,1],
+;;; except anisotropy in [0,0.9]. Texture angle also rotates the highlight axis.
+(defn surface-finish [(material Material) (roughness f64) (specular f64) (metallic f64) (sheen f64) (anisotropy f64)] (-> Material)
+  (assert (and (>= roughness 0.12)
+               (<= roughness 1.0)
+               (>= specular 0.0)
+               (<= specular 1.0)
+               (>= metallic 0.0)
+               (<= metallic 1.0)
+               (>= sheen 0.0)
+               (<= sheen 1.0)
+               (>= anisotropy 0.0)
+               (<= anisotropy 0.9)))
+  (let [(mut result) (load material)]
+    (set! (.finish result)
+          (Finish
+            :roughness roughness
+            :specular specular
+            :metallic metallic
+            :sheen sheen
+            :anisotropy anisotropy))
+    (load result)))
+
+(defn without-finish [(material Material)] (-> Material)
+  (let [(mut result) (load material)]
+    (set! (.finish result) (matte-finish))
+    (load result)))
+
+(defn finish-active [(finish Finish)] (-> bool)
+  (or (> (.specular finish) 0.0) (> (.sheen finish) 0.0)))
+
+(defn finish-equal [(a Finish) (b Finish)] (-> bool)
+  (and (p/fcmp-eq (.roughness a) (.roughness b))
+       (p/fcmp-eq (.specular a) (.specular b))
+       (p/fcmp-eq (.metallic a) (.metallic b))
+       (p/fcmp-eq (.sheen a) (.sheen b))
+       (p/fcmp-eq (.anisotropy a) (.anisotropy b))))
+
+(defn velvet [(pigment u32)] (-> Material)
+  (surface-finish (textured-stock pigment 19 0.813 0.12) 0.65 0.08 0.0 0.95 0.65))
+
+(defn brushed-aluminum [(pigment u32)] (-> Material)
+  (surface-finish (textured-stock pigment 20 0.85 0.16) 0.30 1.0 1.0 0.0 0.75))
+
+(defn satin [(pigment u32)] (-> Material)
+  (surface-finish (textured-stock pigment 21 0.887 0.15) 0.38 0.85 0.0 0.25 0.7))
+
+(defn glazed-ceramic [(pigment u32)] (-> Material)
+  (surface-finish (textured-stock pigment 22 0.924 0.08) 0.18 1.0 0.0 0.0 0.0))
+
+(defn polished-leather [(pigment u32)] (-> Material)
+  (surface-finish (leather pigment) 0.30 0.75 0.0 0.0 0.12))
+
+(defn varnished-wood [(pigment u32)] (-> Material)
+  (surface-finish (wood-veneer pigment) 0.22 0.9 0.0 0.0 0.25))
