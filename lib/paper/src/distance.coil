@@ -1,0 +1,87 @@
+(module paper.distance)
+(import "coil.primitive" :as p)
+(import "coil.alloc" :as alloc)
+
+(extern free :cc c [(ptr i8)] (-> void))
+
+(extern sqrt :cc c [f64] (-> f64))
+
+;;; Squared Euclidean distance transform: the lower envelope of parabolas.
+;;; Each sample enters/leaves the envelope once, so each axis is linear time.
+(defn axis [(grid (ptr f64))
+            (start i64)
+            (stride i64)
+            (n i64)
+            (f (ptr f64))
+            (v (ptr i64))
+            (z (ptr f64))] (-> i64)
+  (for [q 0 n] (store! (index f q) (load (index grid (+ start (* q stride))))))
+  (store! (index v 0) 0)
+  (store! (index z 0) -1.0e30)
+  (store! (index z 1) 1.0e30)
+  (let [(mut k) 0]
+    (for [q 1 n]
+      (let [(mut s) 0.0
+            (mut done) false]
+        (while (not (load done))
+          (let [r (load (index v (load k)))
+                qf (cast f64 q)
+                rf (cast f64 r)]
+            (set! s
+                  (/ (- (+ (load (index f q)) (* qf qf))
+                        (+ (load (index f r)) (* rf rf)))
+                     (* 2.0 (- qf rf))))
+            (if (and (> (load k) 0) (<= (load s) (load (index z (load k)))))
+                (set! k (- (load k) 1))
+                (set! done true))))
+        (set! k (+ (load k) 1))
+        (store! (index v (load k)) q)
+        (store! (index z (load k)) (load s))
+        (store! (index z (+ (load k) 1)) 1.0e30)))
+    (set! k 0)
+    (for [q 0 n]
+      (while (< (load (index z (+ (load k) 1))) (cast f64 q))
+        (set! k (+ (load k) 1)))
+      (let [r (load (index v (load k)))
+            delta (cast f64 (- q r))]
+        (store! (index grid (+ start (* q stride)))
+                (+ (* delta delta) (load (index f r)))))))
+  0)
+
+(defn transform [(grid (ptr f64)) (width i64) (height i64)] (-> i64)
+  (let [n (if (> width height) width height)
+        f (cast (ptr f64) (alloc/malloc (cast isize (* n 8))))
+        v (cast (ptr i64) (alloc/malloc (cast isize (* n 8))))
+        z (cast (ptr f64) (alloc/malloc (cast isize (* (+ n 1) 8))))]
+    (for [y 0 height] (axis grid (* y width) 1 width f v z))
+    (for [x 0 width] (axis grid x width height f v z))
+    (free (cast (ptr i8) f))
+    (free (cast (ptr i8) v))
+    (free (cast (ptr i8) z)))
+  0)
+
+;;; RGBA red coverage -> signed pixel distance (positive outside).
+;;; Partial coverage seeds subpixel distances instead of snapping the outline.
+;;; The caller owns the returned float buffer.
+(defn from-coverage [(rgba (ptr u32)) (width i64) (height i64)] (-> (ptr f32))
+  (let [n (* width height)
+        outer (cast (ptr f64) (alloc/malloc (cast isize (* n 8))))
+        inner (cast (ptr f64) (alloc/malloc (cast isize (* n 8))))
+        result (cast (ptr f32) (alloc/malloc (cast isize (* n 4))))]
+    (for [i 0 n]
+      (let [a (/ (cast f64 (& (load (index rgba i)) (cast u32 255))) 255.0)
+            d (- 0.5 a)]
+        (store! (index outer i)
+                (if (<= a 0.0) 1.0e20 (if (>= a 0.5) 0.0 (* d d))))
+        (store! (index inner i)
+                (if (>= a 1.0) 1.0e20 (if (<= a 0.5) 0.0 (* d d))))))
+    (transform outer width height)
+    (transform inner width height)
+    (for [i 0 n]
+      (store! (index result i)
+              (cast f32
+                    (- (sqrt (load (index outer i)))
+                       (sqrt (load (index inner i)))))))
+    (free (cast (ptr i8) outer))
+    (free (cast (ptr i8) inner))
+    result))

@@ -1,4 +1,5 @@
 (module paper.damage)
+(import "paper.relief" :as relief)
 (import "paper.material" :as material)
 (import "coil.primitive" :as p)
 (import "coil.alloc" :as alloc)
@@ -29,7 +30,8 @@
   (let [c (cache)]
     (when (.ready c)
       (for [i 0 (al/al-len [Sheet] (.sheets c))]
-        (CGPathRelease (.path (al/al-elem [Sheet] (field c sheets) i))))
+        (CGPathRelease (.path (al/al-elem [Sheet] (field c sheets) i)))
+        (relief/release (.relief (al/al-elem [Sheet] (field c sheets) i))))
       (for [i 0 (al/al-len [Ink] (.inks c))]
         (let [ink (al/al-elem [Ink] (field c inks) i)]
           (o/release (.text ink))
@@ -60,8 +62,14 @@
           (set! (.bounds c) r)
           (let [x (if (< (.x a) (.x r)) (.x a) (.x r))
                 y (if (< (.y a) (.y r)) (.y a) (.y r))
-                right (if (> (+ (.x a) (.w a)) (+ (.x r) (.w r))) (+ (.x a) (.w a)) (+ (.x r) (.w r)))
-                bottom (if (> (+ (.y a) (.h a)) (+ (.y r) (.h r))) (+ (.y a) (.h a)) (+ (.y r) (.h r)))]
+                right
+                  (if (> (+ (.x a) (.w a)) (+ (.x r) (.w r)))
+                      (+ (.x a) (.w a))
+                      (+ (.x r) (.w r)))
+                bottom
+                  (if (> (+ (.y a) (.h a)) (+ (.y r) (.h r)))
+                      (+ (.y a) (.h a))
+                      (+ (.y r) (.h r)))]
             (set! (.bounds c) (cgrect x y (- right x) (- bottom y)))))))
   0)
 
@@ -74,6 +82,7 @@
        (p/fcmp-eq (.seed a) (.seed b))
        (material/pattern-equal (.pattern a) (.pattern b))
        (material/finish-equal (.finish a) (.finish b))
+       (relief/equal (.relief a) (.relief b))
        (CGPathEqualToPath (.path a) (.path b))))
 
 (defn ink-equal [(a Ink) (b Ink)] (-> bool)
@@ -88,7 +97,11 @@
        (= (.font a) (.font b))
        (= (.kind a) (.kind b))
        (or (= (.text a) (.text b))
-           (o/msg bool (.text a) (o/sel c"isEqualToString:") [(ptr i8)] (.text b)))
+           (o/msg bool
+                  (.text a)
+                  (o/sel c"isEqualToString:")
+                  [(ptr i8)]
+                  (.text b)))
        (CGPathEqualToPath (.clip a) (.clip b))))
 
 ;;; Compare exact retained commands, including old bounds for removed geometry.
@@ -98,7 +111,10 @@
         s (scene)]
     (set! (.bounds c) (cgrect 0.0 0.0 0.0 0.0))
     (if (or (not (.valid c)) (!= (.background c) (.background s)))
-        (include (cgrect 0.0 0.0 (/ (cast f64 (.width s)) (.scale s)) (/ (cast f64 (.height s)) (.scale s))))
+        (include (cgrect 0.0
+                         0.0
+                         (/ (cast f64 (.width s)) (.scale s))
+                         (/ (cast f64 (.height s)) (.scale s))))
         (do
           (for [i 0 (al/al-len [Sheet] (.sheets s))]
             (let [a (al/al-get [Sheet] (.sheets s) i)]
@@ -108,14 +124,21 @@
                     (when (not (sheet-equal a b))
                       (include (CGPathGetPathBoundingBox (.path a)))
                       (include (CGPathGetPathBoundingBox (.path b))))))))
-          (for [i (al/al-len [Sheet] (.sheets s)) (al/al-len [Sheet] (.sheets c))]
-            (include (CGPathGetPathBoundingBox (.path (al/al-elem [Sheet] (field c sheets) i)))))
+          (for [i
+                (al/al-len [Sheet] (.sheets s))
+                (al/al-len [Sheet] (.sheets c))]
+            (include (CGPathGetPathBoundingBox (.path (al/al-elem [Sheet]
+                                                                  (field c
+                                                                         sheets)
+                                                                  i)))))
           (for [i 0 (al/al-len [Ink] (.inks s))]
             (let [a (al/al-get [Ink] (.inks s) i)]
               (if (>= i (al/al-len [Ink] (.inks c)))
                   (include (.bounds a))
                   (let [b (al/al-get [Ink] (.inks c) i)]
-                    (when (not (ink-equal a b)) (include (.bounds a)) (include (.bounds b)))))))
+                    (when (not (ink-equal a b))
+                      (include (.bounds a))
+                      (include (.bounds b)))))))
           (for [i (al/al-len [Ink] (.inks s)) (al/al-len [Ink] (.inks c))]
             (include (.bounds (al/al-elem [Ink] (field c inks) i))))))
     (let [r (.bounds c)
@@ -124,9 +147,14 @@
           (load r)
           (let [x (floor (- (* (.x r) scale) 2.0))
                 y (floor (- (* (.y r) scale) 2.0))
-                right (- 0.0 (floor (- 0.0 (+ (* (+ (.x r) (.w r)) scale) 2.0))))
-                bottom (- 0.0 (floor (- 0.0 (+ (* (+ (.y r) (.h r)) scale) 2.0))))]
-            (cgrect (/ x scale) (/ y scale) (/ (- right x) scale) (/ (- bottom y) scale)))))))
+                right
+                  (- 0.0 (floor (- 0.0 (+ (* (+ (.x r) (.w r)) scale) 2.0))))
+                bottom
+                  (- 0.0 (floor (- 0.0 (+ (* (+ (.y r) (.h r)) scale) 2.0))))]
+            (cgrect (/ x scale)
+                    (/ y scale)
+                    (/ (- right x) scale)
+                    (/ (- bottom y) scale)))))))
 
 (defn remember [] (-> i64)
   (discard)
@@ -137,12 +165,14 @@
     (for [i 0 (al/al-len [Sheet] (.sheets s))]
       (let [(mut sheet) (al/al-get [Sheet] (.sheets s) i)]
         (set! (.path sheet) (CGPathCreateCopy (.path sheet)))
+        (relief/retain (.relief sheet))
         (al/al-push! [Sheet] (mut (.sheets c)) (load sheet))))
     (for [i 0 (al/al-len [Ink] (.inks s))]
       (let [(mut ink) (al/al-get [Ink] (.inks s) i)]
         (al/al-set! [i64] (mut (.ink-orders c)) (.order ink) i)
         (set! (.text ink) (o/retain (.text ink)))
-        (when (!= (.clip ink) (o/nil)) (set! (.clip ink) (CGPathCreateCopy (.clip ink))))
+        (when (!= (.clip ink) (o/nil))
+          (set! (.clip ink) (CGPathCreateCopy (.clip ink))))
         (al/al-push! [Ink] (mut (.inks c)) (load ink))))
     (set! (.background c) (.background s))
     (set! (.valid c) true))

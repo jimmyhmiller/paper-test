@@ -1,4 +1,5 @@
 (module paper.platform)
+(import "paper.relief" :as relief)
 (import "paper.cuts" :as cuts)
 (import "paper.shape-resize" :as sizing)
 (import "coil.primitive" :as primitive)
@@ -338,13 +339,15 @@
                  :fiber (clamp (.fiber stock) 0.0 1.0)
                  :seed (clamp (.seed stock) 0.0 1.0)
                  :pattern (load pattern)
-                 :finish (.finish stock)))))
+                 :finish (.finish stock)
+                 :relief (cast (ptr relief/Panel) 0)))))
 
 ;;; Remove the current aperture from every already-submitted sheet above floor.
 ;;; Boolean subtraction also handles apertures crossing a sheet's outside edge.
 (defn paper_cut [(floor f64)] (-> i64)
   (let [s (scene)
         cut-path (clipped-path (.path (scene)))]
+    (expand-cut-reliefs cut-path (+ floor (.offset s)))
     (for [i 0 (al/al-len [Sheet] (.sheets s))]
       (let [sheet (al/al-elem [Sheet] (field s sheets) i)]
         (when (and (> (.z sheet) (+ floor (.offset s)))
@@ -895,7 +898,11 @@
           (set! (.edge drag) edge)
           (set! (.frame drag) (msg CGRect (.window app) (sel c"frame") []))
           (set! (.start drag)
-                (msg CGPoint (.window app) (sel c"convertPointToScreen:") [CGPoint] p))
+                (msg CGPoint
+                     (.window app)
+                     (sel c"convertPointToScreen:")
+                     [CGPoint]
+                     p))
           (set! (.drag app) 0)
           (set! (.hover app) 0))))
     (if (> (.edge drag) 0)
@@ -908,8 +915,14 @@
                                       (logical-height)
                                       (.edge drag)
                                       (.start drag)
-                                      (msg CGPoint (.window app) (sel c"convertPointToScreen:") [CGPoint]
-                                           (msg CGPoint event (sel c"locationInWindow") []))
+                                      (msg CGPoint
+                                           (.window app)
+                                           (sel c"convertPointToScreen:")
+                                           [CGPoint]
+                                           (msg CGPoint
+                                                event
+                                                (sel c"locationInWindow")
+                                                []))
                                       (* (logical-width) 0.6)
                                       (* (logical-height) 0.6))]
               (msg i64
@@ -1752,7 +1765,8 @@
                    :fiber 0.0
                    :seed 0.0
                    :pattern (material/plain-pattern)
-                   :finish (material/matte-finish)))
+                   :finish (material/matte-finish)
+                   :relief (cast (ptr relief/Panel) 0)))
       (CGPathRelease path)
       0))
   0)

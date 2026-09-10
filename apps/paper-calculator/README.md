@@ -37,13 +37,20 @@ The inset `123 / ƒx` selector switches between basic and scientific layouts wit
 The selector thumb eases between modes over 220 ms while the keys change immediately.
 Drag any visible casing edge or rounded corner to resize the shaped window proportionally.
 
-Key outlines are collected for the current layout and independent new bevels are
-constructed in parallel. Enclosed letter holes are built directly into each key,
-without subtracting them from the scene stack. The renderer prepares independent
-coverage masks in parallel and retains native lettering outlines. It does not
-render the alternate calculator layout during startup. `coil run tests/fidelity.coil`
-reports cold mode switches, scene construction, completed rendering, light drags,
-and button press/release timing at 2× backing resolution.
+Each key is one bevel-aware GPU primitive, with an analytic rounded shoulder and
+a signed-distance field for its native lettering outline. It writes color, height,
+texture and finish together; lighting and shadows still use actual surface depth.
+CPU rendering, arbitrary cuts and interleaved elevations expand the primitive into
+vector sheets. Coverage/distance fields are prepared in parallel in an owning
+256 MiB cache. A separate 128 MiB GPU cache retains full-resolution material
+microstructure, sharing exact pixel-grid translations and falling back to procedural
+evaluation when its working set is full. Relighting never regenerates that texture.
+
+There is no alternate-layout startup prewarming. `coil run tests/fidelity.coil`
+reports cold switches, CPU stages, completed GPU work, light drags and button
+press/release timing at 2× backing resolution. `PAPER_MICRO_REFERENCE=1` disables
+material caching, and `PAPER_VISIBILITY_REFERENCE=1` disables opaque-depth culling
+in that benchmark. Timings exclude native window presentation/vsync.
 
 Use the number keys, decimal point, `+ - * /`, and Return or `=`. Escape or C clears, Backspace deletes an entry digit, `%` computes a percentage, and S switches modes. Tab navigates controls; Return or Space activates a keyboard-focused control. Click ± to change sign. Operators execute immediately from left to right, like a pocket calculator. Repeated equals repeats the last operation. For addition/subtraction, percentages are relative to the left operand; for multiplication/division they divide the entry by 100.
 

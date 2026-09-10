@@ -5,9 +5,6 @@
 (import "paper.objc" :use *)
 (import "calculator.model" :as model)
 (import "paper.lettering" :use [beveled-carved lettered-panel])
-(import "paper.lettering" :as lettering)
-(import "paper.surface" :as surface)
-(import "paper.scene" :as scene)
 (import "paper.lighting" :as light)
 (import "calculator.power" :as power)
 (import "calculator.mode-switch" :as mode)
@@ -77,42 +74,7 @@
 (defn cut-edge [(material Material)] (-> Material)
   (surface-finish (tint material 0xfff5dc 0.55) 0.16 1.0 0.0 0.0 0.0))
 
-(defstruct KeySpec [(id i64) (bounds Rect) (size f64)])
-
-(defstruct Keys [(count i64) (items (array KeySpec 40))])
-
-(defn keys [] (-> (ptr Keys))
-  (p/alloc-static Keys))
-
-;;; Collect the current layout only, so independent new outlines can be prepared
-;;; together. These are scene commands, not a second hidden calculator layout.
 (defn key [(id i64) (r Rect) (size f64)] (-> i64)
-  (let [keys (keys)]
-    (assert (< (.count keys) 40))
-    (set! (index (mut (.items keys)) (.count keys))
-          (KeySpec
-            :id id
-            :bounds r
-            :size size))
-    (set! (.count keys) (+ (.count keys) 1))
-    (if (and (>= id 11) (<= id 15))
-        (lettering/centered-lettering-path (inset r 9.0)
-                                           (key-name id)
-                                           (* size 1.18)
-                                           3)
-        (lettering/lettering-path (inset r 9.0) (key-name id) size 3 false))
-    (surface/prepare-bevel-contours (.path (scene/scene))
-                                    (if (< size 25.0) 0.65 1.3)))
-  0)
-
-(defn draw-keys [] (-> i64)
-  (surface/complete-bevel-preparation)
-  (for [i 0 (.count (keys))]
-    (let [key (index (mut (.items (keys))) i)]
-      (draw-key (.id key) (.bounds key) (.size key))))
-  0)
-
-(defn draw-key [(id i64) (r Rect) (size f64)] (-> i64)
   (let [control (+ id 100)
         z
           (if (host/paper_pressed control)
@@ -150,7 +112,6 @@
   0)
 
 (defn draw [] (-> i64)
-  (set! (.count (keys)) 0)
   (host/paper_begin 0xeed6b3)
   (light/apply-light (lighting) (rect 0.0 0.0 620.0 790.0))
   (host/paper_drag_area (rect 38.0 52.0 544.0 35.0))
@@ -235,7 +196,6 @@
       (key 11
            (rect 424.0 y 96.0 (+ height (if (.scientific (state)) 0.0 20.0)))
            size)))
-  (draw-keys)
   (ink-height 44.0)
   (label 112.0 732.0 9.0 0x6f604a 3 c"P A P E R")
   (recess (rect 249.0 723.0 122.0 26.0)

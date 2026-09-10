@@ -1,0 +1,257 @@
+(module paper.relief-test)
+(import "paper.lettering" :as lettering)
+(import "paper.relief" :as relief)
+(import "paper.scene" :as scene)
+(import "paper.render" :as render)
+(import "paper.masks" :as masks)
+(import "paper.damage" :as damage)
+(import "paper.gpu" :as gpu)
+(import "paper.platform" :as host)
+(import "paper.surface" :use *)
+(import "paper.material" :use *)
+(import "paper.geometry" :use [rect])
+(import "paper.ffi" :use *)
+(import "paper.objc" :as o)
+(import "coil.arraylist" :as al)
+(import "coil.alloc" :as alloc)
+
+(extern memcpy :cc c [(ptr u8) (ptr u8) u64] (-> (ptr u8)))
+
+(extern memcmp :cc c [(ptr u8) (ptr u8) u64] (-> i32))
+
+(extern printf :cc c [(ptr i8) ...] (-> i32))
+
+(defn key [(text (ptr i8))] (-> i64)
+  (lettering/lettered-panel (rect 10.25 10.25 120.0 100.0)
+                            18.0
+                            4.0
+                            2.0
+                            12.0
+                            text
+                            56.0
+                            3
+                            38.0
+                            true
+                            8.0
+                            2.0
+                            (pressed-paper 0xe8cfa9)
+                            (pressed-paper 0xe8cfa9)
+                            (suede 0x69503b)))
+
+(defn setup [] (-> i64)
+  (scene/init)
+  (set! (.width (scene/scene)) 301)
+  (set! (.height (scene/scene)) 251)
+  (set! (.scale (scene/scene)) 2.0)
+  (host/paper_begin 0xeeeeee))
+
+(deftest isolated-lettering-is-one-owning-command-and-expands-for-cpu
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (setup)
+           (key c"8")
+           (assert (= (al/al-len [scene/Sheet] (.sheets (scene/scene))) 1))
+           (let [item (al/al-get [scene/Sheet] (.sheets (scene/scene)) 0)]
+             (assert (!= (.relief item) (cast (ptr relief/Panel) 0))))
+           (scene/resolve-reliefs true)
+           (assert (= (al/al-len [scene/Sheet] (.sheets (scene/scene))) 1))
+           (scene/resolve-reliefs false)
+           (assert (= (al/al-len [scene/Sheet] (.sheets (scene/scene))) 18))
+           (for [i 0 18]
+             (let [item (al/al-get [scene/Sheet] (.sheets (scene/scene)) i)]
+               (assert (= (.relief item) (cast (ptr relief/Panel) 0)))
+               (assert (= (.order item) (+ i 1)))))
+           (scene/clear 0)
+           (o/release pool)))
+
+(deftest relief-expansion-preserves-current-path-clips-and-command-order
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (setup)
+           (host/push-clip (rect 10.0 10.0 65.0 110.0))
+           (key c"8")
+           (set! (.active (host/clip-state)) false)
+           (panel (rect 60.0 15.0 40.0 80.0) 1.0 34.0 (sage))
+           (begin-sheet)
+           (rounded-path (rect 20.0 20.0 20.0 20.0) 2.0)
+           (let [path (CGPathCreateCopy (.path (scene/scene)))]
+             (scene/resolve-reliefs true)
+             (assert (CGPathEqualToPath path (.path (scene/scene))))
+             (CGPathRelease path))
+           (assert (= (al/al-len [scene/Sheet] (.sheets (scene/scene))) 19))
+           (for [i 1 19]
+             (let [item (al/al-get [scene/Sheet] (.sheets (scene/scene)) i)
+                   b (CGPathGetPathBoundingBox (.path item))]
+               (when (not (CGPathIsEmpty (.path item)))
+                 (assert (<= (+ (.x b) (.w b)) 75.001)))))
+           (let [item (al/al-get [scene/Sheet] (.sheets (scene/scene)) 0)]
+             (assert (= (.order item) 19)))
+           (scene/clear 0)
+           (o/release pool)))
+
+(deftest arbitrary-cut-materializes-relief-and-retains-the-cut-path
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (setup)
+           (key c"8")
+           (begin-sheet)
+           (rounded-path (rect 0.0 0.0 40.0 120.0) 0.0)
+           (let [path (CGPathCreateCopy (.path (scene/scene)))]
+             (cut-through 0.0)
+             (assert (CGPathEqualToPath path (.path (scene/scene))))
+             (CGPathRelease path))
+           (for [i 0 (al/al-len [scene/Sheet] (.sheets (scene/scene)))]
+             (let [item (al/al-get [scene/Sheet] (.sheets (scene/scene)) i)]
+               (assert (= (.relief item) (cast (ptr relief/Panel) 0)))
+               (assert (not (CGPathContainsPoint (.path item)
+                                                 (cast (ptr CGAffine) 0)
+                                                 (CGPoint :x 25.0 :y 50.0)
+                                                 true)))))
+           (scene/clear 0)
+           (o/release pool)))
+
+(deftest analytic-glyph-counters-and-floors-have-real-height
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (setup)
+           (render/setup)
+           (key c"8")
+           (render/rasterize)
+           (let [data (CGBitmapContextGetData (.height-context (scene/scene)))
+                 (mut floors) 0
+                 (mut tops) 0]
+             (for [y 65 180]
+               (for [x 80 200]
+                 (let [h (render/height-at data x y 301 251)]
+                   (when (and (> h 29.7) (< h 30.3))
+                     (set! floors (+ (load floors) 1)))
+                   (when (> h 37.7) (set! tops (+ (load tops) 1))))))
+             (assert (> (load floors) 500))
+             (assert (> (load tops) 500)))
+           (scene/clear 0)
+           (o/release pool)))
+
+(deftest analytic-material-updates-and-visibility-match-full-reference-frames
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (setup)
+           (render/setup)
+           (let [bytes (cast u64 (* (* 301 251) 4))
+                 copy (cast (ptr u8) (alloc/malloc (cast isize bytes)))]
+             (for [i 0 4]
+               (host/paper_begin 0xeeeeee)
+               (panel (rect 0.0 0.0 150.0 125.0) 0.0 10.0 (sage))
+               (key (if (= (% i 2) 0) c"8" c"3"))
+               (render/render)
+               (memcpy copy
+                       (CGBitmapContextGetData (.output-context (scene/scene)))
+                       bytes)
+               (set! (.reference (masks/visibility)) true)
+               (set! (.valid (damage/cache)) false)
+               (render/rasterize)
+               (render/render)
+               (assert (= (memcmp copy
+                                  (CGBitmapContextGetData (.output-context (scene/scene)))
+                                  bytes)
+                          (cast i32 0)))
+               (set! (.reference (masks/micro-cache)) true)
+               (set! (.valid (damage/cache)) false)
+               (render/rasterize)
+               (render/render)
+               (let [data
+                       (CGBitmapContextGetData (.output-context (scene/scene)))
+                     (mut maximum) 0
+                     (mut changed) 0]
+                 (for [j 0 (cast i64 bytes)]
+                   (let [delta
+                           (cast i64
+                                 (fabs (- (cast f64 (load (index data j)))
+                                          (cast f64 (load (index copy j))))))]
+                     (when (> delta 0) (set! changed (+ (load changed) 1)))
+                     (when (> delta (load maximum)) (set! maximum delta))))
+                 ;; Compute and fragment evaluation can round a final 8-bit
+                 ;; channel differently; use the same one-unit bound as CPU/Metal.
+                 (printf c"cached material difference: max %lld changed %lld\n"
+                         (load maximum)
+                         (load changed))
+                 (assert (<= (load maximum) 1)))
+               (set! (.reference (masks/visibility)) false)
+               (set! (.reference (masks/micro-cache)) false))
+             (render/free (cast (ptr i8) copy)))
+           (scene/clear 0)
+           (o/release pool)))
+
+(deftest overlapping-relief-intervals-and-later-floor-sheets-expand
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (setup)
+           (key c"8")
+           (key c"3")
+           (scene/resolve-reliefs true)
+           (assert (= (al/al-len [scene/Sheet] (.sheets (scene/scene))) 36))
+           (host/paper_begin 0xeeeeee)
+           (key c"8")
+           (panel (rect 20.0 20.0 100.0 80.0) 0.0 30.0 (sage))
+           (scene/resolve-reliefs true)
+           (assert (= (al/al-len [scene/Sheet] (.sheets (scene/scene))) 19))
+           (scene/clear 0)
+           (o/release pool)))
+
+(deftest material-cache-reuses-integer-translations-not-fractional-phases
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (setup)
+           (render/setup)
+           (when (.available (gpu/gpu))
+             (let [stock (pressed-paper 0xe8cfa9)
+                   a
+                     (masks/stock-params (cgrect 10.0 10.0 100.0 100.0)
+                                         stock
+                                         30.0
+                                         6.25
+                                         6.25)
+                   b
+                     (masks/stock-params (cgrect 30.0 50.0 80.0 80.0)
+                                         stock
+                                         38.0
+                                         16.25
+                                         26.25)
+                   c
+                     (masks/stock-params (cgrect 30.0 50.0 80.0 80.0)
+                                         stock
+                                         38.0
+                                         16.5
+                                         26.25)]
+               (set! (.preparing (masks/cache)) true)
+               (let [texture (masks/micro-lookup a)]
+                 (assert (= texture (masks/micro-lookup b)))
+                 (assert (!= texture (masks/micro-lookup c))))
+               (set! (.preparing (masks/cache)) false)))
+           (o/release pool)))
+
+(deftest material-cache-pins-frame-working-set-and-evicts-within-budget
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (setup)
+           (render/setup)
+           (when (.available (gpu/gpu))
+             (masks/micro-reset)
+             (let [c (masks/micro-cache)
+                   stock (pressed-paper 0xe8cfa9)]
+               (set! (.serial c) 1)
+               (for [i 0 5]
+                 (let [params
+                         (masks/stock-params (cgrect 0.0 0.0 2048.0 1024.0)
+                                             (texture-angle stock (cast f64 i))
+                                             38.0
+                                             0.0
+                                             0.0)
+                       texture (masks/micro-insert params)]
+                   (assert (= (= texture (o/nil)) (= i 4)))
+                   (assert (<= (.bytes c) 134217728))))
+               (set! (.serial c) 2)
+               (assert (!= (masks/micro-insert (masks/stock-params (cgrect 0.0
+                                                                           0.0
+                                                                           2048.0
+                                                                           1024.0)
+                                                                   (texture-angle stock
+                                                                                  15.0)
+                                                                   38.0
+                                                                   0.0
+                                                                   0.0))
+                           (o/nil)))
+               (assert (= (.bytes c) 134217728)))
+             (masks/micro-reset))
+           (o/release pool)))

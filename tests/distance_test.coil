@@ -1,0 +1,50 @@
+(module paper.distance-test)
+(import "paper.distance" :as distance)
+(import "coil.alloc" :as alloc)
+(import "paper.ffi" :use [fabs])
+
+(deftest separable-distance-transform-matches-exhaustive-search
+         (let [w 19
+               h 13
+               n (* w h)
+               data (cast (ptr f64) (alloc/malloc (cast isize (* n 8))))]
+           (for [trial 0 8]
+             (for [i 0 n]
+               (store! (index data i)
+                       (if (= (% (+ (* i 17) trial) 29) 0) 0.25 1.0e20)))
+             (distance/transform data w h)
+             (for [y 0 h]
+               (for [x 0 w]
+                 (let [(mut best) 1.0e20]
+                   (for [i 0 n]
+                     (when (= (% (+ (* i 17) trial) 29) 0)
+                       (let [dx (- x (% i w))
+                             dy (- y (/ i w))
+                             d (+ 0.25 (cast f64 (+ (* dx dx) (* dy dy))))]
+                         (when (< d (load best)) (set! best d)))))
+                   (assert (< (fabs (- (load best)
+                                       (load (index data (+ (* y w) x)))))
+                              0.000001))))))
+           (distance/free (cast (ptr i8) data))))
+
+(deftest signed-distance-preserves-subpixel-coverage-and-empty-outlines
+         (let [data (cast (ptr u32) (alloc/malloc 20))]
+           (store! (index data 0) 0)
+           (store! (index data 1) 64)
+           (store! (index data 2) 128)
+           (store! (index data 3) 192)
+           (store! (index data 4) 255)
+           (let [sdf (distance/from-coverage data 5 1)]
+             (assert (> (load (index sdf 0)) 1.0))
+             (assert (< (fabs (- (cast f64 (load (index sdf 1)))
+                                 (- 0.5 (/ 64.0 255.0))))
+                        0.000001))
+             (assert (< (load (index sdf 2)) 0.0))
+             (assert (< (load (index sdf 3)) -0.25))
+             (assert (< (load (index sdf 4)) -1.0))
+             (distance/free (cast (ptr i8) sdf)))
+           (for [i 0 5] (store! (index data i) 0))
+           (let [sdf (distance/from-coverage data 5 1)]
+             (for [i 0 5] (assert (> (load (index sdf i)) 1000.0)))
+             (distance/free (cast (ptr i8) sdf)))
+           (distance/free (cast (ptr i8) data))))

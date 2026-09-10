@@ -5,6 +5,7 @@
 (import "paper.ffi" :use *)
 (import "paper.objc" :as objc)
 (import "paper.material" :use [Pattern Finish])
+(import "paper.relief" :as relief)
 
 (defstruct Sheet
   [(path (ptr i8))
@@ -15,7 +16,8 @@
    (fiber f64)
    (seed f64)
    (pattern Pattern)
-   (finish Finish)])
+   (finish Finish)
+   (relief (ptr relief/Panel))])
 
 (defstruct Ink
   [(x f64)
@@ -95,7 +97,9 @@
 
 (defn clear [(background u32)] (-> i64)
   (let [s (scene)]
-    (for [i 0 (al/al-len [Sheet] (.sheets s))] (CGPathRelease (.path (al/al-elem [Sheet] (field s sheets) i))))
+    (for [i 0 (al/al-len [Sheet] (.sheets s))]
+      (CGPathRelease (.path (al/al-elem [Sheet] (field s sheets) i)))
+      (relief/release (.relief (al/al-elem [Sheet] (field s sheets) i))))
     (for [i 0 (al/al-len [Ink] (.inks s))]
       (let [ink (al/al-elem [Ink] (field s inks) i)]
         (objc/release (.text ink))
@@ -138,7 +142,8 @@
 (defn focus-index [(id i64)] (-> i64)
   (let [(mut result) -1]
     (for [i 0 (al/al-len [FocusTarget] (.focus-targets (scene)))]
-      (when (= id (.id (al/al-elem [FocusTarget] (field (scene) focus-targets) i)))
+      (when (= id
+               (.id (al/al-elem [FocusTarget] (field (scene) focus-targets) i)))
         (set! result i)))
     (load result)))
 
@@ -163,17 +168,29 @@
       0))
   0)
 
-(extern qsort :cc c [(ptr i8) u64 u64 (fnptr c [(ptr i8) (ptr i8)] i32)] (-> void))
+(extern qsort
+        :cc
+        c
+        [(ptr i8) u64 u64 (fnptr c [(ptr i8) (ptr i8)] i32)]
+        (-> void))
 
 (defn compare-sheet [(a (ptr i8)) (b (ptr i8))] (-> i32)
   (let [x (cast (ptr Sheet) a)
         y (cast (ptr Sheet) b)]
-    (cond (< (.z x) (.z y)) -1 (> (.z x) (.z y)) 1 (< (.order x) (.order y)) -1 (> (.order x) (.order y)) 1 :else 0)))
+    (cond (< (.z x) (.z y)) -1
+          (> (.z x) (.z y)) 1
+          (< (.order x) (.order y)) -1
+          (> (.order x) (.order y)) 1
+          :else 0)))
 
 (defn compare-ink [(a (ptr i8)) (b (ptr i8))] (-> i32)
   (let [x (cast (ptr Ink) a)
         y (cast (ptr Ink) b)]
-    (cond (< (.z x) (.z y)) -1 (> (.z x) (.z y)) 1 (< (.order x) (.order y)) -1 (> (.order x) (.order y)) 1 :else 0)))
+    (cond (< (.z x) (.z y)) -1
+          (> (.z x) (.z y)) 1
+          (< (.order x) (.order y)) -1
+          (> (.order x) (.order y)) 1
+          :else 0)))
 
 ;;; Sort once after submission. Painter order breaks ties explicitly; building
 ;;; a large scene no longer shifts the growing arrays for each added item.
@@ -191,6 +208,109 @@
 
 (defn add-sheet [(sheet Sheet)] (-> i64)
   (al/al-push! [Sheet] (mut (.sheets (scene))) sheet))
+
+;;; Resolve only the exceptional cases that need independent elevation layers.
+;;; Expansion preserves submission order, clip geometry, and the caller's scopes.
+(defn expand-relief [(index i64)] (-> i64)
+  (let [s (scene)
+        original (al/al-get [Sheet] (.sheets s) index)
+        count (al/al-len [Sheet] (.sheets s))
+        offset (.offset s)
+        ink-z (.paint-z s)
+        saved-path (.path s)]
+    (set! (.path s) (CGPathCreateMutable))
+    (set! (.offset s) 0.0)
+    (primitive/call-ptr (.expand (.relief original))
+                        (cast (ptr i8) (.relief original)))
+    (set! (.offset s) offset)
+    (set! (.paint-z s) ink-z)
+    (CGPathRelease (.path s))
+    (set! (.path s) saved-path)
+    (let [extra (- (- (al/al-len [Sheet] (.sheets s)) count) 1)]
+      (for [i 0 count]
+        (let [item (al/al-elem [Sheet] (field s sheets) i)]
+          (when (> (.order item) (.order original))
+            (set! (.order item) (+ (.order item) extra)))))
+      (for [i 0 (al/al-len [Ink] (.inks s))]
+        (let [item (al/al-elem [Ink] (field s inks) i)]
+          (when (> (.order item) (.order original))
+            (set! (.order item) (+ (.order item) extra))))))
+    (set! (.serial s) (- (.serial s) 1))
+    (for [i count (al/al-len [Sheet] (.sheets s))]
+      (let [item (al/al-elem [Sheet] (field s sheets) i)
+            path
+              (CGPathCreateCopyByIntersectingPath (.path item)
+                                                  (.path original)
+                                                  true)]
+        (CGPathRelease (.path item))
+        (set! (.path item) path)
+        (set! (.order item) (+ (.order original) (- i count)))))
+    (CGPathRelease (.path original))
+    (relief/release (.relief original))
+    (for [i (+ index 1) (al/al-len [Sheet] (.sheets s))]
+      (al/al-set! [Sheet]
+                  (mut (.sheets s))
+                  (- i 1)
+                  (al/al-get [Sheet] (.sheets s) i)))
+    (al/al-pop! [Sheet] (mut (.sheets s))))
+  0)
+
+(defn relief-overlap? [(sheet Sheet) (z f64) (order i64) (bounds CGRect)] (-> bool)
+  (and (or (> z (- (.z (.relief sheet)) (.depth (.relief sheet))))
+           (and (primitive/fcmp-eq z
+                                   (- (.z (.relief sheet))
+                                      (.depth (.relief sheet))))
+                (> order (.order sheet))))
+       (or (< z (.z sheet))
+           (and (primitive/fcmp-eq z (.z sheet)) (< order (.order sheet))))
+       (intersects (CGPathGetPathBoundingBox (.path sheet)) bounds)))
+
+(defn resolve-reliefs [(analytic bool)] (-> i64)
+  (let [s (scene)
+        (mut i) 0]
+    (while (< (load i) (al/al-len [Sheet] (.sheets s)))
+      (let [sheet (al/al-get [Sheet] (.sheets s) (load i))
+            (mut expand) (not analytic)]
+        (when (!= (.relief sheet) (cast (ptr relief/Panel) 0))
+          (for [j 0 (al/al-len [Sheet] (.sheets s))]
+            (let [other (al/al-get [Sheet] (.sheets s) j)]
+              (when (and (!= j (load i))
+                         (or (relief-overlap? sheet
+                                              (.z other)
+                                              (.order other)
+                                              (CGPathGetPathBoundingBox (.path other)))
+                             (and (!= (.relief other)
+                                      (cast (ptr relief/Panel) 0))
+                                  (>= (.z other)
+                                      (- (.z (.relief sheet))
+                                         (.depth (.relief sheet))))
+                                  (>= (.z sheet)
+                                      (- (.z (.relief other))
+                                         (.depth (.relief other))))
+                                  (intersects (CGPathGetPathBoundingBox (.path sheet))
+                                              (CGPathGetPathBoundingBox (.path other))))))
+                (set! expand true))))
+          (for [j 0 (al/al-len [Ink] (.inks s))]
+            (let [ink (al/al-get [Ink] (.inks s) j)]
+              (when (relief-overlap? sheet (.z ink) (.order ink) (.bounds ink))
+                (set! expand true)))))
+        (if (and (!= (.relief sheet) (cast (ptr relief/Panel) 0)) (load expand))
+            (expand-relief (load i))
+            (set! i (+ (load i) 1))))))
+  0)
+
+(defn expand-cut-reliefs [(path (ptr i8)) (floor f64)] (-> i64)
+  (let [(mut i) 0
+        s (scene)]
+    (while (< (load i) (al/al-len [Sheet] (.sheets s)))
+      (let [sheet (al/al-get [Sheet] (.sheets s) (load i))]
+        (if (and (!= (.relief sheet) (cast (ptr relief/Panel) 0))
+                 (> (.z sheet) floor)
+                 (intersects (CGPathGetPathBoundingBox (.path sheet))
+                             (CGPathGetPathBoundingBox path)))
+            (expand-relief (load i))
+            (set! i (+ (load i) 1))))))
+  0)
 
 (defn next-order [] (-> i64)
   (set! (.serial (scene)) (+ (.serial (scene)) 1))

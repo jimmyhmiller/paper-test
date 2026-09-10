@@ -523,15 +523,27 @@ vertex MaskVertex mask_vertex(uint id [[vertex_id]], constant MaskDraw& d [[buff
     const float2 corners[] = {float2(0,0),float2(1,0),float2(0,1),float2(0,1),float2(1,0),float2(1,1)};
     float2 uv = corners[id];
     float2 xy = d.rect.xy + uv * d.rect.zw;
-    return {float4(xy.x / d.canvas.x * 2 - 1, 1 - xy.y / d.canvas.y * 2, 0, 1), uv};
+    return {float4(xy.x / d.canvas.x * 2 - 1, 1 - xy.y / d.canvas.y * 2, d.padding.x, 1), uv};
+}
+// Only fully opaque paper can hide all six attachments. Ink never occludes
+// the height/material buffers; fractional paper coverage must blend normally.
+fragment void opaque_fragment(MaskVertex v [[stage_in]], constant MaskDraw& d [[buffer(0)]],
+                              texture2d<float, access::read> mask [[texture(0)]]) {
+    uint2 size(mask.get_width(), mask.get_height());
+    if (d.material_kind.w > 0.5f || mask.read(min(uint2(v.uv * float2(size)), size - 1)).r < 1.0f)
+        discard_fragment();
 }
 struct MaskOutput { float4 pigment [[color(0)]]; float4 height [[color(1)]]; float4 material [[color(2)]]; float4 micro [[color(3)]]; float4 finish_shape [[color(4)]]; float4 finish_weight [[color(5)]]; };
 // Evaluated before coverage blending: material identities never interpolate at edges.
-inline float3 material_micro(float2 xy, constant MaskDraw& d) {
+inline float3 procedural_material_micro(float2 xy, constant MaskDraw& d) {
     long kind = long(d.pattern.x);
     if (kind == 0) return float3(0.0f);
     float c = cos(d.pattern.z), s = sin(d.pattern.z);
-    float2 point = xy / d.origin_scale_seed.z - d.origin_scale_seed.xy;
+    // Normalize the integer pixel origin first: translated sheets sample the
+    // exact same grid, without large-world-coordinate cancellation differences.
+    float2 origin = d.origin_scale_seed.xy * d.origin_scale_seed.z;
+    float2 anchor = floor(origin);
+    float2 point = ((xy - anchor) - (origin - anchor)) / d.origin_scale_seed.z;
     float2 uv = float2(c * point.x + s * point.y, c * point.y - s * point.x) / d.pattern.y;
     long seed = long(floor(d.origin_scale_seed.w * 65535.0f + 0.5f));
     float footprint = 1.0f / (d.origin_scale_seed.z * d.pattern.y);
@@ -543,7 +555,17 @@ inline float3 material_micro(float2 xy, constant MaskDraw& d) {
     return float3(float2(c * dx - s * dy, s * dx + c * dy) * (attenuation * d.pattern.w),
                   attenuation * tex_contrast(kind) * h);
 }
-fragment MaskOutput mask_fragment(MaskVertex v [[stage_in]], constant MaskDraw& d [[buffer(0)]], texture2d<float, access::read> mask [[texture(0)]]) {
+kernel void prepare_material_micro(texture2d<float, access::write> output [[texture(0)]],
+                                   constant MaskDraw& d [[buffer(0)]], uint2 xy [[thread_position_in_grid]]) {
+    if (xy.x >= output.get_width() || xy.y >= output.get_height()) return;
+    output.write(float4(procedural_material_micro(d.rect.xy + float2(xy) + 0.5f, d), 1.0f), xy);
+}
+inline float3 material_micro(float2 xy, constant MaskDraw& d, texture2d<float, access::read> cached) {
+    if (d.padding.y > 0.5f) return cached.read(uint2(xy - float2(d.finish_shape.w, d.finish_weight.w))).xyz;
+    return procedural_material_micro(xy, d);
+}
+[[early_fragment_tests]]
+fragment MaskOutput mask_fragment(MaskVertex v [[stage_in]], constant MaskDraw& d [[buffer(0)]], texture2d<float, access::read> mask [[texture(0)]], texture2d<float, access::read> micro [[texture(2)]]) {
     uint2 size(mask.get_width(),mask.get_height());
     float2 coverage = mask.read(min(uint2(v.uv * float2(size)), size - 1)).rg;
     float a = coverage.r, b = coverage.g;
@@ -554,9 +576,65 @@ fragment MaskOutput mask_fragment(MaskVertex v [[stage_in]], constant MaskDraw& 
     if (d.material_kind.w > 0.5f) {ha = 0; z = 0; edge = 0; b = 0;}
     return {float4(d.pigment_height.rgb * a,a), float4(z * a * (1-b) + edge*b,0,0,ha),
             float4(d.material_kind.rgb * (d.material_kind.w > 0.5f ? 0.0f : a), d.material_kind.w > 0.5f ? 0.0f : a),
-            d.material_kind.w > 0.5f ? float4(0.0f) : float4(material_micro(v.position.xy, d) * a, a),
+            d.material_kind.w > 0.5f ? float4(0.0f) : float4(material_micro(v.position.xy, d, micro) * a, a),
             d.material_kind.w > 0.5f ? float4(0.0f) : float4(d.finish_shape.rgb * a, a),
             float4(d.material_kind.w > 0.5f ? float3(0.0f) : d.finish_weight.rgb * a, a)};
+}
+
+struct ReliefDraw {
+    MaskDraw panel, edge, bottom;
+    float4 bounds; // logical coordinates
+    float4 shape;  // radius, shoulder width/depth, carving depth
+    float4 glyph;  // distance texture bounds in backing pixels
+    float4 carving; // lip width
+};
+
+inline MaskOutput relief_stock(float2 xy, constant MaskDraw& d, float z, float a, texture2d<float, access::read> micro) {
+    return {float4(d.pigment_height.rgb * a, a), float4(clamp(z, 0.0f, 64.0f) / 64.0f * a, 0, 0, a),
+            float4(d.material_kind.rgb * a, a), float4(material_micro(xy, d, micro) * a, a),
+            float4(d.finish_shape.rgb * a, a), float4(d.finish_weight.rgb * a, a)};
+}
+
+inline MaskOutput relief_mix(MaskOutput a, MaskOutput b, float t) {
+    return {mix(a.pigment,b.pigment,t), mix(a.height,b.height,t), mix(a.material,b.material,t),
+            mix(a.micro,b.micro,t), mix(a.finish_shape,b.finish_shape,t), mix(a.finish_weight,b.finish_weight,t)};
+}
+
+// One material evaluation for interior pixels; a second only on antialiased
+// stock boundaries. Continuous bevel heights feed the shared lighting pass.
+[[early_fragment_tests]]
+fragment MaskOutput relief_fragment(MaskVertex v [[stage_in]], constant ReliefDraw& d [[buffer(0)]],
+        texture2d<float, access::read> mask [[texture(0)]], texture2d<float> sdf [[texture(1)]],
+        texture2d<float, access::read> top_micro [[texture(2)]], texture2d<float, access::read> edge_micro [[texture(3)]]) {
+    uint2 size(mask.get_width(), mask.get_height());
+    float a = mask.read(min(uint2(v.uv * float2(size)), size - 1)).r;
+    if (a == 0.0f) { discard_fragment(); return {}; }
+    float scale = d.panel.origin_scale_seed.z;
+    float2 xy = v.position.xy / scale;
+    float radius = min(d.shape.x, min(d.bounds.z, d.bounds.w) * 0.5f);
+    float2 q = abs(xy - d.bounds.xy - d.bounds.zw * 0.5f) - d.bounds.zw * 0.5f + radius;
+    float inside = radius - length(max(q, 0.0f)) - min(max(q.x,q.y), 0.0f);
+    float shoulder = clamp(1.0f - inside / max(d.shape.y, 0.0001f), 0.0f, 1.0f);
+    float z = d.panel.pigment_height.w - d.shape.z * shoulder * shoulder;
+    constexpr sampler filtered(coord::pixel, address::clamp_to_edge, filter::linear);
+    float2 gp = v.position.xy - d.glyph.xy;
+    float distance = 1.0e6f;
+    if (all(gp >= 0.0f) && all(gp < d.glyph.zw)) distance = sdf.sample(filtered, gp).r / scale;
+    float lip = clamp(1.0f - distance / max(d.carving.x, 0.0001f), 0.0f, 1.0f);
+    z -= min(d.carving.x * 0.4f, d.shape.w) * lip * lip;
+    float aa = 1.0f / scale;
+    float floorWeight = clamp(0.5f - distance / aa, 0.0f, 1.0f);
+    float edgeWeight = max(clamp(0.5f + (d.shape.y - inside) / aa, 0.0f, 1.0f),
+                           clamp(0.5f + (d.carving.x - distance) / aa, 0.0f, 1.0f));
+    float floorZ = d.panel.pigment_height.w - d.shape.w;
+    if (floorWeight >= 1.0f) return relief_stock(v.position.xy, d.bottom, floorZ, a, top_micro);
+    MaskOutput surface;
+    if (edgeWeight <= 0.0f) surface = relief_stock(v.position.xy, d.panel, z, a, top_micro);
+    else if (edgeWeight >= 1.0f) surface = relief_stock(v.position.xy, d.edge, z, a, edge_micro);
+    else surface = relief_mix(relief_stock(v.position.xy, d.panel, z, a, top_micro),
+                              relief_stock(v.position.xy, d.edge, z, a, edge_micro), edgeWeight);
+    if (floorWeight > 0.0f) surface = relief_mix(surface, relief_stock(v.position.xy, d.bottom, floorZ, a, top_micro), floorWeight);
+    return surface;
 }
 
 // Scissored clear for retained material attachments. All six values exactly

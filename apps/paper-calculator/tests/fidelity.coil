@@ -10,6 +10,8 @@
 (import "paper.geometry" :use [rect])
 (import "paper.lighting" :as light)
 (import "paper.profile" :as profile)
+(import "paper.masks" :as masks)
+(import "coil.arraylist" :as al)
 
 (extern printf :cc c [(ptr i8) ...] (-> i32))
 
@@ -22,6 +24,10 @@
     (set! (.height (scene/scene)) 1580)
     (set! (.scale (scene/scene)) 2.0)
     (render/setup)
+    (set! (.reference (masks/visibility))
+          (!= (gpu/getenv c"PAPER_VISIBILITY_REFERENCE") (o/nil)))
+    (set! (.reference (masks/micro-cache))
+          (!= (gpu/getenv c"PAPER_MICRO_REFERENCE") (o/nil)))
     (ui/event 0 0 0.0 0.0)
     (model/press (ui/state) 8)
     (ui/draw)
@@ -33,20 +39,36 @@
                 :bevel 0.0
                 :cuts 0.0
                 :masks 0.0))
-      (let [start (host/CACurrentMediaTime)]
+      (let [entries (al/al-len [masks/Entry] (.entries (masks/cache)))
+            start (host/CACurrentMediaTime)]
         (set! (.scientific (ui/state)) (= (% i 2) 0))
         (ui/draw)
         (let [drawn (host/CACurrentMediaTime)]
-          (render/render-frame false)
-          (gpu/synchronize)
-          (printf c"Mode switch %lld: draw %.2f ms, render %.2f ms\n"
-                  i
-                  (* (- drawn start) 1000.0)
-                  (* (- (host/CACurrentMediaTime) drawn) 1000.0))
-          (printf c"  bevel %.2f ms cuts %.2f ms masks %.2f ms\n"
-                  (* (.bevel (profile/counters)) 1000.0)
-                  (* (.cuts (profile/counters)) 1000.0)
-                  (* (.masks (profile/counters)) 1000.0)))))
+          (render/rasterize-frame false)
+          (let [rasterized (host/CACurrentMediaTime)]
+            (render/render-frame false)
+            (let [encoded (host/CACurrentMediaTime)]
+              (gpu/synchronize)
+              (printf c"Mode switch %lld: draw %.2f ms, render %.2f ms\n"
+                      i
+                      (* (- drawn start) 1000.0)
+                      (* (- (host/CACurrentMediaTime) drawn) 1000.0))
+              (printf c"  total %.2f ms: masks %.2f, other material CPU %.2f, lighting encode %.2f, submit/wait %.2f (GPU %.2f)\n"
+                      (* (- (host/CACurrentMediaTime) start) 1000.0)
+                      (* (.masks (profile/counters)) 1000.0)
+                      (* (- (- rasterized drawn) (.masks (profile/counters)))
+                         1000.0)
+                      (* (- encoded rasterized) 1000.0)
+                      (* (- (host/CACurrentMediaTime) encoded) 1000.0)
+                      (.gpu-ms (gpu/gpu)))
+              (printf c"  %lld sheets, %lld new coverage/distance textures\n"
+                      (al/al-len [scene/Sheet] (.sheets (scene/scene)))
+                      (- (al/al-len [masks/Entry] (.entries (masks/cache)))
+                         entries))
+              (printf c"  bevel %.2f ms cuts %.2f ms masks %.2f ms\n"
+                      (* (.bevel (profile/counters)) 1000.0)
+                      (* (.cuts (profile/counters)) 1000.0)
+                      (* (.masks (profile/counters)) 1000.0)))))))
     (let [start (host/CACurrentMediaTime)]
       (for [i 0 30]
         (ui/draw)

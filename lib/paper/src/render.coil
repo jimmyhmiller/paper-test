@@ -217,6 +217,7 @@
   (rasterize-frame true))
 
 (defn rasterize-frame [(readback bool)] (-> i64)
+  (resolve-reliefs (.available (gpu/gpu)))
   (sort-commands)
   (let [pending (.bounds (damage/cache))
         bounds (damage/measure)]

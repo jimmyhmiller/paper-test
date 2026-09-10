@@ -5,6 +5,11 @@
 (import "paper.scene" :use [scene])
 (import "paper.paint" :use [type-face])
 (import "coil.primitive" :as p)
+(import "coil.alloc" :as alloc)
+(import "coil.arraylist" :as al)
+(import "paper.relief" :as relief)
+(import "paper.scene" :as commands)
+(import "paper.platform" :as host)
 
 (extern CTFontCreateWithName :cc c [(ptr i8) f64 (ptr CGAffine)] (-> (ptr i8)))
 
@@ -282,26 +287,93 @@
                       (top Material)
                       (bottom Material)] (-> i64)
   (assert (> depth shoulder-depth))
+  (assert (and (> shoulder-width 0.0)
+               (<= shoulder-width radius)
+               (> shoulder-depth 0.0)
+               (> width 0.0)
+               (>= z depth)))
+  (assert (and (> (.w r) (* 2.0 shoulder-width))
+               (> (.h r) (* 2.0 shoulder-width))))
   (if centered
       (centered-lettering-path (inset r padding) text size font-index)
       (lettering-path (inset r padding) text size font-index false))
-  (let [contours (bevel-contours (.path (scene)) width)
-        bounds (CGPathGetPathBoundingBox (.outer contours))]
-    (perforated-panel r
-                      radius
-                      z
-                      shoulder-width
-                      shoulder-depth
-                      edge
-                      top
-                      (.outer contours))
-    (finish-aperture contours
-                     z
-                     depth
-                     width
-                     (texture-offset edge
-                                     (+ (.x (.pattern edge))
-                                        (- (.x r) (.x bounds)))
-                                     (+ (.y (.pattern edge))
-                                        (- (.y r) (.y bounds))))
-                     bottom)))
+  (let [payload (cast (ptr relief/Panel) (alloc/malloc (p/sizeof relief/Panel)))
+        glyph (CGPathCreateCopy (.path (scene)))]
+    (let [bounds (CGPathGetPathBoundingBox glyph)]
+      (begin-sheet)
+      (rounded-path (inset r shoulder-width) (- radius shoulder-width))
+      (when (not (CGPathIsEmpty glyph))
+        (for [i 0 4]
+          (assert (CGPathContainsPoint (.path (scene))
+                                       (cast (ptr CGAffine) 0)
+                                       (CGPoint :x
+                                                  (+ (- (.x bounds) width)
+                                                     (if (= (% i 2) 0)
+                                                         0.0
+                                                         (+ (.w bounds)
+                                                            (* 2.0 width))))
+                                         :y
+                                           (+ (- (.y bounds) width)
+                                              (if (< i 2)
+                                                  0.0
+                                                  (+ (.h bounds) (* 2.0 width)))))
+                                       true)))))
+    (store! payload
+            (relief/Panel
+              :refs 1
+              :bounds r
+              :radius radius
+              :shoulder-width shoulder-width
+              :shoulder-depth shoulder-depth
+              :depth depth
+              :width width
+              :z (+ z (.offset (scene)))
+              :glyph glyph
+              :edge edge
+              :top top
+              :bottom bottom
+              :expand (fnptr-of expand-panel)))
+    (panel r radius z top)
+    (set! (.relief (al/al-elem [commands/Sheet]
+                               (field (scene) sheets)
+                               (- (al/al-len [commands/Sheet] (.sheets (scene)))
+                                  1)))
+          payload))
+  0)
+
+;;; General cuts and interleaved sheets retain the full vector semantics.
+(defn expand-panel [(context (ptr i8))] (-> i64)
+  (let [v (cast (ptr relief/Panel) context)
+        r (.bounds v)
+        active (.active (host/clip-state))]
+    (set! (.active (host/clip-state)) false)
+    (if (CGPathIsEmpty (.glyph v))
+        (edged-panel r
+                     (.radius v)
+                     (.z v)
+                     (.shoulder-width v)
+                     (.shoulder-depth v)
+                     (.edge v)
+                     (.top v))
+        (let [contours (bevel-contours (.glyph v) (.width v))
+              bounds (CGPathGetPathBoundingBox (.outer contours))]
+          (perforated-panel r
+                            (.radius v)
+                            (.z v)
+                            (.shoulder-width v)
+                            (.shoulder-depth v)
+                            (.edge v)
+                            (.top v)
+                            (.outer contours))
+          (finish-aperture contours
+                           (.z v)
+                           (.depth v)
+                           (.width v)
+                           (texture-offset (.edge v)
+                                           (+ (.x (.pattern (.edge v)))
+                                              (- (.x r) (.x bounds)))
+                                           (+ (.y (.pattern (.edge v)))
+                                              (- (.y r) (.y bounds))))
+                           (.bottom v))))
+    (set! (.active (host/clip-state)) active))
+  0)
