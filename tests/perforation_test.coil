@@ -1,0 +1,66 @@
+(module paper.perforation-test)
+(import "paper.surface" :use *)
+(import "paper.scene" :as scene)
+(import "paper.geometry" :use [rect inset])
+(import "paper.material" :use [cream])
+(import "paper.ffi" :use *)
+(import "coil.arraylist" :as al)
+
+(deftest enclosed-perforation-matches-subtraction-and-preserves-counters
+         (scene/init)
+         (begin-sheet)
+         (oval-path (rect 40.0 35.0 30.0 30.0))
+         (oval-path (rect 48.0 43.0 14.0 14.0))
+         (let [aperture (CGPathCreateCopy (.path (scene/scene)))
+               r (rect 10.0 10.0 90.0 80.0)]
+           (perforated-panel r 18.0 38.0 2.0 0.8 (cream) (cream) aperture)
+           (for [level 0 9]
+             (let [amount (* 2.0 (/ (cast f64 level) 8.0))
+                   sheet (al/al-get [scene/Sheet] (.sheets (scene/scene)) level)]
+               (begin-sheet)
+               (rounded-path (inset r amount) (- 18.0 amount))
+               (let [expected
+                       (CGPathCreateCopyBySubtractingPath (.path (scene/scene))
+                                                          aperture
+                                                          true)]
+                 (for [y 0 100]
+                   (for [x 0 110]
+                     (let [point
+                             (CGPoint :x (+ (cast f64 x) 0.37)
+                               :y (+ (cast f64 y) 0.43))]
+                       (assert (= (CGPathContainsPoint expected
+                                                       (cast (ptr CGAffine) 0)
+                                                       point
+                                                       true)
+                                  (CGPathContainsPoint (.path sheet)
+                                                       (cast (ptr CGAffine) 0)
+                                                       point
+                                                       true))))))
+                 (CGPathRelease expected))))
+           (CGPathRelease aperture)))
+
+(deftest parallel-contours-are-identical-to-direct-construction
+         (scene/init)
+         (for [i 0 20]
+           (begin-sheet)
+           (rounded-path (rect (* (cast f64 i) 25.0) 0.0 18.0 20.0) 4.0)
+           (prepare-bevel-contours (.path (scene/scene)) 1.3))
+         (complete-bevel-preparation)
+         (for [i 0 20]
+           (begin-sheet)
+           (rounded-path (rect (* (cast f64 i) 25.0) 0.0 18.0 20.0) 4.0)
+           (let [entry (bevel-contours (.path (scene/scene)) 1.3)
+                 expected (expanded-path (.path (scene/scene)) 1.3)]
+             (assert (CGPathEqualToPath expected (.outer entry)))
+             (for [level 0 8]
+               (let [inner
+                       (expanded-path (.path (scene/scene))
+                                      (* 1.3
+                                         (- 1.0 (/ (cast f64 (+ level 1)) 8.0))))
+                     rim (CGPathCreateCopyBySubtractingPath expected inner true)]
+                 (assert (CGPathEqualToPath rim
+                                            (load (index (mut (.rims entry))
+                                                         level))))
+                 (CGPathRelease inner)
+                 (CGPathRelease rim)))
+             (CGPathRelease expected))))

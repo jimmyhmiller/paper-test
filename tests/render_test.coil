@@ -18,10 +18,16 @@
   (host/paper_begin 0xeeeeee))
 
 (defn height [(x i64) (y i64)] (-> f64)
-  (render/height-at (CGBitmapContextGetData (.height-context (scene/scene))) x y 180 160))
+  (render/height-at (CGBitmapContextGetData (.height-context (scene/scene)))
+                    x
+                    y
+                    180
+                    160))
 
 (defn brightness [(x i64) (y i64)] (-> i64)
-  (cast i64 (load (index (CGBitmapContextGetData (.output-context (scene/scene))) (* (+ (* y 180) x) 4)))))
+  (cast i64
+        (load (index (CGBitmapContextGetData (.output-context (scene/scene)))
+                     (* (+ (* y 180) x) 4)))))
 
 (deftest a-cut-exposes-the-lower-sheet
          (small-scene)
@@ -34,6 +40,88 @@
          (assert (< (height 80 70) 10.3))
          (assert (> (height 80 70) 9.7))
          (assert (> (height 30 30) 29.7)))
+
+(deftest bevels-have-real-intermediate-heights-and-a-separate-floor
+         (small-scene)
+         (beveled-panel (rect 10.0 10.0 160.0 140.0) 12.0 30.0 8.0 8.0 (cream))
+         (begin-sheet)
+         (rounded-path (rect 60.0 50.0 60.0 60.0) 8.0)
+         (beveled-cut 30.0 12.0 8.0 (cream) (clay))
+         (render/rasterize)
+         (assert (> (height 30 80) 29.7))
+         (assert (< (height 90 80) 18.3))
+         (assert (> (height 90 80) 17.7))
+         (assert (> (height 54 80) (height 58 80)))
+         (assert (> (height 58 80) (height 90 80)))
+         (assert (> (height 16 80) (height 12 80)))
+         (assert (< (height 12 80) 27.0)))
+
+(deftest exposed-panel-edges-have-independent-stock
+         (small-scene)
+         (edged-panel (rect 10.0 10.0 160.0 140.0)
+                      12.0
+                      30.0
+                      8.0
+                      8.0
+                      (smooth 0x222222)
+                      (smooth 0xeeeeee))
+         (host/paper_light 90.0 -80.0 300.0 0.0 0.0)
+         (render/render)
+         (assert (< (brightness 12 80) 60))
+         (assert (> (brightness 80 80) 200)))
+
+(deftest bevels-preserve-aperture-counters
+         (small-scene)
+         (panel (rect 10.0 10.0 160.0 140.0) 12.0 30.0 (cream))
+         (begin-sheet)
+         (oval-path (rect 50.0 40.0 80.0 80.0))
+         (oval-path (rect 70.0 60.0 40.0 40.0))
+         (beveled-cut 30.0 12.0 3.0 (cream) (clay))
+         (render/rasterize)
+         (assert (> (height 90 80) 29.7))
+         (assert (< (height 60 80) 18.3))
+         (assert (> (height 60 80) 17.7))
+         (assert (> (height 40 80) 29.7)))
+
+(deftest bevel-cache-eviction-and-width-changes-preserve-geometry
+         (small-scene)
+         (for [i 0 270]
+           (begin-sheet)
+           (oval-path (rect (cast f64 i) 40.0 60.0 60.0))
+           (bevel-contours (.path (scene/scene)) 2.0))
+         (host/paper_begin 0xeeeeee)
+         (panel (rect 10.0 10.0 160.0 140.0) 12.0 30.0 (cream))
+         (begin-sheet)
+         (oval-path (rect 50.0 40.0 60.0 60.0))
+         (beveled-cut 30.0 12.0 8.0 (cream) (clay))
+         (render/rasterize)
+         (assert (> (height 80 70) 17.7))
+         (assert (< (height 80 70) 18.3))
+         (assert (> (height 46 70) 18.3))
+         (assert (< (height 46 70) 29.7))
+         (assert (> (height 30 70) 29.7)))
+
+(deftest panel-bevels-do-not-shift-the-surface-texture
+         (small-scene)
+         (let [material
+                 (texture-offset (texture-angle (watercolor 0xccaa88) 31.0)
+                                 7.0
+                                 -3.0)]
+           (panel (rect 10.0 10.0 160.0 140.0) 12.0 30.0 material)
+           (host/paper_light 90.0 -80.0 300.0 0.0 1.0)
+           (render/render)
+           (let [a (brightness 80 80)
+                 b (brightness 100 70)]
+             (host/paper_begin 0xeeeeee)
+             (beveled-panel (rect 10.0 10.0 160.0 140.0)
+                            12.0
+                            30.0
+                            8.0
+                            8.0
+                            material)
+             (render/render)
+             (assert (= a (brightness 80 80)))
+             (assert (= b (brightness 100 70))))))
 
 (deftest cutting-across-an-edge-does-not-create-phantom-paper
          (small-scene)
@@ -80,7 +168,10 @@
          (ink-height 6.0)
          (with-elevation 10.0
                          (with-elevation 5.0
-                                         (panel (rect 20.0 20.0 120.0 100.0) 0.0 12.0 (cream))))
+                                         (panel (rect 20.0 20.0 120.0 100.0)
+                                                0.0
+                                                12.0
+                                                (cream))))
          (render/rasterize)
          (assert (> (height 40 40) 26.7))
          (assert (< (height 40 40) 27.3))
@@ -162,7 +253,10 @@
          (with-clip (rect 20.0 20.0 80.0 90.0)
                     (panel (rect 0.0 0.0 160.0 150.0) 0.0 20.0 (sage))
                     (with-clip (rect 60.0 10.0 90.0 70.0)
-                               (panel (rect 0.0 0.0 160.0 150.0) 0.0 30.0 (cream))))
+                               (panel (rect 0.0 0.0 160.0 150.0)
+                                      0.0
+                                      30.0
+                                      (cream))))
          (panel (rect 130.0 20.0 30.0 40.0) 0.0 40.0 (clay))
          (render/rasterize)
          (assert (< (height 10 30) 0.1))
@@ -185,8 +279,10 @@
          (assert (< (height 40 40) 0.1))
          (assert (> (height 80 40) 29.7))
          (let [pixels (CGBitmapContextGetData (.color-context (scene/scene)))]
-           (assert (< (cast i64 (load (index pixels (* (+ (* 60 180) 110) 4)))) 40))
-           (assert (> (cast i64 (load (index pixels (* (+ (* 60 180) 90) 4)))) 150))))
+           (assert (< (cast i64 (load (index pixels (* (+ (* 60 180) 110) 4))))
+                      40))
+           (assert (> (cast i64 (load (index pixels (* (+ (* 60 180) 90) 4))))
+                      150))))
 
 (deftest buttons-have-hover-lift-and-disabled-controls-stay-inactive
          (small-scene)

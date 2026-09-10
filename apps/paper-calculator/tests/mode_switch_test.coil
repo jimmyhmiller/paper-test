@@ -1,0 +1,44 @@
+(module calculator.mode-switch-test)
+(import "calculator.mode-switch" :as mode)
+(import "paper.ffi" :use [fabs])
+(import "calculator.ui" :as ui)
+(import "paper.scene" :as scene)
+(import "paper.platform" :as host)
+
+(deftest mode-changes-immediately-while-selector-animates-on-ticks
+         (scene/init)
+         (ui/event 0 0 0.0 0.0)
+         (ui/event 3 133 0.0 0.0)
+         (assert (.scientific (ui/state)))
+         (assert (.active (ui/mode-transition)))
+         (let [started (.started (ui/mode-transition))]
+           (ui/event 6 0 (+ started 0.11) 0.0)
+           (assert (< (fabs (- (.position (ui/mode-transition)) 0.5)) 0.000001))
+           (assert (< (.tick-interval (host/host)) 0.02))
+           (ui/event 6 0 (+ started 0.23) 0.0)
+           (assert (not (.active (ui/mode-transition))))
+           (assert (> (.tick-interval (host/host)) 0.9))))
+
+(deftest selector-eases-completes-and-reverses-without-a-position-jump
+         (let [(mut s)
+                 (load (mode/Transition
+                         :position 0.0
+                         :from 0.0
+                         :target 0.0
+                         :started 0.0
+                         :active false))]
+           (mode/select s true 10.0)
+           (assert (.active s))
+           (mode/advance s 10.11)
+           (assert (< (fabs (- (.position s) 0.5)) 0.000001))
+           (mode/select s false 10.11)
+           (assert (< (fabs (- (.position s) 0.5)) 0.000001))
+           (mode/advance s 10.22)
+           (assert (< (fabs (- (.position s) 0.25)) 0.000001))
+           (mode/advance s 10.34)
+           (assert (not (.active s)))
+           (assert (< (fabs (.position s)) 0.000001))
+           (mode/select s true 11.0)
+           (mode/advance s 12.0)
+           (assert (not (.active s)))
+           (assert (< (fabs (- (.position s) 1.0)) 0.000001))))

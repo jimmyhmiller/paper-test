@@ -1,4 +1,6 @@
 (module paper.platform)
+(import "paper.cuts" :as cuts)
+(import "paper.shape-resize" :as sizing)
 (import "coil.primitive" :as primitive)
 (import "coil.alloc" :as alloc)
 (import "coil.arraylist" :as al)
@@ -13,7 +15,12 @@
 (import "paper.geometry" :use [Rect rect clamp contains?])
 (import "layout.core" :as layout)
 
-(defstruct Input [(container (ptr i8)) (id i64) (view (ptr i8)) (previous (ptr i8)) (live bool)])
+(defstruct Input
+  [(container (ptr i8))
+   (id i64)
+   (view (ptr i8))
+   (previous (ptr i8))
+   (live bool)])
 
 (defstruct Host
   [(app (ptr i8))
@@ -64,7 +71,10 @@
 ;;; Configure the logical design canvas before paper_run. The view scales and
 ;;; hit-tests in the same coordinates at every native window size.
 (defn paper_configure [(title (ptr i8)) (width f64) (height f64)] (-> i64)
-  (assert (and (>= width 320.0) (>= height 240.0) (<= width 4000.0) (<= height 4000.0)))
+  (assert (and (>= width 320.0)
+               (>= height 240.0)
+               (<= width 4000.0)
+               (<= height 4000.0)))
   (set! (.title (host)) title)
   (set! (.logical-w (host)) width)
   (set! (.logical-h (host)) height)
@@ -81,17 +91,20 @@
   0)
 
 (defn resize-responsive [(width f64) (height f64)] (-> bool)
-  (if (and (.responsive (host)) (> width 0.0) (> height 0.0)
-           (or (primitive/fcmp-ne width (logical-width)) (primitive/fcmp-ne height (logical-height))))
-    (do
-      (set! (.logical-w (host)) width)
-      (set! (.logical-h (host)) height)
-      (set! (.width (scene)) (cast i64 (* width (.scale (scene)))))
-      (set! (.height (scene)) (cast i64 (* height (.scale (scene)))))
-      (render/setup)
-      (paper_redraw)
-      true)
-    false))
+  (if (and (.responsive (host))
+           (> width 0.0)
+           (> height 0.0)
+           (or (primitive/fcmp-ne width (logical-width))
+               (primitive/fcmp-ne height (logical-height))))
+      (do
+        (set! (.logical-w (host)) width)
+        (set! (.logical-h (host)) height)
+        (set! (.width (scene)) (cast i64 (* width (.scale (scene)))))
+        (set! (.height (scene)) (cast i64 (* height (.scale (scene)))))
+        (render/setup)
+        (paper_redraw)
+        true)
+      false))
 
 (defn paper_arg_app [] (-> i64)
   (.app-index (host)))
@@ -115,7 +128,10 @@
     (CGPathAddRoundedRect path
                           (cast (ptr CGAffine) 0)
                           (cgrect (* (.x r) sx)
-                                  (* (if flipped (.y r) (- (logical-height) (+ (.y r) (.h r)))) sy)
+                                  (* (if flipped
+                                         (.y r)
+                                         (- (logical-height) (+ (.y r) (.h r))))
+                                     sy)
                                   (* (.w r) sx)
                                   (* (.h r) sy))
                           (* (.shape-radius (host)) sx)
@@ -130,10 +146,21 @@
       (msg i64 (class c"CATransaction") (sel c"setDisableActions:") [bool] true)
       (if (.shaped h)
           (let [mask (new c"CAShapeLayer")
-                path (shape-path (.window-w h) (.window-h h) (msg bool (.view h) (sel c"isFlipped") []))]
-            (msg i64 mask (sel c"setFrame:") [CGRect] (cgrect 0.0 0.0 (.window-w h) (.window-h h)))
+                path
+                  (shape-path (.window-w h)
+                              (.window-h h)
+                              (msg bool (.view h) (sel c"isFlipped") []))]
+            (msg i64
+                 mask
+                 (sel c"setFrame:")
+                 [CGRect]
+                 (cgrect 0.0 0.0 (.window-w h) (.window-h h)))
             (msg i64 mask (sel c"setPath:") [(ptr i8)] path)
-            (msg i64 mask (sel c"setContentsScale:") [f64] (msg f64 (.window h) (sel c"backingScaleFactor") []))
+            (msg i64
+                 mask
+                 (sel c"setContentsScale:")
+                 [f64]
+                 (msg f64 (.window h) (sel c"backingScaleFactor") []))
             (msg i64 (.layer h) (sel c"setMask:") [(ptr i8)] mask)
             (CGPathRelease path)
             (release mask))
@@ -147,13 +174,20 @@
 (defn apply-window-style [] (-> i64)
   (let [h (host)]
     (when (!= (.window h) (nil))
-      (msg i64 (.window h) (sel c"setStyleMask:") [u64] (if (.shaped h) 8 32783))
+      (msg i64
+           (.window h)
+           (sel c"setStyleMask:")
+           [u64]
+           (if (.shaped h) 8 32783))
       (msg i64 (.window h) (sel c"setOpaque:") [bool] (not (.shaped h)))
       (msg i64
            (.window h)
            (sel c"setBackgroundColor:")
            [(ptr i8)]
-           (msg (ptr i8) (class c"NSColor") (sel (if (.shaped h) c"clearColor" c"windowBackgroundColor")) []))
+           (msg (ptr i8)
+                (class c"NSColor")
+                (sel (if (.shaped h) c"clearColor" c"windowBackgroundColor"))
+                []))
       (msg i64 (.window h) (sel c"setTitlebarAppearsTransparent:") [bool] true)
       (msg i64 (.window h) (sel c"setTitleVisibility:") [i64] 1)
       (msg i64 (.window h) (sel c"setHasShadow:") [bool] true)
@@ -178,10 +212,22 @@
 
 (defn shape-window-class [] (-> (ptr i8))
   (when (= (class c"CoilPaperShapeWindow") (nil))
-    (let [cls (objc_allocateClassPair (class c"NSWindow") c"CoilPaperShapeWindow" 0)]
-      (class_addMethod cls (sel c"canBecomeKeyWindow") (cast (ptr i8) (fnptr-of shape-window-key)) c"B@:")
-      (class_addMethod cls (sel c"canBecomeMainWindow") (cast (ptr i8) (fnptr-of shape-window-key)) c"B@:")
-      (class_addMethod cls (sel c"togglePaperWindowStyle:") (cast (ptr i8) (fnptr-of toggle-window-style)) c"v@:@")
+    (let [cls
+            (objc_allocateClassPair (class c"NSWindow")
+                                    c"CoilPaperShapeWindow"
+                                    0)]
+      (class_addMethod cls
+                       (sel c"canBecomeKeyWindow")
+                       (cast (ptr i8) (fnptr-of shape-window-key))
+                       c"B@:")
+      (class_addMethod cls
+                       (sel c"canBecomeMainWindow")
+                       (cast (ptr i8) (fnptr-of shape-window-key))
+                       c"B@:")
+      (class_addMethod cls
+                       (sel c"togglePaperWindowStyle:")
+                       (cast (ptr i8) (fnptr-of toggle-window-style))
+                       c"v@:@")
       (objc_registerClassPair cls)
       0))
   (class c"CoilPaperShapeWindow"))
@@ -203,11 +249,17 @@
                                      cs
                                      0x4001)
             image (CGBitmapContextCreateImage (.output-context s))
-            outline (shape-path (cast f64 (.width s)) (cast f64 (.height s)) false)]
+            outline
+              (shape-path (cast f64 (.width s)) (cast f64 (.height s)) false)]
         (assert (!= ctx (nil)))
         (CGContextAddPath ctx outline)
         (CGContextEOClip ctx)
-        (CGContextDrawImage ctx (cgrect 0.0 0.0 (cast f64 (.width s)) (cast f64 (.height s))) image)
+        (CGContextDrawImage ctx
+                            (cgrect 0.0
+                                    0.0
+                                    (cast f64 (.width s))
+                                    (cast f64 (.height s)))
+                            image)
         (let [status (render/snapshot-context ctx path)]
           (CGPathRelease outline)
           (CGImageRelease image)
@@ -251,13 +303,19 @@
 (defn paper_round_rect [(x f64) (y f64) (w f64) (h f64) (r f64)] (-> i64)
   (when (and (> w 0.0) (> h 0.0))
     (let [radius (clamp r 0.0 (* 0.5 (if (< w h) w h)))]
-      (CGPathAddRoundedRect (.path (scene)) (cast (ptr CGAffine) 0) (cgrect x y w h) radius radius))
+      (CGPathAddRoundedRect (.path (scene))
+                            (cast (ptr CGAffine) 0)
+                            (cgrect x y w h)
+                            radius
+                            radius))
     0)
   0)
 
 (defn paper_ellipse [(x f64) (y f64) (w f64) (h f64)] (-> i64)
   (when (and (> w 0.0) (> h 0.0))
-    (CGPathAddEllipseInRect (.path (scene)) (cast (ptr CGAffine) 0) (cgrect x y w h))
+    (CGPathAddEllipseInRect (.path (scene))
+                            (cast (ptr CGAffine) 0)
+                            (cgrect x y w h))
     0)
   0)
 
@@ -290,15 +348,17 @@
     (for [i 0 (al/al-len [Sheet] (.sheets s))]
       (let [sheet (al/al-elem [Sheet] (field s sheets) i)]
         (when (and (> (.z sheet) (+ floor (.offset s)))
-                   (intersects (CGPathGetPathBoundingBox (.path sheet)) (CGPathGetPathBoundingBox cut-path)))
-          (let [cut (CGPathCreateCopyBySubtractingPath (.path sheet) cut-path true)]
+                   (intersects (CGPathGetPathBoundingBox (.path sheet))
+                               (CGPathGetPathBoundingBox cut-path)))
+          (let [cut (cuts/subtract (.path sheet) cut-path)]
             (assert (!= cut (nil)))
             (CGPathRelease (.path sheet))
             (set! (.path sheet) cut)))))
     (for [i 0 (al/al-len [Ink] (.inks s))]
       (let [ink (al/al-elem [Ink] (field s inks) i)]
         (when (and (> (.z ink) (+ floor (.offset s)))
-                   (intersects (.bounds ink) (CGPathGetPathBoundingBox cut-path)))
+                   (intersects (.bounds ink)
+                               (CGPathGetPathBoundingBox cut-path)))
           (when (= (.clip ink) (nil))
             (set! (.clip ink) (CGPathCreateMutable))
             (CGPathAddRoundedRect (.clip ink)
@@ -307,7 +367,8 @@
                                   0.0
                                   0.0)
             0)
-          (let [cut (CGPathCreateCopyBySubtractingPath (.clip ink) cut-path true)]
+          (let [cut
+                  (CGPathCreateCopyBySubtractingPath (.clip ink) cut-path true)]
             (assert (!= cut (nil)))
             (CGPathRelease (.clip ink))
             (set! (.clip ink) cut)))))
@@ -315,8 +376,12 @@
       (while (>= (load i) 0)
         (let [hit (al/al-elem [Hit] (field s hits) (load i))]
           (when (and (> (.z hit) (+ floor (.offset s)))
-                     (intersects (CGPathGetPathBoundingBox (.path hit)) (CGPathGetPathBoundingBox cut-path)))
-            (let [cut (CGPathCreateCopyBySubtractingPath (.path hit) cut-path true)]
+                     (intersects (CGPathGetPathBoundingBox (.path hit))
+                                 (CGPathGetPathBoundingBox cut-path)))
+            (let [cut
+                    (CGPathCreateCopyBySubtractingPath (.path hit)
+                                                       cut-path
+                                                       true)]
               (assert (!= cut (nil)))
               (CGPathRelease (.path hit))
               (set! (.path hit) cut)
@@ -334,7 +399,12 @@
       (set! (.clip measured) (clip-path)))
     (add-ink (load measured))))
 
-(defn paper_ink [(x f64) (y f64) (size f64) (color u32) (font i64) (text (ptr i8))] (-> i64)
+(defn paper_ink [(x f64)
+                 (y f64)
+                 (size f64)
+                 (color u32)
+                 (font i64)
+                 (text (ptr i8))] (-> i64)
   (submit-ink (Ink
                 :x x
                 :y y
@@ -350,7 +420,14 @@
                 :clip (nil)
                 :bounds (cgrect 0.0 0.0 0.0 0.0))))
 
-(defn paper_text_box [(x f64) (y f64) (width f64) (height f64) (size f64) (color u32) (font i64) (text (ptr i8))] (-> i64)
+(defn paper_text_box [(x f64)
+                      (y f64)
+                      (width f64)
+                      (height f64)
+                      (size f64)
+                      (color u32)
+                      (font i64)
+                      (text (ptr i8))] (-> i64)
   (submit-ink (Ink
                 :x x
                 :y y
@@ -397,7 +474,14 @@
   (set! (.offset (scene)) z)
   0)
 
-(defn paper_hit [(id i64) (x f64) (y f64) (w f64) (h f64) (name (ptr i8)) (role i64) (value f64)] (-> i64)
+(defn paper_hit [(id i64)
+                 (x f64)
+                 (y f64)
+                 (w f64)
+                 (h f64)
+                 (name (ptr i8))
+                 (role i64)
+                 (value f64)] (-> i64)
   (let [path (CGPathCreateMutable)]
     (CGPathAddRoundedRect path (cast (ptr CGAffine) 0) (cgrect x y w h) 0.0 0.0)
     (let [visible (clipped-path path)]
@@ -436,7 +520,10 @@
   (let [before (al/al-len [Hit] (.hits (scene)))]
     (paper_hit id x y w h name 3 (if selected 1.0 0.0))
     (when (> (al/al-len [Hit] (.hits (scene))) before)
-      (set! (.group (al/al-elem [Hit] (field (scene) hits) (- (al/al-len [Hit] (.hits (scene))) 1))) group)))
+      (set! (.group (al/al-elem [Hit]
+                                (field (scene) hits)
+                                (- (al/al-len [Hit] (.hits (scene))) 1)))
+            group)))
   0)
 
 (defn paper_set_enabled [(enabled bool)] (-> i64)
@@ -481,11 +568,13 @@
 (defn input-index [(id i64)] (-> i64)
   (let [(mut found) -1]
     (for [i 0 (al/al-len [Input] (.inputs (host)))]
-      (when (= (.id (al/al-elem [Input] (field (host) inputs) i)) id) (set! found i)))
+      (when (= (.id (al/al-elem [Input] (field (host) inputs) i)) id)
+        (set! found i)))
     (load found)))
 
 (defn input-view [(id i64)] (-> (ptr i8))
-  (let [i (input-index id)] (if (< i 0) (nil) (.view (al/al-elem [Input] (field (host) inputs) i)))))
+  (let [i (input-index id)]
+    (if (< i 0) (nil) (.view (al/al-elem [Input] (field (host) inputs) i)))))
 
 (defn paper_input_value [(id i64)] (-> (ptr i8))
   (let [view (input-view id)]
@@ -495,7 +584,12 @@
   (msg i64 (input-view id) (sel c"setStringValue:") [(ptr i8)] (ns c""))
   0)
 
-(defn paper_input [(id i64) (x f64) (y f64) (w f64) (h f64) (placeholder (ptr i8))] (-> i64)
+(defn paper_input [(id i64)
+                   (x f64)
+                   (y f64)
+                   (w f64)
+                   (h f64)
+                   (placeholder (ptr i8))] (-> i64)
   (let [visible (clipped-rect (rect x y w h))
         shown (and (> (.w visible) 0.0) (> (.h visible) 0.0))]
     (when (and shown (.enabled (scene))) (register-focus id true))
@@ -506,7 +600,11 @@
           (let [field (new c"NSTextField")
                 container (new c"NSView")]
             (msg i64 container (sel c"setWantsLayer:") [bool] true)
-            (msg i64 (msg (ptr i8) container (sel c"layer") []) (sel c"setMasksToBounds:") [bool] true)
+            (msg i64
+                 (msg (ptr i8) container (sel c"layer") [])
+                 (sel c"setMasksToBounds:")
+                 [bool]
+                 true)
             (msg i64 field (sel c"setBordered:") [bool] false)
             (msg i64 field (sel c"setFocusRingType:") [u64] (cast u64 1))
             (msg i64 field (sel c"setDrawsBackground:") [bool] false)
@@ -514,12 +612,21 @@
                  field
                  (sel c"setFont:")
                  [(ptr i8)]
-                 (msg (ptr i8) (class c"NSFont") (sel c"systemFontOfSize:") [f64] 14.0))
+                 (msg (ptr i8)
+                      (class c"NSFont")
+                      (sel c"systemFontOfSize:")
+                      [f64]
+                      14.0))
             (msg i64
                  field
                  (sel c"setTextColor:")
                  [(ptr i8)]
-                 (msg (ptr i8) (class c"NSColor") (sel c"colorWithWhite:alpha:") [f64 f64] 0.22 1.0))
+                 (msg (ptr i8)
+                      (class c"NSColor")
+                      (sel c"colorWithWhite:alpha:")
+                      [f64 f64]
+                      0.22
+                      1.0))
             (msg i64 (.view app) (sel c"addSubview:") [(ptr i8)] container)
             (msg i64 container (sel c"addSubview:") [(ptr i8)] field)
             (set! i (al/al-len [Input] (.inputs app)))
@@ -550,68 +657,137 @@
                (.view item)
                (sel c"setFrame:")
                [CGRect]
-               (cgrect (* (- x (.x visible)) sx) (* (- (+ (.y visible) (.h visible)) (+ y h)) sy) (* w sx) (* h sy)))
+               (cgrect (* (- x (.x visible)) sx)
+                       (* (- (+ (.y visible) (.h visible)) (+ y h)) sy)
+                       (* w sx)
+                       (* h sy)))
           (msg i64
                (.view item)
                (sel c"setFont:")
                [(ptr i8)]
-               (msg (ptr i8) (class c"NSFont") (sel c"systemFontOfSize:") [f64] (* 14.0 sx)))
-          (msg i64 (.view item) (sel c"setPlaceholderString:") [(ptr i8)] (ns placeholder))
-          (msg i64 (.view item) (sel c"setAccessibilityLabel:") [(ptr i8)] (ns placeholder)))))
+               (msg (ptr i8)
+                    (class c"NSFont")
+                    (sel c"systemFontOfSize:")
+                    [f64]
+                    (* 14.0 sx)))
+          (msg i64
+               (.view item)
+               (sel c"setPlaceholderString:")
+               [(ptr i8)]
+               (ns placeholder))
+          (msg i64
+               (.view item)
+               (sel c"setAccessibilityLabel:")
+               [(ptr i8)]
+               (ns placeholder)))))
     0))
 
 (defn paper_pref_get [(key (ptr i8)) (fallback i64)] (-> i64)
   (if (.headless (host))
       fallback
-      (let [defaults (msg (ptr i8) (class c"NSUserDefaults") (sel c"standardUserDefaults") [])
-            name (msg (ptr i8) (ns c"studio.papercut.") (sel c"stringByAppendingString:") [(ptr i8)] (ns key))]
-        (if (= (msg (ptr i8) defaults (sel c"objectForKey:") [(ptr i8)] name) (nil))
+      (let [defaults
+              (msg (ptr i8)
+                   (class c"NSUserDefaults")
+                   (sel c"standardUserDefaults")
+                   [])
+            name
+              (msg (ptr i8)
+                   (ns c"studio.papercut.")
+                   (sel c"stringByAppendingString:")
+                   [(ptr i8)]
+                   (ns key))]
+        (if (= (msg (ptr i8) defaults (sel c"objectForKey:") [(ptr i8)] name)
+               (nil))
             fallback
             (msg i64 defaults (sel c"integerForKey:") [(ptr i8)] name)))))
 
 (defn paper_pref_set [(key (ptr i8)) (value i64)] (-> i64)
   (when (not (.headless (host)))
     (msg i64
-         (msg (ptr i8) (class c"NSUserDefaults") (sel c"standardUserDefaults") [])
+         (msg (ptr i8)
+              (class c"NSUserDefaults")
+              (sel c"standardUserDefaults")
+              [])
          (sel c"setInteger:forKey:")
          [i64 (ptr i8)]
          value
-         (msg (ptr i8) (ns c"studio.papercut.") (sel c"stringByAppendingString:") [(ptr i8)] (ns key))))
+         (msg (ptr i8)
+              (ns c"studio.papercut.")
+              (sel c"stringByAppendingString:")
+              [(ptr i8)]
+              (ns key))))
   0)
 
 (defn paper_pref_text [(key (ptr i8)) (fallback (ptr i8))] (-> (ptr i8))
   (if (.headless (host))
       fallback
-      (let [defaults (msg (ptr i8) (class c"NSUserDefaults") (sel c"standardUserDefaults") [])
-            name (msg (ptr i8) (ns c"studio.papercut.") (sel c"stringByAppendingString:") [(ptr i8)] (ns key))
+      (let [defaults
+              (msg (ptr i8)
+                   (class c"NSUserDefaults")
+                   (sel c"standardUserDefaults")
+                   [])
+            name
+              (msg (ptr i8)
+                   (ns c"studio.papercut.")
+                   (sel c"stringByAppendingString:")
+                   [(ptr i8)]
+                   (ns key))
             value (msg (ptr i8) defaults (sel c"stringForKey:") [(ptr i8)] name)]
         (if (= value (nil)) fallback (utf8 value)))))
 
 (defn paper_pref_text_set [(key (ptr i8)) (value (ptr i8))] (-> i64)
   (when (not (.headless (host)))
     (msg i64
-         (msg (ptr i8) (class c"NSUserDefaults") (sel c"standardUserDefaults") [])
+         (msg (ptr i8)
+              (class c"NSUserDefaults")
+              (sel c"standardUserDefaults")
+              [])
          (sel c"setObject:forKey:")
          [(ptr i8) (ptr i8)]
          (ns value)
-         (msg (ptr i8) (ns c"studio.papercut.") (sel c"stringByAppendingString:") [(ptr i8)] (ns key))))
+         (msg (ptr i8)
+              (ns c"studio.papercut.")
+              (sel c"stringByAppendingString:")
+              [(ptr i8)]
+              (ns key))))
   0)
 
 ;;; Return an owned mutable copy of a persisted property-list array.
 (defn paper_pref_array [(key (ptr i8))] (-> (ptr i8))
-  (let [defaults (msg (ptr i8) (class c"NSUserDefaults") (sel c"standardUserDefaults") [])
-        name (msg (ptr i8) (ns c"studio.papercut.") (sel c"stringByAppendingString:") [(ptr i8)] (ns key))
-        saved (if (.headless (host)) (nil) (msg (ptr i8) defaults (sel c"arrayForKey:") [(ptr i8)] name))]
-    (if (= saved (nil)) (new c"NSMutableArray") (msg (ptr i8) saved (sel c"mutableCopy") []))))
+  (let [defaults
+          (msg (ptr i8)
+               (class c"NSUserDefaults")
+               (sel c"standardUserDefaults")
+               [])
+        name
+          (msg (ptr i8)
+               (ns c"studio.papercut.")
+               (sel c"stringByAppendingString:")
+               [(ptr i8)]
+               (ns key))
+        saved
+          (if (.headless (host))
+              (nil)
+              (msg (ptr i8) defaults (sel c"arrayForKey:") [(ptr i8)] name))]
+    (if (= saved (nil))
+        (new c"NSMutableArray")
+        (msg (ptr i8) saved (sel c"mutableCopy") []))))
 
 (defn paper_pref_array_set [(key (ptr i8)) (value (ptr i8))] (-> i64)
   (when (not (.headless (host)))
     (msg i64
-         (msg (ptr i8) (class c"NSUserDefaults") (sel c"standardUserDefaults") [])
+         (msg (ptr i8)
+              (class c"NSUserDefaults")
+              (sel c"standardUserDefaults")
+              [])
          (sel c"setObject:forKey:")
          [(ptr i8) (ptr i8)]
          value
-         (msg (ptr i8) (ns c"studio.papercut.") (sel c"stringByAppendingString:") [(ptr i8)] (ns key))))
+         (msg (ptr i8)
+              (ns c"studio.papercut.")
+              (sel c"stringByAppendingString:")
+              [(ptr i8)]
+              (ns key))))
   0)
 
 ;;; Begin a modal interaction scope. Background controls and native text fields
@@ -648,7 +824,11 @@
           (do (when (not (gpu/present (.layer app))) (paper_redraw)) 0)
           (let [image (CGBitmapContextCreateImage (.output-context (scene)))]
             (msg i64 (class c"CATransaction") (sel c"begin") [])
-            (msg i64 (class c"CATransaction") (sel c"setDisableActions:") [bool] true)
+            (msg i64
+                 (class c"CATransaction")
+                 (sel c"setDisableActions:")
+                 [bool]
+                 true)
             (msg i64 (.layer app) (sel c"setContents:") [(ptr i8)] image)
             (msg i64 (class c"CATransaction") (sel c"commit") [])
             (CGImageRelease image)
@@ -667,7 +847,10 @@
                    (< x (+ (.x r) (.w r)))
                    (< y (+ (.y r) (.h r)))
                    (>= (.z hit) (load height))
-                   (CGPathContainsPoint (.path hit) (cast (ptr CGAffine) 0) (CGPoint :x x :y y) true))
+                   (CGPathContainsPoint (.path hit)
+                                        (cast (ptr CGAffine) 0)
+                                        (CGPoint :x x :y y)
+                                        true))
           (set! result (if (.enabled hit) (.id hit) 0))
           (set! height (.z hit)))))
     (load result)))
@@ -682,9 +865,90 @@
     ;; Disabled controls also reserve their pointer area.
     (for [i 0 (al/al-len [Hit] (.hits (scene)))]
       (let [item (al/al-get [Hit] (.hits (scene)) i)]
-        (when (CGPathContainsPoint (.path item) (cast (ptr CGAffine) 0) (CGPoint :x x :y y) true)
+        (when (CGPathContainsPoint (.path item)
+                                   (cast (ptr CGAffine) 0)
+                                   (CGPoint :x x :y y)
+                                   true)
           (set! blocked true))))
     (and (contains? (.drag-area (host)) x y) (not (load blocked)))))
+
+(defn shape-resize-edge [(x f64) (y f64)] (-> i64)
+  (if (and (.shaped (host)) (not (.responsive (host))))
+      (sizing/edge-at (.shape (host))
+                      (.shape-radius (host))
+                      x
+                      y
+                      (* 7.0 (/ (logical-width) (.window-w (host)))))
+      0))
+
+(defn shape-resize-event [(event (ptr i8)) (kind i64)] (-> bool)
+  (let [app (host)
+        drag (sizing/drag)]
+    (when (and (= kind 1)
+               (= (msg (ptr i8) event (sel c"window") []) (.window app)))
+      (let [p (msg CGPoint event (sel c"locationInWindow") [])
+            edge
+              (shape-resize-edge (* (/ (.x p) (.window-w app)) (logical-width))
+                                 (* (- 1.0 (/ (.y p) (.window-h app)))
+                                    (logical-height)))]
+        (when (> edge 0)
+          (set! (.edge drag) edge)
+          (set! (.frame drag) (msg CGRect (.window app) (sel c"frame") []))
+          (set! (.start drag)
+                (msg CGPoint (.window app) (sel c"convertPointToScreen:") [CGPoint] p))
+          (set! (.drag app) 0)
+          (set! (.hover app) 0))))
+    (if (> (.edge drag) 0)
+        (do
+          (when (or (= kind 6) (= kind 2))
+            (let [frame
+                    (sizing/frame-for (.frame drag)
+                                      (.shape app)
+                                      (logical-width)
+                                      (logical-height)
+                                      (.edge drag)
+                                      (.start drag)
+                                      (msg CGPoint (.window app) (sel c"convertPointToScreen:") [CGPoint]
+                                           (msg CGPoint event (sel c"locationInWindow") []))
+                                      (* (logical-width) 0.6)
+                                      (* (logical-height) 0.6))]
+              (msg i64
+                   (.window app)
+                   (sel c"setFrame:display:")
+                   [CGRect bool]
+                   frame
+                   true))
+            (when (= kind 2) (set! (.edge drag) 0)))
+          true)
+        false)))
+
+(defn resize-cursor [(edge i64)] (-> i64)
+  (let [drag (sizing/drag)
+        cls (class c"NSCursor")]
+    (when (or (> edge 0) (> (.cursor drag) 0))
+      (let [cursor
+              (if (= edge 0)
+                  (msg (ptr i8) cls (sel c"arrowCursor") [])
+                  (if (msg bool
+                           cls
+                           (sel c"respondsToSelector:")
+                           [(ptr i8)]
+                           (sel c"frameResizeCursorFromPosition:inDirections:"))
+                      (msg (ptr i8)
+                           cls
+                           (sel c"frameResizeCursorFromPosition:inDirections:")
+                           [u64 u64]
+                           (cast u64 edge)
+                           3)
+                      (msg (ptr i8)
+                           cls
+                           (sel (if (!= (& edge 10) 0)
+                                    c"resizeLeftRightCursor"
+                                    c"resizeUpDownCursor"))
+                           [])))]
+        (msg i64 cursor (sel c"set") []))
+      (set! (.cursor drag) edge)))
+  0)
 
 (defn begin-window-drag [(event (ptr i8))] (-> bool)
   (let [app (host)
@@ -694,25 +958,45 @@
         (mut native-control) false]
     ;; Traffic lights belong to the frame view, outside our content subtree.
     (for [i 0 3]
-      (let [button (msg (ptr i8) (.window app) (sel c"standardWindowButton:") [u64] (cast u64 i))]
+      (let [button
+              (msg (ptr i8)
+                   (.window app)
+                   (sel c"standardWindowButton:")
+                   [u64]
+                   (cast u64 i))]
         (when (!= button (nil))
-          (let [local (msg CGPoint button (sel c"convertPoint:fromView:") [CGPoint (ptr i8)] p (nil))
+          (let [local
+                  (msg CGPoint
+                       button
+                       (sel c"convertPoint:fromView:")
+                       [CGPoint (ptr i8)]
+                       p
+                       (nil))
                 r (msg CGRect button (sel c"bounds") [])]
-            (when (contains? (rect (.x r) (.y r) (.w r) (.h r)) (.x local) (.y local))
+            (when (contains? (rect (.x r) (.y r) (.w r) (.h r))
+                             (.x local)
+                             (.y local))
               (set! native-control true))))))
     (let [target (msg (ptr i8) (.view app) (sel c"hitTest:") [CGPoint] p)]
-      (when (and (!= target (nil)) (!= target (.view app))) (set! native-control true)))
+      (when (and (!= target (nil)) (!= target (.view app)))
+        (set! native-control true)))
     (if (and (= (msg (ptr i8) event (sel c"window") []) (.window app))
              (not (load native-control))
              (window-drag-point? x y))
         (do
           (set! (.drag app) 0)
           (set! (.hover app) 0)
-          (msg i64 (.window app) (sel c"performWindowDragWithEvent:") [(ptr i8)] event)
+          (msg i64
+               (.window app)
+               (sel c"performWindowDragWithEvent:")
+               [(ptr i8)]
+               event)
           true)
         false)))
 
-(defn pointer-event-with-focus [(event (ptr i8)) (kind i64) (resign-first-responder bool)] (-> i64)
+(defn pointer-event-with-focus [(event (ptr i8))
+                                (kind i64)
+                                (resign-first-responder bool)] (-> i64)
   (let [app (host)
         p (msg CGPoint event (sel c"locationInWindow") [])
         x (* (/ (.x p) (.window-w app)) (logical-width))
@@ -725,7 +1009,8 @@
       (when (and (> (.drag app) 0) resign-first-responder)
         (msg bool (.window app) (sel c"makeFirstResponder:") [(ptr i8)] (nil))
         0))
-    (when (and (> (.drag app) 0) (or (!= kind 3) (= (.drag app) (hit-test x y))))
+    (when (and (> (.drag app) 0)
+               (or (!= kind 3) (= (.drag app) (hit-test x y))))
       (dispatch kind (.drag app) x y))
     (when (= kind 3) (set! (.drag app) 0)))
   (paper_redraw)
@@ -745,7 +1030,10 @@
         px (* (/ (.x point) (.window-w app)) (logical-width))
         py (* (- 1.0 (/ (.y point) (.window-h app))) (logical-height))
         id (hit-test px py)]
-    (dispatch 7 id (msg f64 event (sel c"scrollingDeltaX") []) (msg f64 event (sel c"scrollingDeltaY") []))
+    (dispatch 7
+              id
+              (msg f64 event (sel c"scrollingDeltaX") [])
+              (msg f64 event (sel c"scrollingDeltaY") []))
     (paper_redraw))
   0)
 
@@ -761,17 +1049,33 @@
 (defn poll-pointer [] (-> i64)
   (let [app (host)]
     (if (msg bool (.window app) (sel c"isKeyWindow") [])
-        (let [p (msg CGPoint (.window app) (sel c"mouseLocationOutsideOfEventStream") [])]
-          (update-hover (* (/ (.x p) (.window-w app)) (logical-width))
-                        (* (- 1.0 (/ (.y p) (.window-h app))) (logical-height))))
-        (update-hover -1.0 -1.0)))
+        (let [p
+                (msg CGPoint
+                     (.window app)
+                     (sel c"mouseLocationOutsideOfEventStream")
+                     [])]
+          (let [x (* (/ (.x p) (.window-w app)) (logical-width))
+                y (* (- 1.0 (/ (.y p) (.window-h app))) (logical-height))]
+            (update-hover x y)
+            (resize-cursor (if (> (.edge (sizing/drag)) 0)
+                               (.edge (sizing/drag))
+                               (shape-resize-edge x y)))))
+        (do
+          (update-hover -1.0 -1.0)
+          (resize-cursor 0)
+          (set! (.edge (sizing/drag)) 0))))
   0)
 
 (defn poll-inputs [] (-> i64)
   (for [i 0 (al/al-len [Input] (.inputs (host)))]
     (let [item (al/al-elem [Input] (field (host) inputs) i)
           text (msg (ptr i8) (.view item) (sel c"stringValue") [])]
-      (when (and (.live item) (not (msg bool text (sel c"isEqualToString:") [(ptr i8)] (.previous item))))
+      (when (and (.live item)
+                 (not (msg bool
+                           text
+                           (sel c"isEqualToString:")
+                           [(ptr i8)]
+                           (.previous item))))
         (release (.previous item))
         (set! (.previous item) (retain text))
         (dispatch 5 (.id item) 0.0 0.0))))
@@ -783,7 +1087,8 @@
         flags (msg i64 event (sel c"modifierFlags") [])
         editor (editing-input)]
     (when (> editor 0) (set! (.focus app) editor))
-    (cond (and (= key 12) (!= (& flags 1048576) 0)) (do (msg i64 (.window app) (sel c"close") []) true)
+    (cond (and (= key 12) (!= (& flags 1048576) 0))
+            (do (msg i64 (.window app) (sel c"close") []) true)
           (= key 48)
             (let [next (next-control (.focus app) (!= (& flags 131072) 0))]
               (set! (.keyboard-focus app) true)
@@ -794,17 +1099,24 @@
           (> editor 0) (do (dispatch 4 key 0.0 0.0) false)
           (and (>= key 123) (<= key 126) (> (.focus app) 0))
             (let [backward (or (= key 123) (= key 125))
-                  next (selection-target (.focus app) (selection-backward? key) false)]
+                  next
+                    (selection-target (.focus app)
+                                      (selection-backward? key)
+                                      false)]
               (if (> next 0)
                   (select-control next)
                   (adjust-control (.focus app) (if backward -0.05 0.05))))
           (and (or (= key 115) (= key 119)) (> (.focus app) 0))
             (select-control (selection-target (.focus app) (= key 115) true))
-          (and (or (= key 36) (= key 49)) (> (.focus app) 0)) (activate-control (.focus app))
+          (and (or (= key 36) (= key 49)) (> (.focus app) 0))
+            (activate-control (.focus app))
           :else (do (dispatch 4 key 0.0 0.0) false))))
 
 (defn ax-id [(obj (ptr i8))] (-> i64)
-  (msg i64 (msg (ptr i8) obj (sel c"accessibilityIdentifier") []) (sel c"longLongValue") []))
+  (msg i64
+       (msg (ptr i8) obj (sel c"accessibilityIdentifier") [])
+       (sel c"longLongValue")
+       []))
 
 ;;; Arrow keys wrap within one selection group and skip disabled choices.
 ;;; Home/End select an endpoint. Native fields do not enter this routing path.
@@ -831,12 +1143,17 @@
             (when (= (.id hit) current)
               (when backward (set! neighbor (load last)))
               (set! seen true))
-            (when (and (not backward) (load seen) (!= (.id hit) current) (= (load neighbor) 0))
+            (when (and (not backward)
+                       (load seen)
+                       (!= (.id hit) current)
+                       (= (load neighbor) 0))
               (set! neighbor (.id hit)))
             (set! last (.id hit))))))
     (if edge
         (if backward (load first) (load last))
-        (if (> (load neighbor) 0) (load neighbor) (if backward (load last) (load first))))))
+        (if (> (load neighbor) 0)
+            (load neighbor)
+            (if backward (load last) (load first))))))
 
 (defn select-control [(id i64)] (-> bool)
   (if (and (> id 0) (activate-control id))
@@ -853,7 +1170,8 @@
   (let [(mut active) false]
     (for [i 0 (al/al-len [Hit] (.hits (scene)))]
       (let [hit (al/al-elem [Hit] (field (scene) hits) i)]
-        (when (and (.enabled hit) (= id (.id hit)) (!= (.role hit) 1)) (set! active true))))
+        (when (and (.enabled hit) (= id (.id hit)) (!= (.role hit) 1))
+          (set! active true))))
     (when (load active) (dispatch 1 id 0.0 0.0) (dispatch 3 id 0.0 0.0))
     (load active)))
 
@@ -879,7 +1197,11 @@
         (let [item (al/al-elem [Input] (field app inputs) i)]
           (when (and (.live item)
                      (or (= responder (.view item))
-                         (= responder (msg (ptr i8) (.view item) (sel c"currentEditor") []))))
+                         (= responder
+                            (msg (ptr i8)
+                                 (.view item)
+                                 (sel c"currentEditor")
+                                 []))))
             (set! result (.id item))))))
     (load result)))
 
@@ -889,14 +1211,21 @@
         app (host)]
     (if (< index 0)
         false
-        (let [target (al/al-elem [FocusTarget] (field (scene) focus-targets) index)
+        (let [target
+                (al/al-elem [FocusTarget] (field (scene) focus-targets) index)
               view (if (.native target) (input-view id) (nil))]
           (if (and (.native target) (= view (nil)))
               false
-              (let [accepted (msg bool (.window app) (sel c"makeFirstResponder:") [(ptr i8)] view)]
+              (let [accepted
+                      (msg bool
+                           (.window app)
+                           (sel c"makeFirstResponder:")
+                           [(ptr i8)]
+                           view)]
                 (when accepted
                   (set! (.focus app) id)
-                  (when (.native target) (msg i64 view (sel c"selectText:") [(ptr i8)] (nil)))
+                  (when (.native target)
+                    (msg i64 view (sel c"selectText:") [(ptr i8)] (nil)))
                   (paper_redraw))
                 accepted))))))
 
@@ -917,11 +1246,26 @@
   (adjust-control (ax-id obj) -0.05))
 
 (defn accessibility-init [] (-> i64)
-  (let [cls (objc_allocateClassPair (class c"NSAccessibilityElement") c"CoilPaperControl" 0)
-        slider (objc_allocateClassPair (class c"NSAccessibilityElement") c"CoilPaperSlider" 0)]
-    (class_addMethod cls (sel c"accessibilityPerformPress") (cast (ptr i8) (fnptr-of ax-press)) c"B@:")
-    (class_addMethod slider (sel c"accessibilityPerformIncrement") (cast (ptr i8) (fnptr-of ax-increment)) c"B@:")
-    (class_addMethod slider (sel c"accessibilityPerformDecrement") (cast (ptr i8) (fnptr-of ax-decrement)) c"B@:")
+  (let [cls
+          (objc_allocateClassPair (class c"NSAccessibilityElement")
+                                  c"CoilPaperControl"
+                                  0)
+        slider
+          (objc_allocateClassPair (class c"NSAccessibilityElement")
+                                  c"CoilPaperSlider"
+                                  0)]
+    (class_addMethod cls
+                     (sel c"accessibilityPerformPress")
+                     (cast (ptr i8) (fnptr-of ax-press))
+                     c"B@:")
+    (class_addMethod slider
+                     (sel c"accessibilityPerformIncrement")
+                     (cast (ptr i8) (fnptr-of ax-increment))
+                     c"B@:")
+    (class_addMethod slider
+                     (sel c"accessibilityPerformDecrement")
+                     (cast (ptr i8) (fnptr-of ax-decrement))
+                     c"B@:")
     (objc_registerClassPair cls)
     (objc_registerClassPair slider)
     (set! (.ax-class (host)) cls)
@@ -935,8 +1279,18 @@
     (for [i 0 (al/al-len [Hit] (.hits (scene)))]
       (let [hit (al/al-elem [Hit] (field (scene) hits) i)
             r (CGPathGetPathBoundingBox (.path hit))
-            id-number (msg (ptr i8) (class c"NSNumber") (sel c"numberWithLongLong:") [i64] (.id hit))
-            (mut element) (msg (ptr i8) (.ax-elements app) (sel c"objectForKey:") [(ptr i8)] id-number)
+            id-number
+              (msg (ptr i8)
+                   (class c"NSNumber")
+                   (sel c"numberWithLongLong:")
+                   [i64]
+                   (.id hit))
+            (mut element)
+              (msg (ptr i8)
+                   (.ax-elements app)
+                   (sel c"objectForKey:")
+                   [(ptr i8)]
+                   id-number)
             sx (/ (.window-w app) (logical-width))
             sy (/ (.window-h app) (logical-height))
             screen-rect
@@ -944,19 +1298,48 @@
                    (.window app)
                    (sel c"convertRectToScreen:")
                    [CGRect]
-                   (cgrect (* (.x r) sx) (* (- (logical-height) (+ (.y r) (.h r))) sy) (* (.w r) sx) (* (.h r) sy)))]
+                   (cgrect (* (.x r) sx)
+                           (* (- (logical-height) (+ (.y r) (.h r))) sy)
+                           (* (.w r) sx)
+                           (* (.h r) sy)))]
         (when (= (load element) (nil))
-          (set! element (msg (ptr i8) (if (= (.role hit) 1) (.ax-slider-class app) (.ax-class app)) (sel c"new") []))
-          (msg i64 (.ax-elements app) (sel c"setObject:forKey:") [(ptr i8) (ptr i8)] (load element) id-number)
+          (set! element
+                (msg (ptr i8)
+                     (if (= (.role hit) 1)
+                         (.ax-slider-class app)
+                         (.ax-class app))
+                     (sel c"new")
+                     []))
+          (msg i64
+               (.ax-elements app)
+               (sel c"setObject:forKey:")
+               [(ptr i8) (ptr i8)]
+               (load element)
+               id-number)
           (release (load element)))
-        (msg i64 (load element) (sel c"setAccessibilityParent:") [(ptr i8)] (.view app))
-        (msg i64 element (sel c"setAccessibilityEnabled:") [bool] (.enabled hit))
+        (msg i64
+             (load element)
+             (sel c"setAccessibilityParent:")
+             [(ptr i8)]
+             (.view app))
+        (msg i64
+             element
+             (sel c"setAccessibilityEnabled:")
+             [bool]
+             (.enabled hit))
         (msg i64
              element
              (sel c"setAccessibilityRole:")
              [(ptr i8)]
-             (ns (case (.role hit) 1 c"AXSlider" 2 c"AXCheckBox" 3 c"AXRadioButton" c"AXButton")))
-        (msg i64 element (sel c"setAccessibilityLabel:") [(ptr i8)] (.label hit))
+             (ns (case (.role hit) 1
+                       c"AXSlider" 2
+                       c"AXCheckBox" 3
+                       c"AXRadioButton" c"AXButton")))
+        (msg i64
+             element
+             (sel c"setAccessibilityLabel:")
+             [(ptr i8)]
+             (.label hit))
         (msg i64
              element
              (sel c"setAccessibilityIdentifier:")
@@ -966,12 +1349,17 @@
              element
              (sel c"setAccessibilityValue:")
              [(ptr i8)]
-             (msg (ptr i8) (class c"NSNumber") (sel c"numberWithDouble:") [f64] (.value hit)))
+             (msg (ptr i8)
+                  (class c"NSNumber")
+                  (sel c"numberWithDouble:")
+                  [f64]
+                  (.value hit)))
         (msg i64 element (sel c"setAccessibilityFrame:") [CGRect] screen-rect)
         (msg i64 children (sel c"addObject:") [(ptr i8)] (load element))))
     (for [i 0 (al/al-len [Input] (.inputs app))]
       (let [input (al/al-elem [Input] (field app inputs) i)]
-        (when (.live input) (msg i64 children (sel c"addObject:") [(ptr i8)] (.view input)))))
+        (when (.live input)
+          (msg i64 children (sel c"addObject:") [(ptr i8)] (.view input)))))
     (msg i64 (.view app) (sel c"setAccessibilityChildren:") [(ptr i8)] children)
     (release children))
   0)
@@ -979,11 +1367,16 @@
 (defn create-window [(width f64) (height f64)] (-> (ptr i8))
   (let [window
           (msg (ptr i8)
-               (msg (ptr i8) (if (.shape-available (host)) (shape-window-class) (class c"NSWindow")) (sel c"alloc") [])
+               (msg (ptr i8)
+                    (if (.shape-available (host))
+                        (shape-window-class)
+                        (class c"NSWindow"))
+                    (sel c"alloc")
+                    [])
                (sel c"initWithContentRect:styleMask:backing:defer:")
                [CGRect u64 u64 bool]
                (cgrect 0.0 0.0 width height)
-               (if (.responsive (host)) 15 32783) ; responsive apps use a native title bar
+               (if (.responsive (host)) 15 32783)  ; responsive apps use a native title bar
                2
                false)]
     (msg i64 window (sel c"setTitlebarAppearsTransparent:") [bool] true)
@@ -991,24 +1384,36 @@
     (msg i64 window (sel c"setMovableByWindowBackground:") [bool] false)
     window))
 
-(defn paper_run [(draw (fnptr c [] i64)) (event (fnptr c [i64 i64 f64 f64] i64))] (-> i64)
+(defn paper_run [(draw (fnptr c [] i64))
+                 (event (fnptr c [i64 i64 f64 f64] i64))] (-> i64)
   (let [pool (new c"NSAutoreleasePool")
         app (host)]
     (init)
     (set! (.draw app) draw)
     (set! (.event app) event)
     (set! (.inputs app) (al/al-new [Input] (alloc/malloc-allocator)))
-    (set! (.app app) (msg (ptr i8) (class c"NSApplication") (sel c"sharedApplication") []))
-    (let [args (msg (ptr i8) (msg (ptr i8) (class c"NSProcessInfo") (sel c"processInfo") []) (sel c"arguments") [])
+    (set! (.app app)
+          (msg (ptr i8) (class c"NSApplication") (sel c"sharedApplication") []))
+    (let [args
+            (msg (ptr i8)
+                 (msg (ptr i8) (class c"NSProcessInfo") (sel c"processInfo") [])
+                 (sel c"arguments")
+                 [])
           count (msg i64 args (sel c"count") [])
           (mut i) 1]
       (while (< (+ (load i) 1) count)
-        (let [arg (utf8 (msg (ptr i8) args (sel c"objectAtIndex:") [i64] (load i)))
-              value (msg (ptr i8) args (sel c"objectAtIndex:") [i64] (+ (load i) 1))]
-          (cond (= (strcmp arg c"--snapshot") 0) (do (set! (.headless app) true) (set! (.snapshot app) value))
-                (= (strcmp arg c"--app") 0) (set! (.app-index app) (msg i64 value (sel c"integerValue") []))
+        (let [arg
+                (utf8 (msg (ptr i8) args (sel c"objectAtIndex:") [i64] (load i)))
+              value
+                (msg (ptr i8) args (sel c"objectAtIndex:") [i64] (+ (load i) 1))]
+          (cond (= (strcmp arg c"--snapshot") 0)
+                  (do (set! (.headless app) true) (set! (.snapshot app) value))
+                (= (strcmp arg c"--app") 0)
+                  (set! (.app-index app)
+                        (msg i64 value (sel c"integerValue") []))
                 (and (.shape-available app) (= (strcmp arg c"--window") 0))
-                  (set! (.shaped app) (not (= (strcmp (utf8 value) c"standard") 0)))
+                  (set! (.shaped app)
+                        (not (= (strcmp (utf8 value) c"standard") 0)))
                 :else 0))
         (set! i (+ (load i) 2))))
     (set! (.width (scene)) (cast i64 (* (logical-width) 2.0)))
@@ -1016,11 +1421,25 @@
     (render/setup)
     (dispatch 0 (.app-index app) 0.0 0.0)
     (if (.headless app)
-        (do (refresh) (let [status (window-snapshot (utf8 (.snapshot app)))] (workers/stop) (release pool) status))
-        (let [screen (msg CGRect (msg (ptr i8) (class c"NSScreen") (sel c"mainScreen") []) (sel c"visibleFrame") [])
+        (do
+          (refresh)
+          (let [status (window-snapshot (utf8 (.snapshot app)))]
+            (workers/stop)
+            (release pool)
+            status))
+        (let [screen
+                (msg CGRect
+                     (msg (ptr i8) (class c"NSScreen") (sel c"mainScreen") [])
+                     (sel c"visibleFrame")
+                     [])
               max-height-scale (/ (- (.h screen) 80.0) (logical-height))
               max-width-scale (/ (- (.w screen) 60.0) (logical-width))
-              scale (clamp (if (< max-height-scale max-width-scale) max-height-scale max-width-scale) 0.3 1.0)
+              scale
+                (clamp (if (< max-height-scale max-width-scale)
+                           max-height-scale
+                           max-width-scale)
+                       0.3
+                       1.0)
               w (* (logical-width) scale)
               h (* (logical-height) scale)
               window (create-window w h)
@@ -1035,26 +1454,52 @@
                window
                (sel c"setTitle:")
                [(ptr i8)]
-               (ns (if (= (.title app) (nil)) c"Papercut Studio — made with Coil" (.title app))))
+               (ns (if (= (.title app) (nil))
+                       c"Papercut Studio — made with Coil"
+                       (.title app))))
           (when (not (.responsive app))
-            (msg i64 window (sel c"setContentAspectRatio:") [CGSize] (CGSize :w (logical-width) :h (logical-height))))
+            (msg i64
+                 window
+                 (sel c"setContentAspectRatio:")
+                 [CGSize]
+                 (CGSize :w (logical-width) :h (logical-height))))
           (msg i64
                window
                (sel c"setContentMinSize:")
                [CGSize]
-               (CGSize :w (if (.responsive app) (.minimum-w app) (* (logical-width) 0.6))
-                       :h (if (.responsive app) (.minimum-h app) (* (logical-height) 0.6))))
+               (CGSize :w
+                         (if (.responsive app)
+                             (.minimum-w app)
+                             (* (logical-width) 0.6))
+                 :h
+                   (if (.responsive app)
+                       (.minimum-h app)
+                       (* (logical-height) 0.6))))
           (msg i64 view (sel c"setWantsLayer:") [bool] true)
           (msg i64
                view
                (sel c"setAppearance:")
                [(ptr i8)]
-               (msg (ptr i8) (class c"NSAppearance") (sel c"appearanceNamed:") [(ptr i8)] (ns c"NSAppearanceNameAqua")))
+               (msg (ptr i8)
+                    (class c"NSAppearance")
+                    (sel c"appearanceNamed:")
+                    [(ptr i8)]
+                    (ns c"NSAppearanceNameAqua")))
           (set! (.layer app)
                 (if (.available (gpu/gpu))
-                    (gpu/create-layer view w h (msg f64 window (sel c"backingScaleFactor") []))
+                    (gpu/create-layer view
+                                      w
+                                      h
+                                      (msg f64
+                                           window
+                                           (sel c"backingScaleFactor")
+                                           []))
                     (msg (ptr i8) view (sel c"layer") [])))
-          (msg i64 (.layer app) (sel c"setContentsGravity:") [(ptr i8)] (ns c"resize"))
+          (msg i64
+               (.layer app)
+               (sel c"setContentsGravity:")
+               [(ptr i8)]
+               (ns c"resize"))
           (when (.shape-available app) (apply-window-style))
           (msg i64 (.app app) (sel c"setActivationPolicy:") [i64] 0)
           (native-menus)
@@ -1065,10 +1510,17 @@
           (accessibility-init)
           (resize-responsive w h)
           (refresh)
-          (frame-clock/start view (fnptr-of display-frame) (frame-clock/preferred-rate))
+          (frame-clock/start view
+                             (fnptr-of display-frame)
+                             (frame-clock/preferred-rate))
           (while (msg bool window (sel c"isVisible") [])
             (let [iteration-pool (new c"NSAutoreleasePool")
-                  deadline (msg (ptr i8) (class c"NSDate") (sel c"dateWithTimeIntervalSinceNow:") [f64] (/ 1.0 120.0))
+                  deadline
+                    (msg (ptr i8)
+                         (class c"NSDate")
+                         (sel c"dateWithTimeIntervalSinceNow:")
+                         [f64]
+                         (/ 1.0 120.0))
                   ev
                     (msg (ptr i8)
                          (.app app)
@@ -1081,13 +1533,20 @@
               (when (!= ev (nil))
                 (let [kind (msg i64 ev (sel c"type") [])
                       (mut consumed) false]
-                  (cond (= kind 1) (if (begin-window-drag ev) (do (set! consumed true) 0) (pointer-event ev 1))
+                  (cond (and (or (= kind 1) (= kind 6) (= kind 2))
+                             (shape-resize-event ev kind))
+                          (do (set! consumed true) 0)
+                        (= kind 1)
+                          (if (begin-window-drag ev)
+                              (do (set! consumed true) 0)
+                              (pointer-event ev 1))
                         (= kind 6) (pointer-event ev 2)
                         (= kind 2) (pointer-event ev 3)
                         (= kind 10) (set! consumed (key-event ev))
                         (= kind 22) (do (scroll-event ev) (set! consumed true))
                         :else 0)
-                  (when (not (load consumed)) (msg i64 (.app app) (sel c"sendEvent:") [(ptr i8)] ev))))
+                  (when (not (load consumed))
+                    (msg i64 (.app app) (sel c"sendEvent:") [(ptr i8)] ev))))
               (poll-inputs)
               (poll-pointer)
               (let [bounds (msg CGRect view (sel c"bounds") [])
@@ -1100,11 +1559,17 @@
                     (gpu/layer-size (.layer app)
                                     (.w bounds)
                                     (.h bounds)
-                                    (msg f64 window (sel c"backingScaleFactor") [])))
+                                    (msg f64
+                                         window
+                                         (sel c"backingScaleFactor")
+                                         [])))
                   (resize-responsive (.w bounds) (.h bounds))
                   (when (.shape-available app) (update-window-mask))
                   (paper_redraw))
-                (when (>= (- now (.last-tick app)) (if (> (.tick-interval app) 0.0) (.tick-interval app) 1.0))
+                (when (>= (- now (.last-tick app))
+                          (if (> (.tick-interval app) 0.0)
+                              (.tick-interval app)
+                              1.0))
                   (set! (.last-tick app) now)
                   (dispatch 6 0 now 0.0)))
               (release iteration-pool)))
@@ -1137,11 +1602,25 @@
     (msg i64 edit (sel c"setTitle:") [(ptr i8)] (ns c"Edit"))
     (for [i 0 6]
       (let [item
-              (native-menu-item (case i 0 c"Undo" 1 c"Redo" 2 c"Cut" 3 c"Copy" 4 c"Paste" c"Select All")
-                                (sel (case i 0 c"undo:" 1 c"redo:" 2 c"cut:" 3 c"copy:" 4 c"paste:" c"selectAll:"))
+              (native-menu-item (case i 0
+                                      c"Undo" 1
+                                      c"Redo" 2
+                                      c"Cut" 3
+                                      c"Copy" 4
+                                      c"Paste" c"Select All")
+                                (sel (case i 0
+                                           c"undo:" 1
+                                           c"redo:" 2
+                                           c"cut:" 3
+                                           c"copy:" 4
+                                           c"paste:" c"selectAll:"))
                                 (case i 0 c"z" 1 c"z" 2 c"x" 3 c"c" 4 c"v" c"a"))]
         (when (= i 1)
-          (msg i64 item (sel c"setKeyEquivalentModifierMask:") [u64] (cast u64 1179648)))
+          (msg i64
+               item
+               (sel c"setKeyEquivalentModifierMask:")
+               [u64]
+               (cast u64 1179648)))
         (when (= i 2)
           (msg i64
                edit
@@ -1156,10 +1635,17 @@
     (when (.shape-available (host))
       (let [view-menu (new c"NSMenu")
             view-item (native-menu-item c"View" (nil) c"")
-            shape-item (native-menu-item c"Calculator-shaped Window" (sel c"togglePaperWindowStyle:") c"b")]
+            shape-item
+              (native-menu-item c"Calculator-shaped Window"
+                                (sel c"togglePaperWindowStyle:")
+                                c"b")]
         (msg i64 view-menu (sel c"setTitle:") [(ptr i8)] (ns c"View"))
         (msg i64 shape-item (sel c"setTarget:") [(ptr i8)] (.window (host)))
-        (msg i64 shape-item (sel c"setKeyEquivalentModifierMask:") [u64] 1179648)
+        (msg i64
+             shape-item
+             (sel c"setKeyEquivalentModifierMask:")
+             [u64]
+             1179648)
         (msg i64 shape-item (sel c"setState:") [i64] (if (.shaped (host)) 1 0))
         (set! (.shape-menu (host)) shape-item)
         (msg i64 view-menu (sel c"addItem:") [(ptr i8)] shape-item)
@@ -1193,7 +1679,10 @@
           (let [r (.bounds h)
                 start (if vertical (.y r) (.x r))
                 size (if vertical (.h r) (.w r))]
-            (set! result (if (> size 0.0) (clamp (/ (- coordinate start) size) 0.0 1.0) 0.0))))))
+            (set! result
+                  (if (> size 0.0)
+                      (clamp (/ (- coordinate start) size) 0.0 1.0)
+                      0.0))))))
     (load result)))
 
 (defstruct ClipState [(active bool) (bounds Rect)])
@@ -1202,7 +1691,9 @@
   (primitive/alloc-static ClipState))
 
 (defn clipped-rect [(r Rect)] (-> Rect)
-  (if (.active (clip-state)) (layout/intersection r (.bounds (clip-state))) (load r)))
+  (if (.active (clip-state))
+      (layout/intersection r (.bounds (clip-state)))
+      (load r)))
 
 (defn push-clip [(r Rect)] (-> i64)
   (set! (.bounds (clip-state)) (clipped-rect r))
@@ -1213,7 +1704,11 @@
   (let [path (CGPathCreateMutable)
         r (.bounds (clip-state))]
     (when (and (> (.w r) 0.0) (> (.h r) 0.0))
-      (CGPathAddRoundedRect path (cast (ptr CGAffine) 0) (cgrect (.x r) (.y r) (.w r) (.h r)) 0.0 0.0)
+      (CGPathAddRoundedRect path
+                            (cast (ptr CGAffine) 0)
+                            (cgrect (.x r) (.y r) (.w r) (.h r))
+                            0.0
+                            0.0)
       0)
     path))
 
@@ -1234,12 +1729,18 @@
           z (.paint-z (scene))]
       (CGPathAddRoundedRect path
                             (cast (ptr CGAffine) 0)
-                            (cgrect (+ (.x r) 3.0) (+ (.y r) 3.0) (- (.w r) 6.0) (- (.h r) 6.0))
+                            (cgrect (+ (.x r) 3.0)
+                                    (+ (.y r) 3.0)
+                                    (- (.w r) 6.0)
+                                    (- (.h r) 6.0))
                             8.0
                             8.0)
       (CGPathAddRoundedRect path
                             (cast (ptr CGAffine) 0)
-                            (cgrect (+ (.x r) 4.0) (+ (.y r) 4.0) (- (.w r) 8.0) (- (.h r) 8.0))
+                            (cgrect (+ (.x r) 4.0)
+                                    (+ (.y r) 4.0)
+                                    (- (.w r) 8.0)
+                                    (- (.h r) 8.0))
                             7.0
                             7.0)
       (add-sheet (Sheet

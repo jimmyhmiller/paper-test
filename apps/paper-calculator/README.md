@@ -1,6 +1,18 @@
 # Paper Calculator
 
-A standalone native macOS calculator written in Coil using Paper. Cream cotton keys, coral operators, a sage display, and actual CoreText outline cuts share the renderer's paper texture and lighting.
+A standalone native macOS calculator written in Coil using Paper. Cream textured keys, coral operators, a sage display, and actual CoreText outline cuts share the renderer's paper texture and lighting.
+
+The casing and keys have curved paper shoulders and a lightly reflective,
+irregular pressed-paper stock. Large key labels cut eight points into a separate
+suede floor; smaller labels use shallower, narrower bevels for legibility.
+The edge highlights follow the movable light. The shared Paper library exposes
+the same configurable bevels for other applications; see
+[sculpted edges](../../lib/paper/MATERIALS.md#sculpted-edges-and-lettering).
+
+The casing is at elevation 44, tray at 24, display at 6, and resting keys at 38.
+The display numerals cut down to elevation 1. This gives the large wells depth
+while keeping key shadows shorter. Exposed rims use a paler fiber stock with
+their own finish. The extra basic and scientific controls retain their layouts.
 
 ```sh
 cd apps/paper-calculator
@@ -22,6 +34,17 @@ The style choice lasts for the current run; `--window shaped` selects the defaul
 
 The inset `123 / ƒx` selector switches between basic and scientific layouts without clearing the calculation. Scientific mode includes sine, cosine, tangent, natural and base-10 logarithms, powers, square root, square, reciprocal, and π. Click DEG/RAD in the display to change angle units.
 
+The selector thumb eases between modes over 220 ms while the keys change immediately.
+Drag any visible casing edge or rounded corner to resize the shaped window proportionally.
+
+Key outlines are collected for the current layout and independent new bevels are
+constructed in parallel. Enclosed letter holes are built directly into each key,
+without subtracting them from the scene stack. The renderer prepares independent
+coverage masks in parallel and retains native lettering outlines. It does not
+render the alternate calculator layout during startup. `coil run tests/fidelity.coil`
+reports cold mode switches, scene construction, completed rendering, light drags,
+and button press/release timing at 2× backing resolution.
+
 Use the number keys, decimal point, `+ - * /`, and Return or `=`. Escape or C clears, Backspace deletes an entry digit, `%` computes a percentage, and S switches modes. Tab navigates controls; Return or Space activates a keyboard-focused control. Click ± to change sign. Operators execute immediately from left to right, like a pocket calculator. Repeated equals repeats the last operation. For addition/subtraction, percentages are relative to the left operand; for multiplication/division they divide the entry by 100.
 
 Calculations use double precision, with 15 entry characters and 12 significant display digits. Functions act on the current number; entering a digit after a function starts a new operand. Undefined or overflowing results show Error; AC or a new digit recovers.
@@ -35,6 +58,7 @@ A short underline marks the pending arithmetic operator while you enter its righ
 ```sh
 coil verify
 coil run tests/gallery.coil
+coil run tests/fidelity.coil
 ```
 
 Tests exercise decimal entry, chaining, operator replacement, repeat equals, percentages, sign, input limits, overflow, domain recovery, scientific functions, native NSEvent characters, rendered hit targets, and the lighting popover. The gallery renders basic, scientific, and lighting previews to `build/`. Automated interaction checks call native event and Paper accessibility handlers; a physical keyboard/trackpad pass is not automated.

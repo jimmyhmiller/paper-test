@@ -165,6 +165,12 @@ inline float tex_height(long kind, float x, float y, long seed) {
     case 22: {
         return ((0.05f * tex_noise((x / 6.0f), (y / 6.0f), seed)) + (0.025f * tex_noise((x * 1.4f), (y * 1.4f), (seed + 3))));
     }
+    case 23: {
+        const auto u = (x + (1.4f * tex_noise((x / 5.0f), (y / 5.0f), (seed + 7))));
+        const auto v = (y + (1.4f * tex_noise((x / 5.0f), (y / 5.0f), (seed + 13))));
+        const auto ridge = (1.0f - tex_smooth((4.5f * tex_abs(tex_noise((u / 1.7f), (v / 0.85f), seed)))));
+        return (((0.22f * ridge) - 0.11f) + ((0.13f * tex_noise((x * 2.1f), (y * 2.1f), (seed + 19))) + (0.045f * tex_noise((x / 7.0f), (y / 7.0f), (seed + 29)))));
+    }
     default: {
         return 0.0f;
     }
@@ -237,6 +243,9 @@ inline float tex_contrast(long kind) {
     }
     case 22: {
         return 0.3f;
+    }
+    case 23: {
+        return 0.4f;
     }
     default: {
         return 0.0f;
@@ -427,8 +436,8 @@ inline void shade_impl(texture2d<float, access::read> colors,
     if (local_max > z + 0.125f) {
         for (uint step = 1; step <= 32; ++step) {
             float d = 0.6f + reach * (float(step * step) / 1024.0f);
-            float penumbra = 0.5f + d * 0.19f;
-            if (slope > 0.19f && z + d * slope - local_max >= penumbra) break;
+            float penumbra = 0.75f + d * 0.55f;
+            if (slope > 0.55f && z + d * slope - local_max >= penumbra) break;
             int2 sample = int2(float2(xy) + direction * d * p.scale);
             float obstacle = height_at(heights, sample) * p.depth;
             if (obstacle > z + 0.125f) {
@@ -538,6 +547,7 @@ fragment MaskOutput mask_fragment(MaskVertex v [[stage_in]], constant MaskDraw& 
     uint2 size(mask.get_width(),mask.get_height());
     float2 coverage = mask.read(min(uint2(v.uv * float2(size)), size - 1)).rg;
     float a = coverage.r, b = coverage.g;
+    if (a == 0.0f && b == 0.0f) { discard_fragment(); return {}; }
     float z = clamp(d.pigment_height.w,0.0f,64.0f) / 64.0f;
     float edge = clamp(d.pigment_height.w - 0.7f,0.0f,64.0f) / 64.0f;
     float ha = a * (1-b) + b;
@@ -547,4 +557,12 @@ fragment MaskOutput mask_fragment(MaskVertex v [[stage_in]], constant MaskDraw& 
             d.material_kind.w > 0.5f ? float4(0.0f) : float4(material_micro(v.position.xy, d) * a, a),
             d.material_kind.w > 0.5f ? float4(0.0f) : float4(d.finish_shape.rgb * a, a),
             float4(d.material_kind.w > 0.5f ? float3(0.0f) : d.finish_weight.rgb * a, a)};
+}
+
+// Scissored clear for retained material attachments. All six values exactly
+// match the full render-pass clear; blending is disabled for this pipeline.
+fragment MaskOutput clear_material_fragment(MaskVertex v [[stage_in]], constant MaskDraw& d [[buffer(0)]]) {
+    return {float4(d.pigment_height.rgb, 1.0f), float4(0.0f,0.0f,0.0f,1.0f),
+            float4(0.6f,0.4f,0.12f,1.0f), float4(0.0f,0.0f,0.0f,1.0f),
+            float4(0.5f,0.0f,0.0f,1.0f), float4(0.0f,0.0f,0.0f,1.0f)};
 }

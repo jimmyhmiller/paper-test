@@ -70,6 +70,77 @@ Patterns follow a sheet when it moves. Cuts and layout clips retain the original
 
 The lighting control's grain setting scales both texture brightness and micro-relief. A zero grain value removes both, while retaining the finish highlight. The sheet-depth setting controls the larger cutout relief and shadows; setting it to zero does not flatten the material's fine surface normals.
 
+## Sculpted edges and lettering
+
+`pressed-paper pigment` adds a fine compressed-pulp stock (pattern 23), with
+domain-warped ridges and smaller embedded grain. Its color and surface normals
+come from the same scalar/Metal kernel. It supports all existing texture and
+finish modifiers; the calculator uses it on the casing, tray, display, and keys.
+
+`beveled-panel r radius z width depth material` gives a rounded panel a curved
+shoulder. Width is measured inward from the outside contour; depth is measured
+down from its top. The top remains at `z`, and the texture stays anchored to the
+original panel, including rotated and offset patterns.
+`edged-panel r radius z width depth edge top` additionally accepts a separate
+exposed edge stock and finish. `beveled-panel` uses the same stock for both.
+
+For arbitrary outlines, build a path with `begin-sheet` and call
+`beveled-cut z depth width edge bottom`. The original outline is the cut floor;
+the bevel expands outward by `width`. The shallow rounded lip drops by the smaller of
+0.4 times width and total depth, followed by a vertical wall to the floor; deeper cuts do
+not turn the lip into an excessively steep ramp. Choose widths that fit the surrounding
+surface and the counters inside lettering. The floor is at `z - depth`, and
+the rim uses its own material. Both functions require positive width/depth and
+nonnegative floor elevation.
+`beveled-recess r radius z depth width edge bottom` constructs the rounded
+outline for the same treatment.
+
+`paper.lettering` exposes `beveled-carved r text size font z right depth width
+edge bottom` with the same native font outlines as `carved`. Edge texture offsets
+are relative to `r`; the floor has its own texture origin. `lettering-path` also
+exposes the combined outline for custom treatments. Existing `carved` retains
+its original 3.8-point depth and API.
+
+`lettered-panel r radius shoulder-width shoulder-depth padding text size font z
+centered depth width edge top bottom` constructs a self-contained raised panel
+with an enclosed glyph aperture. Its aperture bounds must fit inside the innermost
+rounded panel; the constructor checks this convex-containment condition. The hole
+uses even-odd composition rather than global scene subtraction. Use the general
+carving API for cuts crossing panel edges or cutting other sheets in the stack.
+`centered-lettering-path` centers visible outlines rather than font advances and
+cap-height baselines. Native outlines have an owning, 256-entry LRU keyed by text,
+font, size, fitting bounds and alignment; placement remains independent.
+
+These bevels use eight quadratic height-contour intervals in the existing sheet
+stack. They are real geometry in the height, material, and shadow buffers on both
+CPU and Metal, including normal-derived reflections from a chosen surface finish.
+Outline contours are reused in a 256-entry LRU keyed by exact path and bevel
+width; entries own their paths and release them on eviction. Changes to light,
+material, or elevation reuse geometry. `prepare-bevel-contours` reserves contour
+work on the UI thread; `complete-bevel-preparation` builds independent misses
+through the worker pool before any further submission. The ordinary contour API
+still constructs misses synchronously. They add sheet submissions; they are not a continuous mesh or
+a replacement for the renderer's eight-bit height field. The shared shadow model
+now uses a wider penumbra (0.75 points plus 0.55 times receiver distance), with the
+CPU scalar/SIMD paths, Metal path, and conservative shadow bounds kept in sync.
+
+Repeated sheet cuts also use a bounded 4096-entry LRU of exact source/aperture
+path pairs. It owns its inputs and results, including nonoverlapping cuts inside
+existing holes, and returns an owned copy. This avoids rebuilding the same
+frame and glyph differences during light movement. Bounds only filter candidate
+keys; native path equality determines reuse.
+
+Metal retains the six material attachments between frames. Geometry changes
+clear and recompose only the integral damaged rectangle, with a scissored clear
+that matches all six full-pass clear values. Empty mask fragments skip material
+evaluation. In particular, moving the lighting-popover marker no longer rerenders
+the entire textured scene. Lighting still shades the viewport when the light moves.
+Cold coverage masks are reserved on the UI thread and rasterized independently by
+workers, with no concurrent LRU mutation. Frame-local indexes avoid duplicate
+cache scans during encoding and validate keys after possible budget eviction.
+Optional `paper.profile` counters separate contour construction, path differences
+and mask preparation; these are scene/render costs, not layout timings.
+
 ## Sheen and gloss
 
 The six new constructors work anywhere a material does:

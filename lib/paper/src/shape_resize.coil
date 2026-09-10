@@ -1,0 +1,70 @@
+(module paper.shape-resize)
+(import "paper.geometry" :use [Rect rect clamp])
+(import "paper.ffi" :use [fabs sqrt CGRect CGPoint cgrect])
+(import "coil.primitive" :as p)
+
+(defstruct Drag [(edge i64) (cursor i64) (frame CGRect) (start CGPoint)])
+
+(defn drag [] (-> (ptr Drag))
+  (p/alloc-static Drag))
+
+;;; Match AppKit frame-resize positions. Test the rounded perimeter, not the
+;;; invisible rectangular window margin. Coordinates are logical, top-down.
+(defn edge-at [(r Rect) (radius f64) (x f64) (y f64) (slop f64)] (-> i64)
+  (let [cx (clamp x (+ (.x r) radius) (- (+ (.x r) (.w r)) radius))
+        cy (clamp y (+ (.y r) radius) (- (+ (.y r) (.h r)) radius))
+        dx (- x cx)
+        dy (- y cy)
+        distance (- (sqrt (+ (* dx dx) (* dy dy))) radius)]
+    (if (> (fabs distance) slop)
+        0
+        (+ (cond (< x (+ (.x r) radius)) 2
+                 (> x (- (+ (.x r) (.w r)) radius)) 8
+                 :else 0)
+           (cond (< y (+ (.y r) radius)) 1
+                 (> y (- (+ (.y r) (.h r)) radius)) 4
+                 :else 0)))))
+
+;;; The opposite visible edge/corner stays anchored, including transparent
+;;; margins. Project corner movement onto the fixed-aspect resize diagonal.
+(defn frame-for [(frame CGRect)
+                 (shape Rect)
+                 (design-w f64)
+                 (design-h f64)
+                 (edge i64)
+                 (start CGPoint)
+                 (point CGPoint)
+                 (minimum-w f64)
+                 (minimum-h f64)] (-> CGRect)
+  (let [left (!= (& edge 2) 0)
+        right (!= (& edge 8) 0)
+        top (!= (& edge 1) 0)
+        bottom (!= (& edge 4) 0)
+        ax
+          (/ (+ (.x shape) (* (.w shape) (if left 1.0 (if right 0.0 0.5))))
+             design-w)
+        ay
+          (- 1.0
+             (/ (+ (.y shape) (* (.h shape) (if top 1.0 (if bottom 0.0 0.5))))
+                design-h))
+        anchor-x (+ (.x frame) (* ax (.w frame)))
+        anchor-y (+ (.y frame) (* ay (.h frame)))
+        vx (if (or left right) (- (.x start) anchor-x) 0.0)
+        vy (if (or top bottom) (- (.y start) anchor-y) 0.0)
+        denominator (+ (* vx vx) (* vy vy))
+        proposed
+          (if (> denominator 0.0)
+              (+ 1.0
+                 (/ (+ (* (- (.x point) (.x start)) vx)
+                       (* (- (.y point) (.y start)) vy))
+                    denominator))
+              1.0)
+        minimum
+          (if (> (/ minimum-w (.w frame)) (/ minimum-h (.h frame)))
+              (/ minimum-w (.w frame))
+              (/ minimum-h (.h frame)))
+        scale (if (> proposed minimum) proposed minimum)]
+    (cgrect (- anchor-x (* ax (* (.w frame) scale)))
+            (- anchor-y (* ay (* (.h frame) scale)))
+            (* (.w frame) scale)
+            (* (.h frame) scale))))

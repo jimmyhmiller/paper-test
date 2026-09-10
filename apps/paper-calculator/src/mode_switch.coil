@@ -1,0 +1,25 @@
+(module calculator.mode-switch)
+(import "paper.geometry" :use [clamp])
+(import "coil.primitive" :as p)
+
+(defstruct Transition
+  [(position f64) (from f64) (target f64) (started f64) (active bool)])
+
+(defn advance [(s (ptr Transition)) (now f64)] (-> bool)
+  (if (not (.active s))
+      false
+      (let [t (clamp (/ (- now (.started s)) 0.22) 0.0 1.0)
+            ease (* (* t t) (- 3.0 (* 2.0 t)))]
+        (set! (.position s) (+ (.from s) (* (- (.target s) (.from s)) ease)))
+        (when (>= t 1.0) (set! (.active s) false))
+        true)))
+
+(defn select [(s (ptr Transition)) (scientific bool) (now f64)] (-> i64)
+  (advance s now)
+  (let [target (if scientific 1.0 0.0)]
+    (when (p/fcmp-ne target (.target s))
+      (set! (.from s) (.position s))
+      (set! (.target s) target)
+      (set! (.started s) now)
+      (set! (.active s) true)))
+  0)

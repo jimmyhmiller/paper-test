@@ -1,0 +1,15 @@
+(module paper.profile)
+(import "coil.primitive" :as p)
+(import "paper.ffi" :use [CACurrentMediaTime])
+
+(defstruct Counters
+  [(enabled bool) (bevel f64) (cuts f64) (masks f64)])
+
+(defn counters [] (-> (ptr Counters))
+  (p/alloc-static Counters))
+
+(defn start [] (-> f64)
+  (if (.enabled (counters)) (CACurrentMediaTime) 0.0))
+
+(defn elapsed [(start f64)] (-> f64)
+  (if (> start 0.0) (- (CACurrentMediaTime) start) 0.0))

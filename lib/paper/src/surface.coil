@@ -1,7 +1,12 @@
 (module paper.surface)
 (import "paper.platform" :as host)
 (import "paper.geometry" :use [Rect rect inset])
-(import "paper.material" :use [Material])
+(import "paper.material" :use [Material texture-offset])
+(import "paper.ffi" :use *)
+(import "paper.scene" :use [scene])
+(import "coil.primitive" :as p)
+(import "paper.profile" :as profile)
+(import "paper.workers" :as workers)
 
 ;;; Start one sheet mask. Add outer paths and holes before calling finish-sheet.
 ;;; The even-odd fill rule makes each enclosed subpath a true cutout.
@@ -70,6 +75,220 @@
   (rounded-path r radius)
   (finish-sheet z material))
 
+;;; Rounded shoulder built from actual height contours, shared by CPU and Metal.
+;;; Width is horizontal, depth is vertical; neither changes the hit bounds.
+;;; Keep the texture anchored to the original panel across every contour.
+(defn beveled-panel [(r Rect)
+                     (radius f64)
+                     (z f64)
+                     (width f64)
+                     (depth f64)
+                     (material Material)] (-> i64)
+  (edged-panel r radius z width depth material material))
+
+;;; An exposed edge can use a different fiber stock or finish from the top sheet.
+(defn edged-panel [(r Rect)
+                   (radius f64)
+                   (z f64)
+                   (width f64)
+                   (depth f64)
+                   (edge Material)
+                   (top Material)] (-> i64)
+  (assert (and (> width 0.0) (<= width radius) (> depth 0.0) (>= z depth)))
+  (assert (and (> (.w r) (* 2.0 width)) (> (.h r) (* 2.0 width))))
+  (for [i 0 9]
+    (let [t (/ (cast f64 i) 8.0)
+          inset-size (* width t)
+          remaining (- 1.0 t)
+          material (if (= i 8) top edge)]
+      (panel (inset r inset-size)
+             (- radius inset-size)
+             (- z (* depth (* remaining remaining)))
+             (texture-offset material
+                             (- (.x (.pattern material)) inset-size)
+                             (- (.y (.pattern material)) inset-size)))))
+  0)
+
+;;; Grow an aperture with round joins, preserving glyph counters and concavities.
+(defn expanded-path [(path (ptr i8)) (amount f64)] (-> (ptr i8))
+  (if (<= amount 0.0)
+      (CGPathCreateCopy path)
+      (let [stroke
+              (CGPathCreateCopyByStrokingPath path
+                                              (cast (ptr CGAffine) 0)
+                                              (* amount 2.0)
+                                              1
+                                              1
+                                              10.0)
+            result (CGPathCreateCopyByUnioningPath path stroke true)]
+        (assert (!= result (cast (ptr i8) 0)))
+        (CGPathRelease stroke)
+        result)))
+
+;;; UI-thread-owned, bounded LRU of immutable vector contours. Material, light,
+;;; and elevation are intentionally not keys: those are applied on submission.
+(defstruct BevelContours
+  [(outline (ptr i8))
+   (outer (ptr i8))
+   (width f64)
+   (used i64)
+   (rims (array (ptr i8) 8))])
+
+(defstruct BevelCache [(serial i64)])
+
+(defn bevel-cache [] (-> (ptr BevelCache))
+  (p/alloc-static BevelCache))
+
+(defn bevel-entries [] (-> (ptr (array BevelContours 256)))
+  (p/alloc-static (array BevelContours 256)))
+
+(defn bevel-contours [(outline (ptr i8)) (width f64)] (-> (ptr BevelContours))
+  (let [start (profile/start)
+        result (cached-bevel-contours outline width)]
+    (set! (.bevel (profile/counters))
+          (+ (.bevel (profile/counters)) (profile/elapsed start)))
+    result))
+
+(defn cached-bevel-contours [(outline (ptr i8)) (width f64)] (-> (ptr BevelContours))
+  (let [entry (prepare-bevel-contours outline width)]
+    (when (= (.outer entry) (cast (ptr i8) 0)) (build-bevel-contours entry))
+    entry))
+
+(defn prepare-bevel-contours [(outline (ptr i8)) (width f64)] (-> (ptr BevelContours))
+  (let [cache (bevel-cache)
+        (mut oldest) 0
+        (mut found) -1]
+    (set! (.serial cache) (+ (.serial cache) 1))
+    (for [i 0 256]
+      (let [entry (index (bevel-entries) i)]
+        (when (< (.used entry) (.used (index (bevel-entries) (load oldest))))
+          (set! oldest i))
+        (when (and (!= (.outline entry) (cast (ptr i8) 0))
+                   (p/fcmp-eq (.width entry) width)
+                   (CGPathEqualToPath (.outline entry) outline))
+          (set! found i)
+          (break))))
+    (let [entry
+            (index (bevel-entries)
+                   (if (>= (load found) 0) (load found) (load oldest)))]
+      (when (< (load found) 0)
+        (when (!= (.outline entry) (cast (ptr i8) 0))
+          (CGPathRelease (.outline entry))
+          (when (!= (.outer entry) (cast (ptr i8) 0))
+            (CGPathRelease (.outer entry))
+            (for [i 0 8] (CGPathRelease (load (index (mut (.rims entry)) i))))))
+        (set! (.outline entry) (CGPathCreateCopy outline))
+        (set! (.outer entry) (cast (ptr i8) 0))
+        (set! (.width entry) width)
+        0)
+      (set! (.used entry) (.serial cache))
+      entry)))
+
+(defn build-bevel-contours [(entry (ptr BevelContours))] (-> i64)
+  (let [outline (.outline entry)
+        width (.width entry)]
+    (set! (.outer entry) (expanded-path outline width))
+    (for [i 0 8]
+      (let [t (/ (cast f64 (+ i 1)) 8.0)
+            inner (expanded-path outline (* width (- 1.0 t)))]
+        (set! (index (mut (.rims entry)) i)
+              (CGPathCreateCopyBySubtractingPath (.outer entry) inner true))
+        (CGPathRelease inner))))
+  0)
+
+(defn prepare-bevel-worker [(context (ptr i8)) (index u64)] (-> i64)
+  (let [entry (index (bevel-entries) (cast i64 index))]
+    (when (and (!= (.outline entry) (cast (ptr i8) 0))
+               (= (.outer entry) (cast (ptr i8) 0)))
+      (build-bevel-contours entry)))
+  0)
+
+;;; Reservation and eviction stay on the UI thread; each worker exclusively
+;;; constructs one immutable contour set. No scene submission occurs off-thread.
+(defn complete-bevel-preparation [] (-> i64)
+  (let [start (profile/start)]
+    (workers/apply 256 (cast (ptr i8) 0) (p/fnptr-of prepare-bevel-worker))
+    (set! (.bevel (profile/counters))
+          (+ (.bevel (profile/counters)) (profile/elapsed start))))
+  0)
+
+;;; Carve the current outline with a curved lip and an independently chosen floor.
+;;; Width expands outward from the original floor outline. Eight actual contours
+;;; expose the edge stock, so reflections and shadows follow the scene light.
+(defn beveled-cut [(z f64)
+                   (depth f64)
+                   (width f64)
+                   (edge Material)
+                   (bottom Material)] (-> i64)
+  (assert (and (> depth 0.0) (>= z depth) (> width 0.0)))
+  (let [contours (bevel-contours (.path (scene)) width)]
+    (begin-sheet)
+    (CGPathAddPath (.path (scene)) (cast (ptr CGAffine) 0) (.outer contours))
+    (cut-through (- z depth))
+    (finish-aperture contours z depth width edge bottom)))
+
+(defn finish-aperture [(contours (ptr BevelContours))
+                       (z f64)
+                       (depth f64)
+                       (width f64)
+                       (edge Material)
+                       (bottom Material)] (-> i64)
+  (assert (and (> depth 0.0) (>= z depth) (> width 0.0)))
+  (let [lip-depth (if (< (* 0.4 width) depth) (* 0.4 width) depth)]
+    (begin-sheet)
+    (CGPathAddPath (.path (scene)) (cast (ptr CGAffine) 0) (.outer contours))
+    (finish-sheet (- z depth) bottom)
+    (for [i 0 8]
+      (let [t (/ (cast f64 (+ i 1)) 8.0)]
+        (begin-sheet)
+        (CGPathAddPath (.path (scene))
+                       (cast (ptr CGAffine) 0)
+                       (load (index (mut (.rims contours)) i)))
+        (finish-sheet (- z (* lip-depth (* t t))) edge))))
+  0)
+
+;;; Construct a convex panel with an enclosed aperture directly. The explicit
+;;; containment check makes even-odd composition a true subtraction, including
+;;; glyph counters. General cuts crossing edges continue to use cut-through.
+(defn perforated-panel [(r Rect)
+                        (radius f64)
+                        (z f64)
+                        (width f64)
+                        (depth f64)
+                        (edge Material)
+                        (top Material)
+                        (aperture (ptr i8))] (-> i64)
+  (assert (and (> width 0.0) (<= width radius) (> depth 0.0) (>= z depth)))
+  (assert (and (> (.w r) (* 2.0 width)) (> (.h r) (* 2.0 width))))
+  (let [bounds (CGPathGetPathBoundingBox aperture)]
+    (begin-sheet)
+    (rounded-path (inset r width) (- radius width))
+    (for [i 0 4]
+      (assert (CGPathContainsPoint (.path (scene))
+                                   (cast (ptr CGAffine) 0)
+                                   (CGPoint :x
+                                              (+ (.x bounds)
+                                                 (if (= (% i 2) 0)
+                                                     0.0
+                                                     (.w bounds)))
+                                     :y
+                                       (+ (.y bounds)
+                                          (if (< i 2) 0.0 (.h bounds))))
+                                   true)))
+    (for [i 0 9]
+      (let [t (/ (cast f64 i) 8.0)
+            amount (* width t)
+            remaining (- 1.0 t)
+            material (if (= i 8) top edge)]
+        (begin-sheet)
+        (rounded-path (inset r amount) (- radius amount))
+        (CGPathAddPath (.path (scene)) (cast (ptr CGAffine) 0) aperture)
+        (finish-sheet (- z (* depth (* remaining remaining)))
+                      (texture-offset material
+                                      (- (.x (.pattern material)) amount)
+                                      (- (.y (.pattern material)) amount))))))
+  0)
+
 (defn disc [(x f64) (y f64) (diameter f64) (z f64) (material Material)] (-> i64)
   (begin-sheet)
   (oval-path (rect x y diameter diameter))
@@ -83,7 +302,12 @@
   (finish-sheet z material))
 
 ;;; Concentric cut sheets create a stepped well, with real intermediate surfaces.
-(defn well [(r Rect) (radius f64) (z f64) (top Material) (middle Material) (bottom Material)] (-> i64)
+(defn well [(r Rect)
+            (radius f64)
+            (z f64)
+            (top Material)
+            (middle Material)
+            (bottom Material)] (-> i64)
   (begin-sheet)
   (rounded-path r radius)
   (cut-through (- z 9.0))
@@ -95,7 +319,10 @@
 (defn ring [(x f64) (y f64) (d f64) (border f64) (z f64) (material Material)] (-> i64)
   (begin-sheet)
   (oval-path (rect x y d d))
-  (oval-path (rect (+ x border) (+ y border) (- d (* border 2.0)) (- d (* border 2.0))))
+  (oval-path (rect (+ x border)
+                   (+ y border)
+                   (- d (* border 2.0))
+                   (- d (* border 2.0))))
   (finish-sheet z material))
 
 ;;; Clip sheets, cuts, ink, hit regions and native inputs to a layout viewport.
@@ -122,3 +349,16 @@
   (cut-through (- z depth))
   (panel r radius (- z depth) bottom)
   (frame r radius lip z edge))
+
+;;; Rounded well with a curved cut lip, sharing arbitrary-outline bevel lighting.
+(defn beveled-recess [(r Rect)
+                      (radius f64)
+                      (z f64)
+                      (depth f64)
+                      (width f64)
+                      (edge Material)
+                      (bottom Material)] (-> i64)
+  (assert (and (> radius 0.0) (<= width radius)))
+  (begin-sheet)
+  (rounded-path r radius)
+  (beveled-cut z depth width edge bottom))

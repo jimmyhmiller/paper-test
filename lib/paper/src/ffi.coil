@@ -21,7 +21,11 @@
 
 (extern CGColorSpaceRelease :cc c [(ptr i8)] (-> void))
 
-(extern CGBitmapContextCreate :cc c [(ptr i8) u64 u64 u64 u64 (ptr i8) u32] (-> (ptr i8)))
+(extern CGBitmapContextCreate
+        :cc
+        c
+        [(ptr i8) u64 u64 u64 u64 (ptr i8) u32]
+        (-> (ptr i8)))
 
 (extern CGBitmapContextGetData :cc c [(ptr i8)] (-> (ptr u8)))
 
@@ -61,9 +65,31 @@
 
 (extern CGPathCreateCopy :cc c [(ptr i8)] (-> (ptr i8)))
 
-(extern CGPathCreateCopyBySubtractingPath :cc c [(ptr i8) (ptr i8) bool] (-> (ptr i8)))
+(extern CGPathAddPath :cc c [(ptr i8) (ptr CGAffine) (ptr i8)] (-> void))
 
-(extern CGPathContainsPoint :cc c [(ptr i8) (ptr CGAffine) CGPoint bool] (-> bool))
+(extern CGPathCreateCopyByStrokingPath
+        :cc
+        c
+        [(ptr i8) (ptr CGAffine) f64 i32 i32 f64]
+        (-> (ptr i8)))
+
+(extern CGPathCreateCopyByUnioningPath
+        :cc
+        c
+        [(ptr i8) (ptr i8) bool]
+        (-> (ptr i8)))
+
+(extern CGPathCreateCopyBySubtractingPath
+        :cc
+        c
+        [(ptr i8) (ptr i8) bool]
+        (-> (ptr i8)))
+
+(extern CGPathContainsPoint
+        :cc
+        c
+        [(ptr i8) (ptr CGAffine) CGPoint bool]
+        (-> bool))
 
 (extern CGPathIsEmpty :cc c [(ptr i8)] (-> bool))
 
@@ -73,17 +99,29 @@
 
 (extern CGPathAddLineToPoint :cc c [(ptr i8) (ptr CGAffine) f64 f64] (-> void))
 
-(extern CGPathAddCurveToPoint :cc c [(ptr i8) (ptr CGAffine) f64 f64 f64 f64 f64 f64] (-> void))
+(extern CGPathAddCurveToPoint
+        :cc
+        c
+        [(ptr i8) (ptr CGAffine) f64 f64 f64 f64 f64 f64]
+        (-> void))
 
 (extern CGPathCloseSubpath :cc c [(ptr i8)] (-> void))
 
-(extern CGPathAddRoundedRect :cc c [(ptr i8) (ptr CGAffine) CGRect f64 f64] (-> void))
+(extern CGPathAddRoundedRect
+        :cc
+        c
+        [(ptr i8) (ptr CGAffine) CGRect f64 f64]
+        (-> void))
 
 (extern CGPathAddEllipseInRect :cc c [(ptr i8) (ptr CGAffine) CGRect] (-> void))
 
 (extern CFRelease :cc c [(ptr i8)] (-> void))
 
-(extern CGImageDestinationCreateWithURL :cc c [(ptr i8) (ptr i8) u64 (ptr i8)] (-> (ptr i8)))
+(extern CGImageDestinationCreateWithURL
+        :cc
+        c
+        [(ptr i8) (ptr i8) u64 (ptr i8)]
+        (-> (ptr i8)))
 
 (extern CGImageDestinationAddImage :cc c [(ptr i8) (ptr i8) (ptr i8)] (-> void))
 
@@ -119,14 +157,24 @@
 
 (extern CGPathEqualToPath :cc c [(ptr i8) (ptr i8)] (-> bool))
 
+(extern CGPathIntersectsPath :cc c [(ptr i8) (ptr i8) bool] (-> bool))
+
 (extern CGPathGetPathBoundingBox :cc c [(ptr i8)] (-> CGRect))
 
 (extern CGContextClipToRect :cc c [(ptr i8) CGRect] (-> void))
 
 (extern CGContextSetBlendMode :cc c [(ptr i8) i32] (-> void))
 
-(extern CGPathCreateCopyByTransformingPath :cc c [(ptr i8) (ref CGAffine)] (-> (ptr i8)))
+(extern CGPathCreateCopyByTransformingPath
+        :cc
+        c
+        [(ptr i8) (ref CGAffine)]
+        (-> (ptr i8)))
 
 (extern CGContextSetRGBStrokeColor :cc c [(ptr i8) f64 f64 f64 f64] (-> void))
 
-(extern CGPathCreateCopyByIntersectingPath :cc c [(ptr i8) (ptr i8) bool] (-> (ptr i8)))
+(extern CGPathCreateCopyByIntersectingPath
+        :cc
+        c
+        [(ptr i8) (ptr i8) bool]
+        (-> (ptr i8)))

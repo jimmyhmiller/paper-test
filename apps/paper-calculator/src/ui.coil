@@ -4,9 +4,16 @@
 (import "paper.platform" :as host)
 (import "paper.objc" :use *)
 (import "calculator.model" :as model)
-(import "paper.lettering" :use [carved])
+(import "paper.lettering" :use [beveled-carved lettered-panel])
+(import "paper.lettering" :as lettering)
+(import "paper.surface" :as surface)
+(import "paper.scene" :as scene)
 (import "paper.lighting" :as light)
 (import "calculator.power" :as power)
+(import "calculator.mode-switch" :as mode)
+
+(defn mode-transition [] (-> (ptr mode/Transition))
+  (p/alloc-static mode/Transition))
 
 (defn power-hold [] (-> (ptr power/Hold))
   (p/alloc-static power/Hold))
@@ -56,26 +63,119 @@
         c"Scientific" 31
         c"DEG" c""))
 
+(defn cover-stock [(pigment u32)] (-> Material)
+  (surface-finish (texture-relief (texture-scale (texture-angle (pressed-paper pigment)
+                                                                25.0)
+                                                 1.6)
+                                  1.8)
+                  0.42
+                  0.3
+                  0.0
+                  0.0
+                  0.0))
+
+(defn cut-edge [(material Material)] (-> Material)
+  (surface-finish (tint material 0xfff5dc 0.55) 0.16 1.0 0.0 0.0 0.0))
+
+(defstruct KeySpec [(id i64) (bounds Rect) (size f64)])
+
+(defstruct Keys [(count i64) (items (array KeySpec 40))])
+
+(defn keys [] (-> (ptr Keys))
+  (p/alloc-static Keys))
+
+;;; Collect the current layout only, so independent new outlines can be prepared
+;;; together. These are scene commands, not a second hidden calculator layout.
 (defn key [(id i64) (r Rect) (size f64)] (-> i64)
+  (let [keys (keys)]
+    (assert (< (.count keys) 40))
+    (set! (index (mut (.items keys)) (.count keys))
+          (KeySpec
+            :id id
+            :bounds r
+            :size size))
+    (set! (.count keys) (+ (.count keys) 1))
+    (if (and (>= id 11) (<= id 15))
+        (lettering/centered-lettering-path (inset r 9.0)
+                                           (key-name id)
+                                           (* size 1.18)
+                                           3)
+        (lettering/lettering-path (inset r 9.0) (key-name id) size 3 false))
+    (surface/prepare-bevel-contours (.path (scene/scene))
+                                    (if (< size 25.0) 0.65 1.3)))
+  0)
+
+(defn draw-keys [] (-> i64)
+  (surface/complete-bevel-preparation)
+  (for [i 0 (.count (keys))]
+    (let [key (index (mut (.items (keys))) i)]
+      (draw-key (.id key) (.bounds key) (.size key))))
+  0)
+
+(defn draw-key [(id i64) (r Rect) (size f64)] (-> i64)
   (let [control (+ id 100)
-        z (if (host/paper_pressed control) 29.0 (if (host/paper_hovered control) 37.0 35.0))
-        material (control-stock control (cotton (if (and (>= id 11) (<= id 15)) 0xed7959 0xf0d9b5)))]
-    (panel r 18.0 z material)
-    (carved (inset r 9.0) (key-name id) size 3 z false (cotton 0x30281b))
+        z
+          (if (host/paper_pressed control)
+              33.0
+              (if (host/paper_hovered control) 40.0 38.0))
+        material
+          (control-stock control
+                         (cover-stock (if (and (>= id 11) (<= id 15))
+                                          0xed7959
+                                          0xe8cfa9)))]
+    (lettered-panel r
+                    18.0
+                    2.0
+                    0.8
+                    9.0
+                    (key-name id)
+                    (if (and (>= id 11) (<= id 15)) (* size 1.18) size)
+                    3
+                    z
+                    (and (>= id 11) (<= id 15))
+                    (if (< size 25.0) 4.5 8.0)
+                    (if (< size 25.0) 0.65 1.3)
+                    (cut-edge material)
+                    material
+                    (suede 0x69503b))
     (when (and (> id 0) (= (.operation (state)) id))
-      (panel (rect (+ (.x r) 25.0) (- (+ (.y r) (.h r)) 9.0) (- (.w r) 50.0) 2.0) 1.0 z (cotton 0x633621)))
+      (panel (rect (+ (.x r) 25.0)
+                   (- (+ (.y r) (.h r)) 9.0)
+                   (- (.w r) 50.0)
+                   2.0)
+             1.0
+             z
+             (cotton 0x633621)))
     (hit control r (key-name id)))
   0)
 
 (defn draw [] (-> i64)
+  (set! (.count (keys)) 0)
   (host/paper_begin 0xeed6b3)
   (light/apply-light (lighting) (rect 0.0 0.0 620.0 790.0))
   (host/paper_drag_area (rect 38.0 52.0 544.0 35.0))
   (panel (rect 0.0 0.0 620.0 790.0) 0.0 1.0 (cotton 0xeed6b3))
-  (panel (rect 38.0 52.0 544.0 698.0) 52.0 26.0 (cotton 0xf0d9b5))
-  (recess (rect 67.0 82.0 486.0 638.0) 30.0 26.0 15.0 1.0 (cotton 0xfbe8c9) (cotton 0x9d8b72))
-  (recess (rect 100.0 122.0 420.0 119.0) 32.0 11.0 7.0 1.0 (cotton 0xd6ccb0) (recycled 0xa3a783))
-  (ink-height 4.0)
+  (beveled-panel (rect 38.0 52.0 544.0 698.0)
+                 52.0
+                 44.0
+                 3.0
+                 1.2
+                 (cover-stock 0xf0d9b5))
+  (beveled-recess (rect 67.0 82.0 486.0 638.0)
+                  30.0
+                  44.0
+                  20.0
+                  1.6
+                  (cut-edge (cover-stock 0xf0d9b5))
+                  (cover-stock 0x9d8b72))
+  (beveled-recess (rect 100.0 122.0 420.0 119.0)
+                  32.0
+                  24.0
+                  18.0
+                  1.6
+                  (cut-edge (cover-stock 0x9d8b72))
+                  (cover-stock 0xa3a783))
+  (ink-height 6.0)
   (label 121.0
          135.0
          10.0
@@ -83,46 +183,91 @@
          3
          (if (.error (state))
              c"UNDEFINED RESULT · AC TO CLEAR"
-             (if (!= (.operation (state)) 0) (key-name (.operation (state))) c"PAPER / CALCULATOR")))
-  (carved (rect 121.0 158.0 376.0 63.0) (model/display (state)) 68.0 3 4.0 true (cotton 0x30281b))
+             (if (!= (.operation (state)) 0)
+                 (key-name (.operation (state)))
+                 c"PAPER / CALCULATOR")))
+  (beveled-carved (rect 121.0 158.0 376.0 63.0)
+                  (model/display (state))
+                  68.0
+                  3
+                  6.0
+                  true
+                  5.0
+                  1.0
+                  (texture-offset (cut-edge (cover-stock 0xa3a783)) -21.0 -36.0)
+                  (suede 0x4c4c32))
   (if (.scientific (state))
       (do
         (for [i 0 10]
           (key (+ 20 i)
-               (rect (+ 100.0 (* (cast f64 (% i 5)) 86.0)) (+ 262.0 (* (cast f64 (/ i 5)) 45.0)) 76.0 37.0)
-               18.0))
-        (ink-height 4.0)
-        (label 459.0 136.0 10.0 0x42452f 3 (if (.degrees (state)) c"DEG" c"RAD"))
+               (rect (+ 100.0 (* (cast f64 (% i 5)) 86.0))
+                     (+ 262.0 (* (cast f64 (/ i 5)) 45.0))
+                     76.0
+                     37.0)
+               22.0))
+        (ink-height 6.0)
+        (label 459.0
+               136.0
+               10.0
+               0x42452f
+               3
+               (if (.degrees (state)) c"DEG" c"RAD"))
         (hit 131 (rect 448.0 127.0 54.0 29.0) c"Toggle degrees / radians"))
       0)
   (let [top (if (.scientific (state)) 374.0 265.0)
         step (if (.scientific (state)) 64.0 86.0)
         height (if (.scientific (state)) 55.0 73.0)
-        size (if (.scientific (state)) 30.0 45.0)]
-    (for [i 0 4] (key (+ 16 i) (rect (+ 100.0 (* (cast f64 i) 108.0)) top 96.0 35.0) 19.0))
+        size (if (.scientific (state)) 46.0 64.0)]
+    (for [i 0 4]
+      (key (+ 16 i) (rect (+ 100.0 (* (cast f64 i) 108.0)) top 96.0 35.0) 23.0))
     (for [row 0 3]
       (for [col 0 4]
         (key (if (= col 3) (- 14 row) (+ (- 7 (* row 3)) col))
-             (rect (+ 100.0 (* (cast f64 col) 108.0)) (+ (+ top 47.0) (* (cast f64 row) step)) 96.0 height)
+             (rect (+ 100.0 (* (cast f64 col) 108.0))
+                   (+ (+ top 47.0) (* (cast f64 row) step))
+                   96.0
+                   height)
              size)))
     (let [y (+ (+ top 47.0) (* step 3.0))]
       (key 0 (rect 100.0 y 121.0 height) size)
       (key 10 (rect 236.0 y 68.0 height) size)
       (key 15 (rect 316.0 y 96.0 height) size)
-      (key 11 (rect 424.0 y 96.0 (+ height (if (.scientific (state)) 0.0 20.0))) size)))
-  (ink-height 26.0)
+      (key 11
+           (rect 424.0 y 96.0 (+ height (if (.scientific (state)) 0.0 20.0)))
+           size)))
+  (draw-keys)
+  (ink-height 44.0)
   (label 112.0 732.0 9.0 0x6f604a 3 c"P A P E R")
-  (recess (rect 249.0 723.0 122.0 26.0) 13.0 26.0 2.5 0.7 (cotton 0xf9e5c5) (cotton 0xc2ad8d))
-  (panel (rect (if (.scientific (state)) 310.0 251.0) 725.0 59.0 22.0) 11.0 25.5 (cotton 0xeed6b3))
-  (ink-height 26.0)
+  (recess (rect 249.0 723.0 122.0 26.0)
+          13.0
+          44.0
+          2.5
+          0.7
+          (cotton 0xf9e5c5)
+          (cotton 0xc2ad8d))
+  (panel (rect (+ 251.0
+                  (* 59.0
+                     (if (.active (mode-transition))
+                         (.position (mode-transition))
+                         (if (.scientific (state)) 1.0 0.0))))
+               725.0
+               59.0
+               22.0)
+         11.0
+         43.5
+         (cotton 0xeed6b3))
+  (ink-height 44.0)
   (label 268.0 729.0 11.0 0x574932 3 c"123")
   (label 332.0 727.0 14.0 0x574932 1 c"ƒx")
   (hit 132 (rect 249.0 720.0 61.0 32.0) c"Basic calculator")
   (hit 133 (rect 310.0 720.0 61.0 32.0) c"Scientific calculator")
-  (ink-height 4.0)
+  (ink-height 6.0)
   (label 430.0 131.0 18.0 0x42452f 0 c"☀")
   (hit 500 (rect 424.0 126.0 27.0 29.0) c"Adjust lighting")
-  (set! (.drag-limits (lighting)) (if (host/shaped-window?) (rect 60.0 80.0 500.0 642.0) (rect 0.0 0.0 620.0 790.0)))
+  (set! (.drag-limits (lighting))
+        (if (host/shaped-window?)
+            (rect 60.0 80.0 500.0 642.0)
+            (rect 0.0 0.0 620.0 790.0)))
   (light/popover-panel (lighting) 500 (rect 424.0 126.0 27.0 29.0))
   0)
 
@@ -155,6 +300,7 @@
   0)
 
 (defn event [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
+  (when (and (= kind 6) (mode/advance (mode-transition) x)) (host/paper_redraw))
   (when (or (= kind 0)
             (= kind 3)
             (= kind 4)
@@ -163,9 +309,21 @@
   (cond (= kind 0)
           (do
             (model/reset (state))
-            (store! (lighting) (light/lighting (/ 180.0 620.0) (/ -480.0 790.0) 1500.0 0.55 1.0))
+            (store! (lighting)
+                    (light/lighting (/ 180.0 620.0)
+                                    (/ -480.0 790.0)
+                                    1100.0
+                                    0.85
+                                    1.0))
             (set! (.degrees (state)) true)
             (when (= id 1) (set! (.scientific (state)) true))
+            (store! (mode-transition)
+                    (mode/Transition
+                      :position (if (.scientific (state)) 1.0 0.0)
+                      :from 0.0
+                      :target (if (.scientific (state)) 1.0 0.0)
+                      :started 0.0
+                      :active false))
             0)
         (light/handle (lighting) 500 kind id x y) 0
         (= kind 6)
@@ -174,8 +332,15 @@
               (let [held
                       (and (host/paper_pressed 116)
                            (not (.open (lighting)))
-                           (msg bool (.window (host/host)) (sel c"isKeyWindow") [])
-                           (!= (& (msg u64 (class c"NSEvent") (sel c"pressedMouseButtons") []) (cast u64 1))
+                           (msg bool
+                                (.window (host/host))
+                                (sel c"isKeyWindow")
+                                [])
+                           (!= (& (msg u64
+                                       (class c"NSEvent")
+                                       (sel c"pressedMouseButtons")
+                                       [])
+                                  (cast u64 1))
                                (cast u64 0)))]
                 (when (power/update (power-hold) x held)
                   (msg i64 (.window (host/host)) (sel c"close") [])
@@ -192,8 +357,21 @@
             (cond (= id 132) (set! (.scientific (state)) false)
                   (= id 133) (set! (.scientific (state)) true)
                   :else (model/press (state) (- id 100)))
-            (when (not (.keyboard-focus (host/host))) (set! (.focus (host/host)) 0))
+            (mode/select (mode-transition)
+                         (.scientific (state))
+                         (host/CACurrentMediaTime))
+            (when (not (.keyboard-focus (host/host)))
+              (set! (.focus (host/host)) 0))
             (host/paper_redraw)
             0)
-        (= kind 4) (do (keyboard (msg (ptr i8) (.app (host/host)) (sel c"currentEvent") [])) (host/paper_redraw) 0)
-        :else 0))
+        (= kind 4)
+          (do
+            (keyboard (msg (ptr i8) (.app (host/host)) (sel c"currentEvent") []))
+            (host/paper_redraw)
+            0)
+        :else 0)
+  (host/paper_tick_interval (if (or (.active (mode-transition))
+                                    (.animating (lighting))
+                                    (.active (power-hold)))
+                                0.016
+                                1.0)))

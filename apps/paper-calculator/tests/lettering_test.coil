@@ -1,0 +1,53 @@
+(module calculator.lettering-test)
+(import "calculator.ui" :as app)
+(import "paper.lettering" :as lettering)
+(import "paper.scene" :as scene)
+(import "paper.geometry" :use [rect])
+(import "paper.ffi" :use [CGPathGetPathBoundingBox fabs])
+(import "paper.objc" :as o)
+
+(deftest cached-lettering-preserves-native-bounds-and-width-fitting
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (scene/init)
+           (for [id 0 32]
+             (for [alignment 0 2]
+               (let [r (rect 117.25 83.75 48.0 36.0)
+                     right (= alignment 1)]
+                 (lettering/uncached-lettering-path r
+                                                    (app/key-name id)
+                                                    42.0
+                                                    3
+                                                    right)
+                 (let [expected (CGPathGetPathBoundingBox (.path (scene/scene)))]
+                   (lettering/lettering-path r (app/key-name id) 42.0 3 right)
+                   (let [actual (CGPathGetPathBoundingBox (.path (scene/scene)))]
+                     (assert (< (fabs (- (.x expected) (.x actual))) 0.000001))
+                     (assert (< (fabs (- (.y expected) (.y actual))) 0.000001))
+                     (assert (< (fabs (- (.w expected) (.w actual))) 0.000001))
+                     (assert (< (fabs (- (.h expected) (.h actual))) 0.000001)))))))
+           (o/release pool)))
+
+(deftest operator-outlines-center-without-changing-size-in-both-layouts
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (scene/init)
+           (for [mode 0 2]
+             (for [id 11 16]
+               (let [height (if (= mode 1) 55.0 (if (= id 11) 93.0 73.0))
+                     r (rect 433.0 321.0 78.0 (- height 18.0))
+                     size (* (if (= mode 1) 46.0 64.0) 1.18)]
+                 (lettering/lettering-path r (app/key-name id) size 3 false)
+                 (let [before (CGPathGetPathBoundingBox (.path (scene/scene)))]
+                   (lettering/centered-lettering-path r
+                                                      (app/key-name id)
+                                                      size
+                                                      3)
+                   (let [after (CGPathGetPathBoundingBox (.path (scene/scene)))]
+                     (assert (< (fabs (- (+ (.x after) (* 0.5 (.w after)))
+                                         (+ (.x r) (* 0.5 (.w r)))))
+                                0.000001))
+                     (assert (< (fabs (- (+ (.y after) (* 0.5 (.h after)))
+                                         (+ (.y r) (* 0.5 (.h r)))))
+                                0.000001))
+                     (assert (< (fabs (- (.w after) (.w before))) 0.000001))
+                     (assert (< (fabs (- (.h after) (.h before))) 0.000001)))))))
+           (o/release pool)))

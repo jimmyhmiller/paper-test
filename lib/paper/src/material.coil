@@ -5,7 +5,8 @@
 ;;; roughness and fiber are in [0,1]; seed is a stable per-material grain offset.
 ;;; Pattern 0 preserves the original paper shader. Other patterns use logical
 ;;; points, an angle in radians, and fine relief independent of sheet elevation.
-(defstruct Pattern [(kind i64) (size f64) (angle f64) (relief f64) (x f64) (y f64)])
+(defstruct Pattern
+  [(kind i64) (size f64) (angle f64) (relief f64) (x f64) (y f64)])
 
 (defn plain-pattern [] (-> Pattern)
   (Pattern
@@ -17,7 +18,8 @@
     :y 0.0))
 
 ;;; Finish roughness controls the highlight width, separately from paper grain.
-(defstruct Finish [(roughness f64) (specular f64) (metallic f64) (sheen f64) (anisotropy f64)])
+(defstruct Finish
+  [(roughness f64) (specular f64) (metallic f64) (sheen f64) (anisotropy f64)])
 
 (defn matte-finish [] (-> Finish)
   (Finish
@@ -28,7 +30,12 @@
     :anisotropy 0.0))
 
 (defstruct Material
-  [(pigment u32) (roughness f64) (fiber f64) (seed f64) (pattern Pattern) (finish Finish)])
+  [(pigment u32)
+   (roughness f64)
+   (fiber f64)
+   (seed f64)
+   (pattern Pattern)
+   (finish Finish)])
 
 (defn stock [(pigment u32) (roughness f64) (fiber f64) (seed f64)] (-> Material)
   (Material
@@ -47,7 +54,8 @@
       (let [shift (* channel 8)
             a (cast f64 (& (>> (cast i64 (.pigment material)) shift) 255))
             b (cast f64 (& (>> (cast i64 pigment) shift) 255))]
-        (set! color (| (load color) (<< (cast i64 (+ a (* (- b a) amount))) shift)))))
+        (set! color
+              (| (load color) (<< (cast i64 (+ a (* (- b a) amount))) shift)))))
     (let [(mut result) (load material)]
       (set! (.pigment result) (cast u32 (load color)))
       (load result))))
@@ -85,9 +93,14 @@
 (defn ink-stock [] (-> Material)
   (linen 0x303936))
 
-;;; Create an opaque procedural stock. Kind is 1..22; seed is in [0,1].
+;;; Create an opaque procedural stock. Kind is 1..23; seed is in [0,1].
 (defn textured-stock [(pigment u32) (kind i64) (seed f64) (relief f64)] (-> Material)
-  (assert (and (>= kind 1) (<= kind 22) (>= seed 0.0) (<= seed 1.0) (>= relief 0.0) (<= relief 2.0)))
+  (assert (and (>= kind 1)
+               (<= kind 23)
+               (>= seed 0.0)
+               (<= seed 1.0)
+               (>= relief 0.0)
+               (<= relief 2.0)))
   (Material
     :pigment pigment
     :roughness 0.0
@@ -152,6 +165,10 @@
 (defn watercolor [(pigment u32)] (-> Material)
   (textured-stock pigment 3 0.221 0.4))
 
+;;; Compressed pulp: wandering fine ridges with smaller embedded grain.
+(defn pressed-paper [(pigment u32)] (-> Material)
+  (textured-stock pigment 23 0.221 1.4))
+
 (defn laid-paper [(pigment u32)] (-> Material)
   (textured-stock pigment 4 0.258 0.45))
 
@@ -200,7 +217,12 @@
 ;;; Add a finish without changing pigment, microstructure, or its origin.
 ;;; Roughness is a microfacet width in [0.12,1]; the other controls are in [0,1],
 ;;; except anisotropy in [0,0.9]. Texture angle also rotates the highlight axis.
-(defn surface-finish [(material Material) (roughness f64) (specular f64) (metallic f64) (sheen f64) (anisotropy f64)] (-> Material)
+(defn surface-finish [(material Material)
+                      (roughness f64)
+                      (specular f64)
+                      (metallic f64)
+                      (sheen f64)
+                      (anisotropy f64)] (-> Material)
   (assert (and (>= roughness 0.12)
                (<= roughness 1.0)
                (>= specular 0.0)
@@ -237,7 +259,12 @@
        (p/fcmp-eq (.anisotropy a) (.anisotropy b))))
 
 (defn velvet [(pigment u32)] (-> Material)
-  (surface-finish (textured-stock pigment 19 0.813 0.12) 0.65 0.08 0.0 0.95 0.65))
+  (surface-finish (textured-stock pigment 19 0.813 0.12)
+                  0.65
+                  0.08
+                  0.0
+                  0.95
+                  0.65))
 
 (defn brushed-aluminum [(pigment u32)] (-> Material)
   (surface-finish (textured-stock pigment 20 0.85 0.16) 0.30 1.0 1.0 0.0 0.75))

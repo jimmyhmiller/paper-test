@@ -1,0 +1,95 @@
+(module calculator.fidelity)
+(import "calculator.ui" :as ui)
+(import "calculator.model" :as model)
+(import "paper.platform" :as host)
+(import "paper.scene" :as scene)
+(import "paper.render" :as render)
+(import "paper.gpu" :as gpu)
+(import "paper.workers" :as workers)
+(import "paper.objc" :as o)
+(import "paper.geometry" :use [rect])
+(import "paper.lighting" :as light)
+(import "paper.profile" :as profile)
+
+(extern printf :cc c [(ptr i8) ...] (-> i32))
+
+(defn main [] (-> i64)
+  (let [pool (o/new c"NSAutoreleasePool")]
+    (scene/init)
+    (host/paper_configure c"Paper Calculator" 620.0 790.0)
+    (host/paper_window_shape (rect 38.0 52.0 544.0 698.0) 52.0 true)
+    (set! (.width (scene/scene)) 1240)
+    (set! (.height (scene/scene)) 1580)
+    (set! (.scale (scene/scene)) 2.0)
+    (render/setup)
+    (ui/event 0 0 0.0 0.0)
+    (model/press (ui/state) 8)
+    (ui/draw)
+    (render/render)
+    (for [i 0 4]
+      (store! (profile/counters)
+              (profile/Counters
+                :enabled true
+                :bevel 0.0
+                :cuts 0.0
+                :masks 0.0))
+      (let [start (host/CACurrentMediaTime)]
+        (set! (.scientific (ui/state)) (= (% i 2) 0))
+        (ui/draw)
+        (let [drawn (host/CACurrentMediaTime)]
+          (render/render-frame false)
+          (gpu/synchronize)
+          (printf c"Mode switch %lld: draw %.2f ms, render %.2f ms\n"
+                  i
+                  (* (- drawn start) 1000.0)
+                  (* (- (host/CACurrentMediaTime) drawn) 1000.0))
+          (printf c"  bevel %.2f ms cuts %.2f ms masks %.2f ms\n"
+                  (* (.bevel (profile/counters)) 1000.0)
+                  (* (.cuts (profile/counters)) 1000.0)
+                  (* (.masks (profile/counters)) 1000.0)))))
+    (let [start (host/CACurrentMediaTime)]
+      (for [i 0 30]
+        (ui/draw)
+        (host/paper_light (+ 60.0 (* 17.0 (cast f64 i))) -280.0 1000.0 0.7 1.0)
+        (render/render-frame false)
+        (gpu/synchronize))
+      (printf c"Moving-light draw + completed render: %.2f ms/frame (30 frames, 2x)\n"
+              (* (/ (- (host/CACurrentMediaTime) start) 30.0) 1000.0)))
+    (set! (.open (ui/lighting)) true)
+    (ui/draw)
+    (render/render-frame false)
+    (gpu/synchronize)
+    (let [map (light/map-bounds (ui/lighting))
+          start (host/CACurrentMediaTime)]
+      (for [i 0 30]
+        (ui/event 2
+                  501
+                  (+ (.x map) (* (.w map) (+ 0.2 (* 0.02 (cast f64 i)))))
+                  (+ (.y map) (* (.h map) 0.35)))
+        (ui/draw)
+        (render/render-frame false)
+        (gpu/synchronize))
+      (printf c"Actual open-popover light drag: %.2f ms/frame (30 frames, 2x)\n"
+              (* (/ (- (host/CACurrentMediaTime) start) 30.0) 1000.0)))
+    (set! (.open (ui/lighting)) false)
+    (let [start (host/CACurrentMediaTime)]
+      (set! (.hover (host/host)) 107)
+      (for [i 0 30]
+        (set! (.drag (host/host)) (if (= (% i 2) 0) 107 0))
+        (ui/draw)
+        (render/render-frame false)
+        (gpu/synchronize))
+      (printf c"Button press/release draw + completed render: %.2f ms/frame (30 frames, 2x)\n"
+              (* (/ (- (host/CACurrentMediaTime) start) 30.0) 1000.0)))
+    (set! (.hover (host/host)) 0)
+    (set! (.drag (host/host)) 0)
+    (ui/draw)
+    (host/paper_light -200.0 -100.0 800.0 0.7 1.0)
+    (render/render)
+    (assert (= (host/window-snapshot c"build/fidelity-light-left.png") 0))
+    (host/paper_light 820.0 -100.0 800.0 0.7 1.0)
+    (render/render)
+    (assert (= (host/window-snapshot c"build/fidelity-light-right.png") 0))
+    (workers/stop)
+    (o/release pool))
+  0)

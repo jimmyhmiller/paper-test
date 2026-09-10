@@ -1,0 +1,51 @@
+(module papercut.cuts-test)
+(import "paper.cuts" :as cuts)
+(import "paper.scene" :as scene)
+(import "paper.surface" :use *)
+(import "paper.geometry" :use [rect])
+(import "paper.ffi" :use *)
+
+(defn box [(x f64) (y f64) (size f64)] (-> (ptr i8))
+  (begin-sheet)
+  (rounded-path (rect x y size size) 0.0)
+  (CGPathCreateCopy (.path (scene/scene))))
+
+(defn contains [(path (ptr i8)) (x f64) (y f64)] (-> bool)
+  (CGPathContainsPoint path (cast (ptr CGAffine) 0) (CGPoint :x x :y y) true))
+
+(deftest cached-cuts-compare-shapes-not-only-bounds
+         (scene/init)
+         (let [source (box 0.0 0.0 100.0)
+               square (box 30.0 30.0 40.0)]
+           (begin-sheet)
+           (oval-path (rect 30.0 30.0 40.0 40.0))
+           (let [circle (CGPathCreateCopy (.path (scene/scene)))
+                 a (cuts/subtract source square)
+                 b (cuts/subtract source circle)
+                 again (cuts/subtract source square)]
+             (assert (not (contains a 31.0 31.0)))
+             (assert (contains b 31.0 31.0))
+             (assert (CGPathEqualToPath a again))
+             (CGPathRelease a)
+             (CGPathRelease b)
+             (CGPathRelease again)
+             (CGPathRelease circle))
+           (CGPathRelease source)
+           (CGPathRelease square)))
+
+(deftest cached-cut-results-survive-input-release-and-cache-eviction
+         (scene/init)
+         (let [source (box 0.0 0.0 100.0)
+               aperture (box 30.0 30.0 40.0)
+               result (cuts/subtract source aperture)]
+           (CGPathRelease aperture)
+           (for [i 0 4120]
+             (let [other (box (+ 200.0 (cast f64 i)) 0.0 10.0)
+                   unchanged (cuts/subtract source other)]
+               (assert (CGPathEqualToPath source unchanged))
+               (CGPathRelease unchanged)
+               (CGPathRelease other)))
+           (CGPathRelease source)
+           (assert (contains result 20.0 20.0))
+           (assert (not (contains result 50.0 50.0)))
+           (CGPathRelease result)))

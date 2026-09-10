@@ -13,7 +13,16 @@
           (msg (ptr i8)
                (class c"NSEvent")
                (sel c"keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:")
-               [u64 host/CGPoint u64 f64 i64 (ptr i8) (ptr i8) (ptr i8) bool u16]
+               [u64
+                host/CGPoint
+                u64
+                f64
+                i64
+                (ptr i8)
+                (ptr i8)
+                (ptr i8)
+                bool
+                u16]
                10
                (host/CGPoint :x 0.0 :y 0.0)
                flags
@@ -97,13 +106,13 @@
              (assert (< (.y (app/lighting)) -0.99)))
            (app/draw)
            (assert (host/adjust-control 502 -0.05))
-           (assert (< (.height (app/lighting)) 1499.0))
+           (assert (< (.height (app/lighting)) 1099.0))
            (assert (host/activate-control 504))
            (assert (.animating (app/lighting)))
-           (assert (< (.height (app/lighting)) 1499.0))
+           (assert (< (.height (app/lighting)) 1099.0))
            (app/event 6 0 (+ (.animation-start (app/lighting)) 0.33) 0.0)
            (assert (not (.animating (app/lighting))))
-           (assert (> (.height (app/lighting)) 1499.0))
+           (assert (> (.height (app/lighting)) 1099.0))
            (app/event 4 53 0.0 0.0)
            (app/draw)
            (assert (not (.open (app/lighting))))
@@ -145,14 +154,20 @@
              (app/event 2 507 (+ x 60.0) (+ y 90.0))
              (app/event 3 507 (+ x 60.0) (+ y 90.0))
              (app/draw)
-             (assert (< (host/fabs (- (.x (.bounds (app/lighting))) (+ (.x before) 60.0))) 0.01))
-             (assert (< (host/fabs (- (.y (.bounds (app/lighting))) (+ (.y before) 90.0))) 0.01))
+             (assert (< (host/fabs (- (.x (.bounds (app/lighting)))
+                                      (+ (.x before) 60.0)))
+                        0.01))
+             (assert (< (host/fabs (- (.y (.bounds (app/lighting)))
+                                      (+ (.y before) 90.0)))
+                        0.01))
              (assert (< (host/fabs (- (.x (app/lighting)) light-x)) 0.01))
              (assert (< (host/fabs (- (.y (app/lighting)) light-y)) 0.01))
              (app/event 3 500 0.0 0.0)
              (app/draw)
              (click 438.0 140.0)
-             (assert (< (host/fabs (- (.y (.bounds (app/lighting))) (+ (.y before) 90.0))) 0.01))
+             (assert (< (host/fabs (- (.y (.bounds (app/lighting)))
+                                      (+ (.y before) 90.0)))
+                        0.01))
              (app/event 1 507 (+ x 60.0) (+ y 90.0))
              (app/event 2 507 -1000.0 -1000.0)
              (app/draw)

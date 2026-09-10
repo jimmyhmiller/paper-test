@@ -1,0 +1,64 @@
+(module paper.cuts)
+(import "coil.primitive" :as p)
+(import "paper.ffi" :use *)
+(import "paper.profile" :as profile)
+
+;;; Bounded, UI-thread-owned cache of immutable path differences, including cuts
+;;; entirely inside an existing aperture. Callers own the returned path copy.
+(defstruct CutEntry
+  [(source (ptr i8))
+   (aperture (ptr i8))
+   (result (ptr i8))
+   (bounds CGRect)
+   (used i64)])
+
+(defn entries [] (-> (ptr (array CutEntry 4096)))
+  (p/alloc-static (array CutEntry 4096)))
+
+(defn serial [] (-> (ptr i64))
+  (p/alloc-static i64))
+
+(defn subtract [(source (ptr i8)) (aperture (ptr i8))] (-> (ptr i8))
+  (let [start (profile/start)
+        result (subtract-path source aperture)]
+    (set! (.cuts (profile/counters))
+          (+ (.cuts (profile/counters)) (profile/elapsed start)))
+    result))
+
+(defn subtract-path [(source (ptr i8)) (aperture (ptr i8))] (-> (ptr i8))
+  (let [bounds (CGPathGetPathBoundingBox aperture)
+        (mut oldest) 0
+        (mut found) -1]
+    (store! (serial) (+ (load (serial)) 1))
+    (for [i 0 4096]
+      (let [entry (index (entries) i)]
+        (when (< (.used entry) (.used (index (entries) (load oldest))))
+          (set! oldest i))
+        (when (and (!= (.source entry) (cast (ptr i8) 0))
+                   (p/fcmp-eq (.x (.bounds entry)) (.x bounds))
+                   (p/fcmp-eq (.y (.bounds entry)) (.y bounds))
+                   (p/fcmp-eq (.w (.bounds entry)) (.w bounds))
+                   (p/fcmp-eq (.h (.bounds entry)) (.h bounds))
+                   (CGPathEqualToPath (.source entry) source)
+                   (CGPathEqualToPath (.aperture entry) aperture))
+          (set! found i)
+          (break))))
+    (let [entry
+            (index (entries)
+                   (if (>= (load found) 0) (load found) (load oldest)))]
+      (when (< (load found) 0)
+        (when (!= (.source entry) (cast (ptr i8) 0))
+          (CGPathRelease (.source entry))
+          (CGPathRelease (.aperture entry))
+          (CGPathRelease (.result entry))
+          0)
+        (set! (.source entry) (CGPathCreateCopy source))
+        (set! (.aperture entry) (CGPathCreateCopy aperture))
+        (set! (.bounds entry) bounds)
+        (set! (.result entry)
+              (if (CGPathIntersectsPath source aperture true)
+                  (CGPathCreateCopyBySubtractingPath source aperture true)
+                  (CGPathCreateCopy source)))
+        (assert (!= (.result entry) (cast (ptr i8) 0))))
+      (set! (.used entry) (load (serial)))
+      (CGPathCreateCopy (.result entry)))))

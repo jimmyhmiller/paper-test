@@ -7,6 +7,9 @@
 (import "paper.objc" :as o)
 (import "paper.ffi" :use *)
 (import "paper.ui" :use *)
+(import "paper.lighting" :as light)
+(import "paper.masks" :as masks)
+(import "paper.gpu" :as gpu)
 
 (extern memcpy :cc c [(ptr u8) (ptr u8) u64] (-> (ptr u8)))
 
@@ -16,7 +19,12 @@
   (host/paper_begin 0xeeeeee)
   (panel (rect 7.0 9.0 160.0 133.0) 9.0 12.0 (cream))
   (panel (rect (+ 35.0 (cast f64 phase)) 30.0 81.0 70.0) 12.0 36.0 (sage))
-  (label 15.0 20.0 12.0 0x202020 1 (if (= phase 0) c"Paper layers" c"Changed text"))
+  (label 15.0
+         20.0
+         12.0
+         0x202020
+         1
+         (if (= phase 0) c"Paper layers" c"Changed text"))
   (begin-sheet)
   (oval-path (rect (+ 50.0 (cast f64 phase)) 35.0 39.0 37.0))
   (cut-through 12.0)
@@ -38,7 +46,10 @@
     (set! (.lit (damage/cache)) false)
     (set! (.geometry-dirty s) true)
     (render/render)
-    (assert (= (memcmp copy (CGBitmapContextGetData (.output-context s)) (cast u64 bytes)) (cast i32 0)))
+    (assert (= (memcmp copy
+                       (CGBitmapContextGetData (.output-context s))
+                       (cast u64 bytes))
+               (cast i32 0)))
     (render/free (cast (ptr i8) copy)))
   0)
 
@@ -55,6 +66,50 @@
              (render/render)
              (assert-full-match))
            (host/paper_begin 0x333333)
+           (render/render)
+           (assert-full-match)
+           (o/release pool)))
+
+(defn popover-fixture [(settings (ptr light/Lighting))] (-> i64)
+  (host/paper_begin 0xeee0c5)
+  (light/apply-light settings (rect 0.0 0.0 401.0 321.0))
+  (beveled-panel (rect 5.0 5.0 390.0 310.0)
+                 20.0
+                 25.0
+                 2.0
+                 1.0
+                 (surface-finish (pressed-paper 0xb7a58d) 0.4 0.6 0.0 0.0 0.0))
+  (light/popover-panel settings 500 (rect 350.0 30.0 24.0 24.0))
+  0)
+
+(deftest open-light-drag-composites-only-marker-damage-and-matches-full-frame
+         (let [pool (o/new c"NSAutoreleasePool")
+               (mut settings) (light/lighting 0.2 0.3 1100.0 0.85 1.0)]
+           (scene/init)
+           (set! (.width (scene/scene)) 401)
+           (set! (.height (scene/scene)) 321)
+           (set! (.scale (scene/scene)) 1.0)
+           (render/setup)
+           (set! (.open settings) true)
+           (popover-fixture settings)
+           (render/render)
+           (for [i 0 5]
+             (let [map (light/map-bounds settings)]
+               (light/handle settings
+                             500
+                             2
+                             501
+                             (+ (.x map)
+                                (* (.w map) (+ 0.4 (* (cast f64 i) 0.03))))
+                             (+ (.y map) (* (.h map) 0.45))))
+             (popover-fixture settings)
+             (render/render)
+             (when (.available (gpu/gpu))
+               (assert (< (* (.w (masks/last-damage)) (.h (masks/last-damage)))
+                          8000.0)))
+             (assert-full-match))
+           (set! (.open settings) false)
+           (popover-fixture settings)
            (render/render)
            (assert-full-match)
            (o/release pool)))
@@ -106,10 +161,15 @@
          (let [(mut counts) (zeroed (array i64 257))]
            (for [round 0 2]
              (for [generation 0 5]
-               (workers/apply 257 (job-context (index counts 0)) (p/fnptr-of count-job)))
-             (workers/apply 0 (job-context (index counts 0)) (p/fnptr-of count-job))
+               (workers/apply 257
+                              (job-context (index counts 0))
+                              (p/fnptr-of count-job)))
+             (workers/apply 0
+                            (job-context (index counts 0))
+                            (p/fnptr-of count-job))
              (workers/stop)
-             (for [i 0 257] (assert (= (load (index counts i)) (* (+ round 1) 5)))))))
+             (for [i 0 257]
+               (assert (= (load (index counts i)) (* (+ round 1) 5)))))))
 
 (deftest several-raster-updates-accumulate-pending-light-damage
          (scene/init)

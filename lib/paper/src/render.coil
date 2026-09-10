@@ -17,7 +17,8 @@
 
 (defn make-bitmap [(gray bool)] (-> (ptr i8))
   (let [s (scene)
-        cs (if gray (CGColorSpaceCreateDeviceGray) (CGColorSpaceCreateDeviceRGB))
+        cs
+          (if gray (CGColorSpaceCreateDeviceGray) (CGColorSpaceCreateDeviceRGB))
         ctx
           (CGBitmapContextCreate (nil)
                                  (cast u64 (.width s))
@@ -32,7 +33,12 @@
     (CGContextScaleCTM ctx (.scale s) (- 0.0 (.scale s)))
     ctx))
 
-(defstruct RasterBand [(color (ptr i8)) (height (ptr i8)) (material (ptr i8)) (micro-mask (ptr i8)) (bounds CGRect)])
+(defstruct RasterBand
+  [(color (ptr i8))
+   (height (ptr i8))
+   (material (ptr i8))
+   (micro-mask (ptr i8))
+   (bounds CGRect)])
 
 (defstruct RasterBands [(items (al/ArrayList RasterBand)) (ready bool)])
 
@@ -51,7 +57,10 @@
               (CGContextRelease (.material band))))
           (al/al-clear! [RasterBand] (mut (.items b)))
           0)
-        (do (set! (.items b) (al/al-new [RasterBand] (alloc/malloc-allocator))) (set! (.ready b) true) 0)))
+        (do
+          (set! (.items b) (al/al-new [RasterBand] (alloc/malloc-allocator)))
+          (set! (.ready b) true)
+          0)))
   0)
 
 ;;; Each worker owns separate contexts and disjoint complete bitmap rows.
@@ -59,7 +68,8 @@
 (defn band-context [(parent (ptr i8)) (y i64) (height i64) (gray bool)] (-> (ptr i8))
   (let [s (scene)
         stride (* (.width s) (if gray 1 4))
-        cs (if gray (CGColorSpaceCreateDeviceGray) (CGColorSpaceCreateDeviceRGB))
+        cs
+          (if gray (CGColorSpaceCreateDeviceGray) (CGColorSpaceCreateDeviceRGB))
         data (index (CGBitmapContextGetData parent) (* y stride))
         ctx
           (CGBitmapContextCreate (cast (ptr i8) data)
@@ -86,8 +96,10 @@
                      (RasterBand
                        :color (band-context (.color-context s) y height false)
                        :height (band-context (.height-context s) y height true)
-                       :material (band-context (.material-context s) y height false)
-                       :micro-mask (band-context (.mask (micro/state)) y height true)
+                       :material
+                         (band-context (.material-context s) y height false)
+                       :micro-mask
+                         (band-context (.mask (micro/state)) y height true)
                        :bounds
                          (cgrect 0.0
                                  (/ (cast f64 y) (.scale s))
@@ -102,17 +114,27 @@
     (when (intersects b region)
       (let [pool (new c"NSAutoreleasePool")
             top (if (> (.y b) (.y region)) (.y b) (.y region))
-            bottom (if (< (+ (.y b) (.h b)) (+ (.y region) (.h region))) (+ (.y b) (.h b)) (+ (.y region) (.h region)))]
+            bottom
+              (if (< (+ (.y b) (.h b)) (+ (.y region) (.h region)))
+                  (+ (.y b) (.h b))
+                  (+ (.y region) (.h region)))]
         (rasterize-contexts (cgrect (.x region) top (.w region) (- bottom top))
                             (.color band)
                             (.height band)
                             (.material band))
-        (micro/raster (cgrect (.x region) top (.w region) (- bottom top)) (.micro-mask band))
+        (micro/raster (cgrect (.x region) top (.w region) (- bottom top))
+                      (.micro-mask band))
         (release pool))))
   0)
 
 (defstruct HeightTiles
-  [(data (ptr u8)) (minimum (ptr u8)) (texture (ptr f64)) (dx (ptr f32)) (dy (ptr f32)) (width i64) (height i64)])
+  [(data (ptr u8))
+   (minimum (ptr u8))
+   (texture (ptr f64))
+   (dx (ptr f32))
+   (dy (ptr f32))
+   (width i64)
+   (height i64)])
 
 (defn height-tiles [] (-> (ptr HeightTiles))
   (primitive/alloc-static HeightTiles))
@@ -146,11 +168,27 @@
     (set! (.dx tiles) (cast (ptr f32) 0))
     (set! (.dy tiles) (cast (ptr f32) 0))
     (when (not (.available (gpu/gpu)))
-      (set! (.data tiles) (cast (ptr u8) (alloc/malloc (cast isize (* (.width tiles) (.height tiles))))))
-      (set! (.minimum tiles) (cast (ptr u8) (alloc/malloc (cast isize (* (.width tiles) (.height tiles))))))
-      (set! (.texture tiles) (cast (ptr f64) (alloc/malloc (cast isize (* (* (.width (scene)) (.height (scene))) 8)))))
-      (set! (.dx tiles) (cast (ptr f32) (alloc/malloc (cast isize (* (* (.width (scene)) (.height (scene))) 4)))))
-      (set! (.dy tiles) (cast (ptr f32) (alloc/malloc (cast isize (* (* (.width (scene)) (.height (scene))) 4)))))
+      (set! (.data tiles)
+            (cast (ptr u8)
+                  (alloc/malloc (cast isize (* (.width tiles) (.height tiles))))))
+      (set! (.minimum tiles)
+            (cast (ptr u8)
+                  (alloc/malloc (cast isize (* (.width tiles) (.height tiles))))))
+      (set! (.texture tiles)
+            (cast (ptr f64)
+                  (alloc/malloc (cast isize
+                                      (* (* (.width (scene)) (.height (scene)))
+                                         8)))))
+      (set! (.dx tiles)
+            (cast (ptr f32)
+                  (alloc/malloc (cast isize
+                                      (* (* (.width (scene)) (.height (scene)))
+                                         4)))))
+      (set! (.dy tiles)
+            (cast (ptr f32)
+                  (alloc/malloc (cast isize
+                                      (* (* (.width (scene)) (.height (scene)))
+                                         4)))))
       (assert (!= (.dx tiles) (cast (ptr f32) 0)))
       (assert (!= (.dy tiles) (cast (ptr f32) 0)))
       (assert (!= (.texture tiles) (cast (ptr f64) 0)))
@@ -159,9 +197,15 @@
       0))
   (let [s (scene)]
     (when (!= (.color-context s) (nil)) (CGContextRelease (.color-context s)) 0)
-    (when (!= (.height-context s) (nil)) (CGContextRelease (.height-context s)) 0)
-    (when (!= (.material-context s) (nil)) (CGContextRelease (.material-context s)) 0)
-    (when (!= (.output-context s) (nil)) (CGContextRelease (.output-context s)) 0)
+    (when (!= (.height-context s) (nil))
+      (CGContextRelease (.height-context s))
+      0)
+    (when (!= (.material-context s) (nil))
+      (CGContextRelease (.material-context s))
+      0)
+    (when (!= (.output-context s) (nil))
+      (CGContextRelease (.output-context s))
+      0)
     (set! (.color-context s) (make-bitmap false))
     (set! (.height-context s) (make-bitmap true))
     (set! (.material-context s) (make-bitmap false))
@@ -179,11 +223,17 @@
     (set! (.bounds (damage/cache)) bounds)
     (when (> (.w bounds) 0.0)
       (if (.available (gpu/gpu))
-          (do (masks/render) 0)
+          (do (masks/render bounds) 0)
           (do
-            (workers/apply (cast u64 (al/al-len [RasterBand] (.items (raster-bands)))) (nil) (fnptr-of raster-worker))
+            (workers/apply (cast u64
+                                 (al/al-len [RasterBand]
+                                            (.items (raster-bands))))
+                           (nil)
+                           (fnptr-of raster-worker))
             (build-height-tiles)
-            (workers/apply (cast u64 (.height (height-tiles))) (nil) (fnptr-of prepare-worker))
+            (workers/apply (cast u64 (.height (height-tiles)))
+                           (nil)
+                           (fnptr-of prepare-worker))
             0)))
     (when (and readback (.available (gpu/gpu))) (masks/read-inputs))
     (damage/include pending)
@@ -192,13 +242,25 @@
   0)
 
 (defn rasterize-region [(region CGRect)] (-> i64)
-  (let [s (scene)] (rasterize-contexts region (.color-context s) (.height-context s) (.material-context s)))
-  (when (!= (.mask (micro/state)) (nil)) (micro/raster region (.mask (micro/state))))
+  (let [s (scene)]
+    (rasterize-contexts region
+                        (.color-context s)
+                        (.height-context s)
+                        (.material-context s)))
+  (when (!= (.mask (micro/state)) (nil))
+    (micro/raster region (.mask (micro/state))))
   0)
 
-(defn rasterize-contexts [(region CGRect) (c (ptr i8)) (h (ptr i8)) (m (ptr i8))] (-> i64)
+(defn rasterize-contexts [(region CGRect)
+                          (c (ptr i8))
+                          (h (ptr i8))
+                          (m (ptr i8))] (-> i64)
   (let [s (scene)
-        bounds (cgrect 0.0 0.0 (/ (cast f64 (.width s)) (.scale s)) (/ (cast f64 (.height s)) (.scale s)))
+        bounds
+          (cgrect 0.0
+                  0.0
+                  (/ (cast f64 (.width s)) (.scale s))
+                  (/ (cast f64 (.height s)) (.scale s)))
         ink-count (al/al-len [Ink] (.inks s))
         (mut ink-index) 0]
     (CGContextSaveGState c)
@@ -229,9 +291,11 @@
         (while (< (load ink-index) ink-count)
           (let [ink (al/al-elem [Ink] (field s inks) (load ink-index))]
             (if (or (< (.z ink) (.z sheet))
-                    (and (primitive/fcmp-eq (.z ink) (.z sheet)) (< (.order ink) (.order sheet))))
+                    (and (primitive/fcmp-eq (.z ink) (.z sheet))
+                         (< (.order ink) (.order sheet))))
                 (do
-                  (when (intersects (.bounds ink) region) (paint-ink c (load ink)))
+                  (when (intersects (.bounds ink) region)
+                    (paint-ink c (load ink)))
                   (set! ink-index (+ (load ink-index) 1)))
                 (break))))
         (when (intersects (CGPathGetPathBoundingBox (.path sheet)) region)
@@ -245,12 +309,19 @@
           (CGContextClipToRect h (CGPathGetPathBoundingBox (.path sheet)))
           (CGContextAddPath h (.path sheet))
           (CGContextEOClip h)
-          (CGContextSetGrayStrokeColor h (/ (clamp (- (.z sheet) 0.7) 0.0 64.0) 64.0) 1.0)
+          (CGContextSetGrayStrokeColor h
+                                       (/ (clamp (- (.z sheet) 0.7) 0.0 64.0)
+                                          64.0)
+                                       1.0)
           (CGContextSetLineWidth h 1.2)
           (CGContextAddPath h (.path sheet))
           (CGContextStrokePath h)
           (CGContextRestoreGState h)
-          (CGContextSetRGBFillColor m (.rough sheet) (.fiber sheet) (.seed sheet) 1.0)
+          (CGContextSetRGBFillColor m
+                                    (.rough sheet)
+                                    (.fiber sheet)
+                                    (.seed sheet)
+                                    1.0)
           (CGContextAddPath m (.path sheet))
           (CGContextEOFillPath m)
           0)))
@@ -294,18 +365,43 @@
         region (.bounds (damage/cache))
         all (damage/light-changed)
         padding (+ (* 181.0 scale) 2.0)
-        left (if all 0 (cast i64 (clamp (- (* (.x region) scale) padding) 0.0 (cast f64 w))))
-        right (if all w (cast i64 (clamp (+ (* (+ (.x region) (.w region)) scale) padding) 0.0 (cast f64 w))))
-        top (if all 0 (cast i64 (clamp (- (* (.y region) scale) padding) 0.0 (cast f64 h))))
-        bottom (if all h (cast i64 (clamp (+ (* (+ (.y region) (.h region)) scale) padding) 0.0 (cast f64 h))))
+        left
+          (if all
+              0
+              (cast i64
+                    (clamp (- (* (.x region) scale) padding) 0.0 (cast f64 w))))
+        right
+          (if all
+              w
+              (cast i64
+                    (clamp (+ (* (+ (.x region) (.w region)) scale) padding)
+                           0.0
+                           (cast f64 w))))
+        top
+          (if all
+              0
+              (cast i64
+                    (clamp (- (* (.y region) scale) padding) 0.0 (cast f64 h))))
+        bottom
+          (if all
+              h
+              (cast i64
+                    (clamp (+ (* (+ (.y region) (.h region)) scale) padding)
+                           0.0
+                           (cast f64 h))))
         tile-x (* (% (cast i64 worker) (.width (height-tiles))) 16)
         tile-y (* (/ (cast i64 worker) (.width (height-tiles))) 16)
         tile-left (if (> left tile-x) (* (/ left 4) 4) tile-x)
         tile-right
-          (if (< right (+ tile-x 16)) (if (< (* (/ (+ right 3) 4) 4) w) (* (/ (+ right 3) 4) 4) w) (+ tile-x 16))
+          (if (< right (+ tile-x 16))
+              (if (< (* (/ (+ right 3) 4) 4) w) (* (/ (+ right 3) 4) 4) w)
+              (+ tile-x 16))
         (mut y) (if (> top tile-y) top tile-y)
         end (if (< bottom (+ tile-y 16)) bottom (+ tile-y 16))
-        local-max (if (and (< tile-left tile-right) (< (load y) end)) (* (footprint-maximum tile-x tile-y) depth) 0.0)]
+        local-max
+          (if (and (< tile-left tile-right) (< (load y) end))
+              (* (footprint-maximum tile-x tile-y) depth)
+              0.0)]
 
     (while (< (load y) end)
       (let [(mut x) tile-left]
@@ -336,20 +432,23 @@
             reach (clamp (/ (* 64.0 depth) slope) 1.0 180.0)]
         (for [step 1 33]
           (let [d (+ 0.6 (* reach (/ (cast f64 (* step step)) 1024.0)))]
-            (when (and (> slope 0.19) (>= (- (+ z (* d slope)) maximum) (+ 0.5 (* d 0.19)))) (break))
+            (when (and (> slope 0.55)
+                       (>= (- (+ z (* d slope)) maximum) (+ 0.75 (* d 0.55))))
+              (break))
             (let [sx (cast i64 (+ (cast f64 x) (* (* ux d) scale)))
                   sy (cast i64 (+ (cast f64 y) (* (* uy d) scale)))
                   obstacle (* (height-at heights sx sy w h) depth)]
               (when (> obstacle (+ z 0.125))
                 (let [gap (- (+ z (* d slope)) obstacle)
-                      penumbra (+ 0.5 (* d 0.19))
+                      penumbra (+ 0.75 (* d 0.55))
                       value (smooth-unit (/ (+ gap penumbra) (* 2.0 penumbra)))]
                   (when (< value (load visibility)) (set! visibility value))
                   (when (<= (load visibility) 0.0) (break)))))))))
     (load visibility)))
 
 (defn heights4 [(data (ptr u8)) (x (vec f32 4)) (y (vec f32 4))] (-> (vec f32 4))
-  (v/mul (v/heights data x y (.width (scene)) (.height (scene))) (v/splat 0.25098039215686274)))
+  (v/mul (v/heights data x y (.width (scene)) (.height (scene)))
+         (v/splat 0.25098039215686274)))
 
 (defn shadow4 [(x (vec f32 4))
                (y (vec f32 4))
@@ -371,8 +470,11 @@
             slope (v/div (v/splat (.elevation s)) horizontal)
             reach (v/limit (v/div (v/mul (v/splat 64.0) depth) slope) 1.0 180.0)]
         (for [step 1 33]
-          (let [d (v/add (v/splat 0.6) (v/mul reach (v/splat (/ (cast f64 (* step step)) 1024.0))))
-                penumbra (v/add (v/splat 0.5) (v/mul d (v/splat 0.19)))
+          (let [d
+                  (v/add (v/splat 0.6)
+                         (v/mul reach
+                                (v/splat (/ (cast f64 (* step step)) 1024.0))))
+                penumbra (v/add (v/splat 0.75) (v/mul d (v/splat 0.55)))
                 ray-z (v/add z (v/mul d slope))
                 possible (v/greater (v/add (v/splat maximum) penumbra) ray-z)]
             (set! active (v/both (load active) possible))
@@ -383,9 +485,17 @@
                   hit (v/both (load active) (v/greater obstacle threshold))]
               (when (v/any hit)
                 (let [gap (v/sub ray-z obstacle)
-                      unit (v/limit (v/div (v/add gap penumbra) (v/mul (v/splat 2.0) penumbra)) 0.0 1.0)
-                      value (v/mul (v/mul unit unit) (v/sub (v/splat 3.0) (v/mul (v/splat 2.0) unit)))]
-                  (set! visibility (v/minimum (load visibility) (v/choose hit value (v/splat 1.0)))))
+                      unit
+                        (v/limit (v/div (v/add gap penumbra)
+                                        (v/mul (v/splat 2.0) penumbra))
+                                 0.0
+                                 1.0)
+                      value
+                        (v/mul (v/mul unit unit)
+                               (v/sub (v/splat 3.0) (v/mul (v/splat 2.0) unit)))]
+                  (set! visibility
+                        (v/minimum (load visibility)
+                                   (v/choose hit value (v/splat 1.0)))))
                 0)))))
       0)
     (load visibility)))
@@ -400,9 +510,13 @@
                 :base 1.0
                 :pigment 0.0
                 :white 0.0))
-        (finish/evaluate (+ (* (cast f64 (load (index (.dx (height-tiles)) pos))) (.depth s))
+        (finish/evaluate (+ (* (cast f64
+                                     (load (index (.dx (height-tiles)) pos)))
+                               (.depth s))
                             (* (cast f64 (load (index (.dx m) pos))) (.grain s)))
-                         (+ (* (cast f64 (load (index (.dy (height-tiles)) pos))) (.depth s))
+                         (+ (* (cast f64
+                                     (load (index (.dy (height-tiles)) pos)))
+                               (.depth s))
                             (* (cast f64 (load (index (.dy m) pos))) (.grain s)))
                          (- (.light-x s) (/ (cast f64 x) (.scale s)))
                          (- (.light-y s) (/ (cast f64 y) (.scale s)))
@@ -435,9 +549,15 @@
                               (index output (* pos 4))
                               (v/mul shade (v/read-floats (index base 0)))
                               (v/mul visibility (v/read-floats (index white 0)))
-                              (v/mul visibility (v/read-floats (index pigment 0))))))
+                              (v/mul visibility
+                                     (v/read-floats (index pigment 0))))))
 
-(defn shade-four [(x i64) (y i64) (maximum f64) (heights (ptr u8)) (colors (ptr u8)) (output (ptr u8))] (-> i64)
+(defn shade-four [(x i64)
+                  (y i64)
+                  (maximum f64)
+                  (heights (ptr u8))
+                  (colors (ptr u8))
+                  (output (ptr u8))] (-> i64)
   (let [s (scene)
         pos (+ (* y (.width s)) x)
         xs (v/coordinates x)
@@ -450,15 +570,20 @@
         norm (v/root (v/add horizontal2 (v/mul elevation elevation)))
         dx
           (v/add (v/mul (v/read-floats (index (.dx (height-tiles)) pos)) depth)
-                 (v/mul (v/read-floats (index (.dx (micro/state)) pos)) (v/splat (.grain s))))
+                 (v/mul (v/read-floats (index (.dx (micro/state)) pos))
+                        (v/splat (.grain s))))
         dy
           (v/add (v/mul (v/read-floats (index (.dy (height-tiles)) pos)) depth)
-                 (v/mul (v/read-floats (index (.dy (micro/state)) pos)) (v/splat (.grain s))))
+                 (v/mul (v/read-floats (index (.dy (micro/state)) pos))
+                        (v/splat (.grain s))))
         n (v/root (v/add (v/splat 1.0) (v/add (v/mul dx dx) (v/mul dy dy))))
         diffuse
           (v/add (v/splat 0.80)
                  (v/mul (v/splat 0.20)
-                        (v/limit (v/div (v/add (v/sub (v/splat 0.0) (v/add (v/mul dx lx) (v/mul dy ly))) elevation)
+                        (v/limit (v/div (v/add (v/sub (v/splat 0.0)
+                                                      (v/add (v/mul dx lx)
+                                                             (v/mul dy ly)))
+                                               elevation)
                                         (v/mul n norm))
                                  0.0
                                  1.0)))
@@ -467,23 +592,40 @@
                    ys
                    heights
                    maximum
-                   (v/mul (v/mul (v/read-heights (index heights pos)) (v/splat 0.25098039215686274)) depth)
+                   (v/mul (v/mul (v/read-heights (index heights pos))
+                                 (v/splat 0.25098039215686274))
+                          depth)
                    lx
                    ly
                    horizontal2)
-        texture (v/mul (v/splat (.grain s)) (v/read-texture (index (.texture (height-tiles)) pos)))
+        texture
+          (v/mul (v/splat (.grain s))
+                 (v/read-texture (index (.texture (height-tiles)) pos)))
         shade
           (v/mul (v/splat 1.07)
-                 (v/add (v/mul diffuse (v/add (v/splat 0.53) (v/mul (v/splat 0.47) visibility))) texture))]
-    (if (or (v/any (v/greater (v/read-floats (index (.specular (micro/state)) pos)) (v/splat 0.0)))
-            (v/any (v/greater (v/read-floats (index (.sheen (micro/state)) pos)) (v/splat 0.0))))
+                 (v/add (v/mul diffuse
+                               (v/add (v/splat 0.53)
+                                      (v/mul (v/splat 0.47) visibility)))
+                        texture))]
+    (if (or (v/any (v/greater (v/read-floats (index (.specular (micro/state))
+                                                    pos))
+                              (v/splat 0.0)))
+            (v/any (v/greater (v/read-floats (index (.sheen (micro/state)) pos))
+                              (v/splat 0.0))))
         (finish-four x y pos shade visibility colors output)
         (v/write-colors (index colors (* pos 4))
                         (index output (* pos 4))
-                        (v/choose (v/greater shade (v/splat 0.0)) shade (v/splat 0.0))))))
+                        (v/choose (v/greater shade (v/splat 0.0))
+                                  shade
+                                  (v/splat 0.0))))))
 
 ;;; Odd-width canvas tails use the scalar form without overreading.
-(defn shade-pixel [(x i64) (y i64) (maximum f64) (heights (ptr u8)) (colors (ptr u8)) (output (ptr u8))] (-> i64)
+(defn shade-pixel [(x i64)
+                   (y i64)
+                   (maximum f64)
+                   (heights (ptr u8))
+                   (colors (ptr u8))
+                   (output (ptr u8))] (-> i64)
   (let [s (scene)
         w (.width s)
         h (.height s)
@@ -491,15 +633,24 @@
         lx (- (.light-x s) (/ (cast f64 x) (.scale s)))
         ly (- (.light-y s) (/ (cast f64 y) (.scale s)))
         horizontal (sqrt (+ (+ (* lx lx) (* ly ly)) 0.001))
-        norm (sqrt (+ (* horizontal horizontal) (* (.elevation s) (.elevation s))))
+        norm
+          (sqrt (+ (* horizontal horizontal) (* (.elevation s) (.elevation s))))
         dx
-          (+ (* (- (height-at heights (+ x 1) y w h) (height-at heights (- x 1) y w h)) (.depth s))
+          (+ (* (cast f64 (load (index (.dx (height-tiles)) pos)))
+                (.depth s))
              (* (cast f64 (load (index (.dx (micro/state)) pos))) (.grain s)))
         dy
-          (+ (* (- (height-at heights x (+ y 1) w h) (height-at heights x (- y 1) w h)) (.depth s))
+          (+ (* (cast f64 (load (index (.dy (height-tiles)) pos)))
+                (.depth s))
              (* (cast f64 (load (index (.dy (micro/state)) pos))) (.grain s)))
         n (sqrt (+ 1.0 (+ (* dx dx) (* dy dy))))
-        diffuse (+ 0.80 (* 0.20 (clamp (/ (+ (- 0.0 (+ (* dx lx) (* dy ly))) (.elevation s)) (* n norm)) 0.0 1.0)))
+        diffuse
+          (+ 0.80
+             (* 0.20
+                (clamp (/ (+ (- 0.0 (+ (* dx lx) (* dy ly))) (.elevation s))
+                          (* n norm))
+                       0.0
+                       1.0)))
         texture (* (.grain s) (load (index (.texture (height-tiles)) pos)))
         visibility (shadow x y heights maximum)
         shade (* 1.07 (+ (* diffuse (+ 0.53 (* 0.47 visibility))) texture))
@@ -509,12 +660,18 @@
     (for [channel 0 3]
       (let [pigment (cast f64 (load (index colors (+ (* pos 4) channel))))
             value
-              (if (or (> (load (index (.specular (micro/state)) pos)) (cast f32 0.0))
-                      (> (load (index (.sheen (micro/state)) pos)) (cast f32 0.0)))
+              (if (or (> (load (index (.specular (micro/state)) pos))
+                         (cast f32 0.0))
+                      (> (load (index (.sheen (micro/state)) pos))
+                         (cast f32 0.0)))
                   (* 255.0
-                     (finish/fin-channel (/ pigment 255.0) multiplier (* visibility (.pigment reflection)) addition))
+                     (finish/fin-channel (/ pigment 255.0)
+                                         multiplier
+                                         (* visibility (.pigment reflection))
+                                         addition))
                   (* pigment shade))]
-        (set! (index output (+ (* pos 4) channel)) (cast u8 (clamp value 0.0 255.0)))))
+        (set! (index output (+ (* pos 4) channel))
+              (cast u8 (clamp value 0.0 255.0)))))
     (set! (index output (+ (* pos 4) 3)) (cast u8 255)))
   0)
 
@@ -526,7 +683,9 @@
   (when (or (damage/light-changed) (> (.w (.bounds (damage/cache))) 0.0))
     (if (.available (gpu/gpu))
         (gpu/render (.bounds (damage/cache)) (damage/light-changed) false)
-        (workers/apply (cast u64 (.height (height-tiles))) (nil) (fnptr-of shade-worker)))
+        (workers/apply (cast u64 (.height (height-tiles)))
+                       (nil)
+                       (fnptr-of shade-worker)))
     (damage/remember-light)
     (set! (.bounds (damage/cache)) (cgrect 0.0 0.0 0.0 0.0)))
   (when (and readback (.available (gpu/gpu))) (gpu/read-output))
@@ -537,7 +696,12 @@
   (snapshot-context (.output-context (scene)) path))
 
 (defn snapshot-context [(context (ptr i8)) (path (ptr i8))] (-> i64)
-  (let [url (msg (ptr i8) (class c"NSURL") (sel c"fileURLWithPath:") [(ptr i8)] (ns path))
+  (let [url
+          (msg (ptr i8)
+               (class c"NSURL")
+               (sel c"fileURLWithPath:")
+               [(ptr i8)]
+               (ns path))
         dest (CGImageDestinationCreateWithURL url (ns c"public.png") 1 (nil))]
     (if (= dest (nil))
         1
@@ -556,23 +720,45 @@
         heights (CGBitmapContextGetData (.height-context s))
         region (.bounds (damage/cache))
         scale (.scale s)
-        left (cast i64 (clamp (/ (* (.x region) scale) 16.0) 0.0 (cast f64 (.width tiles))))
-        right (cast i64 (clamp (+ (/ (* (+ (.x region) (.w region)) scale) 16.0) 1.0) 0.0 (cast f64 (.width tiles))))
-        top (cast i64 (clamp (/ (* (.y region) scale) 16.0) 0.0 (cast f64 (.height tiles))))
-        bottom (cast i64 (clamp (+ (/ (* (+ (.y region) (.h region)) scale) 16.0) 1.0) 0.0 (cast f64 (.height tiles))))]
+        left
+          (cast i64
+                (clamp (/ (* (.x region) scale) 16.0)
+                       0.0
+                       (cast f64 (.width tiles))))
+        right
+          (cast i64
+                (clamp (+ (/ (* (+ (.x region) (.w region)) scale) 16.0) 1.0)
+                       0.0
+                       (cast f64 (.width tiles))))
+        top
+          (cast i64
+                (clamp (/ (* (.y region) scale) 16.0)
+                       0.0
+                       (cast f64 (.height tiles))))
+        bottom
+          (cast i64
+                (clamp (+ (/ (* (+ (.y region) (.h region)) scale) 16.0) 1.0)
+                       0.0
+                       (cast f64 (.height tiles))))]
     (for [ty top bottom]
       (for [tx left right]
         (let [(mut maximum) (cast u8 0)
               (mut minimum) (cast u8 255)
-              right (if (< (+ (* tx 16) 16) (.width s)) (+ (* tx 16) 16) (.width s))
-              bottom (if (< (+ (* ty 16) 16) (.height s)) (+ (* ty 16) 16) (.height s))]
+              right
+                (if (< (+ (* tx 16) 16) (.width s)) (+ (* tx 16) 16) (.width s))
+              bottom
+                (if (< (+ (* ty 16) 16) (.height s))
+                    (+ (* ty 16) 16)
+                    (.height s))]
           (for [y (* ty 16) bottom]
             (for [x (* tx 16) right]
               (let [value (load (index heights (+ (* y (.width s)) x)))]
                 (when (> value (load maximum)) (set! maximum value))
                 (when (< value (load minimum)) (set! minimum value)))))
-          (set! (index (.minimum tiles) (+ (* ty (.width tiles)) tx)) (load minimum))
-          (set! (index (.data tiles) (+ (* ty (.width tiles)) tx)) (load maximum))))))
+          (set! (index (.minimum tiles) (+ (* ty (.width tiles)) tx))
+                (load minimum))
+          (set! (index (.data tiles) (+ (* ty (.width tiles)) tx))
+                (load maximum))))))
   0)
 
 (defn footprint-query [(x i64) (y i64) (distance f64)] (-> f64)
@@ -584,16 +770,33 @@
         dymax (+ (fabs (- ly (+ (cast f64 y) 8.0))) 8.0)
         dxmin (clamp (- dxmax 16.0) 0.0 dxmax)
         dymin (clamp (- dymax 16.0) 0.0 dymax)
-        reach-x (+ (* (* distance (.scale s)) (/ dxmax (sqrt (+ (* dxmax dxmax) (* dymin dymin))))) 2.0)
-        reach-y (+ (* (* distance (.scale s)) (/ dymax (sqrt (+ (* dymax dymax) (* dxmin dxmin))))) 2.0)
-        left (if (< lx (cast f64 (+ x 16))) (- (cast f64 x) reach-x) (cast f64 x))
-        right (if (> lx (cast f64 x)) (+ (cast f64 (+ x 16)) reach-x) (cast f64 (+ x 16)))
-        top (if (< ly (cast f64 (+ y 16))) (- (cast f64 y) reach-y) (cast f64 y))
-        bottom (if (> ly (cast f64 y)) (+ (cast f64 (+ y 16)) reach-y) (cast f64 (+ y 16)))
+        reach-x
+          (+ (* (* distance (.scale s))
+                (/ dxmax (sqrt (+ (* dxmax dxmax) (* dymin dymin)))))
+             2.0)
+        reach-y
+          (+ (* (* distance (.scale s))
+                (/ dymax (sqrt (+ (* dymax dymax) (* dxmin dxmin)))))
+             2.0)
+        left
+          (if (< lx (cast f64 (+ x 16))) (- (cast f64 x) reach-x) (cast f64 x))
+        right
+          (if (> lx (cast f64 x))
+              (+ (cast f64 (+ x 16)) reach-x)
+              (cast f64 (+ x 16)))
+        top
+          (if (< ly (cast f64 (+ y 16))) (- (cast f64 y) reach-y) (cast f64 y))
+        bottom
+          (if (> ly (cast f64 y))
+              (+ (cast f64 (+ y 16)) reach-y)
+              (cast f64 (+ y 16)))
         tx0 (cast i64 (clamp (/ left 16.0) 0.0 (cast f64 (- (.width tiles) 1))))
-        tx1 (cast i64 (clamp (/ right 16.0) 0.0 (cast f64 (- (.width tiles) 1))))
+        tx1
+          (cast i64 (clamp (/ right 16.0) 0.0 (cast f64 (- (.width tiles) 1))))
         ty0 (cast i64 (clamp (/ top 16.0) 0.0 (cast f64 (- (.height tiles) 1))))
-        ty1 (cast i64 (clamp (/ bottom 16.0) 0.0 (cast f64 (- (.height tiles) 1))))
+        ty1
+          (cast i64
+                (clamp (/ bottom 16.0) 0.0 (cast f64 (- (.height tiles) 1))))
         (mut maximum) (cast u8 0)]
     (for [ty ty0 (+ ty1 1)]
       (for [tx tx0 (+ tx1 1)]
@@ -606,12 +809,24 @@
         tiles (height-tiles)
         maximum (footprint-query x y 180.6)
         minimum
-          (* (cast f64 (load (index (.minimum tiles) (+ (* (/ y 16) (.width tiles)) (/ x 16))))) 0.25098039215686274)
-        dx (+ (fabs (- (.light-x s) (/ (+ (cast f64 x) 8.0) (.scale s)))) (/ 8.0 (.scale s)))
-        dy (+ (fabs (- (.light-y s) (/ (+ (cast f64 y) 8.0) (.scale s)))) (/ 8.0 (.scale s)))
+          (* (cast f64
+                   (load (index (.minimum tiles)
+                                (+ (* (/ y 16) (.width tiles)) (/ x 16)))))
+             0.25098039215686274)
+        dx
+          (+ (fabs (- (.light-x s) (/ (+ (cast f64 x) 8.0) (.scale s))))
+             (/ 8.0 (.scale s)))
+        dy
+          (+ (fabs (- (.light-y s) (/ (+ (cast f64 y) 8.0) (.scale s))))
+             (/ 8.0 (.scale s)))
         slope (/ (.elevation s) (sqrt (+ (+ (* dx dx) (* dy dy)) 0.001)))]
-    (if (> slope 0.19)
-        (footprint-query x y (clamp (/ (+ (* (- maximum minimum) (.depth s)) 0.5) (- slope 0.19)) 0.0 180.6))
+    (if (> slope 0.55)
+        (footprint-query x
+                         y
+                         (clamp (/ (+ (* (- maximum minimum) (.depth s)) 0.75)
+                                   (- slope 0.55))
+                                0.0
+                                180.6))
         maximum)))
 
 (defn prepare-texture [(argument (ptr i8)) (worker u64)] (-> i64)
@@ -627,8 +842,14 @@
         bottom (if (< (+ y0 16) h) (+ y0 16) h)
         materials (CGBitmapContextGetData (.material-context s))
         heights (CGBitmapContextGetData (.height-context s))]
-    (when (intersects (cgrect (/ (cast f64 x0) scale) (/ (cast f64 y0) scale) (/ 16.0 scale) (/ 16.0 scale))
-                      (cgrect (- (.x region) 1.0) (- (.y region) 1.0) (+ (.w region) 2.0) (+ (.h region) 2.0)))
+    (when (intersects (cgrect (/ (cast f64 x0) scale)
+                              (/ (cast f64 y0) scale)
+                              (/ 16.0 scale)
+                              (/ 16.0 scale))
+                      (cgrect (- (.x region) 1.0)
+                              (- (.y region) 1.0)
+                              (+ (.w region) 2.0)
+                              (+ (.h region) 2.0)))
       (for [y y0 bottom]
         (for [x x0 right]
           (let [pos (+ (* y w) x)
@@ -640,12 +861,18 @@
                 strands (grain-hash (/ x 7) y seed)
                 cloud (grain-hash (/ x 37) (/ y 37) seed)]
             (set! (index (.dx tiles) pos)
-                  (cast f32 (- (height-at heights (+ x 1) y w h) (height-at heights (- x 1) y w h))))
+                  (cast f32
+                        (- (height-at heights (+ x 1) y w h)
+                           (height-at heights (- x 1) y w h))))
             (set! (index (.dy tiles) pos)
-                  (cast f32 (- (height-at heights x (+ y 1) w h) (height-at heights x (- y 1) w h))))
+                  (cast f32
+                        (- (height-at heights x (+ y 1) w h)
+                           (height-at heights x (- y 1) w h))))
             (set! (index (.texture tiles) pos)
                   (+ (cast f64 (load (index (.grain (micro/state)) pos)))
-                     (* rough (+ (* pulp 0.10) (+ (* strands (* fiber 0.07)) (* cloud 0.018)))))))))))
+                     (* rough
+                        (+ (* pulp 0.10)
+                           (+ (* strands (* fiber 0.07)) (* cloud 0.018)))))))))))
   0)
 
 ;;; A worker owns a complete band of rows. Neighboring tile columns can share
@@ -653,7 +880,8 @@
 ;;; same worker avoids cache-line ping-pong during packed pixel stores.
 (defn shade-worker [(argument (ptr i8)) (row u64)] (-> i64)
   (for [x 0 (.width (height-tiles))]
-    (shade-tile argument (cast u64 (+ (* (cast i64 row) (.width (height-tiles))) x))))
+    (shade-tile argument
+                (cast u64 (+ (* (cast i64 row) (.width (height-tiles))) x))))
   0)
 
 (defn prepare-worker [(argument (ptr i8)) (row u64)] (-> i64)
@@ -662,11 +890,19 @@
         region (.bounds (damage/cache))
         scale (.scale s)
         y (cast i64 row)
-        left (cast i64 (clamp (/ (- (* (.x region) scale) 2.0) 16.0) 0.0 (cast f64 (.width tiles))))
+        left
+          (cast i64
+                (clamp (/ (- (* (.x region) scale) 2.0) 16.0)
+                       0.0
+                       (cast f64 (.width tiles))))
         right
           (cast i64
-                (clamp (+ (/ (+ (* (+ (.x region) (.w region)) scale) 2.0) 16.0) 1.0) 0.0 (cast f64 (.width tiles))))]
-    (when (and (< (* (cast f64 y) 16.0) (+ (* (+ (.y region) (.h region)) scale) 2.0))
+                (clamp (+ (/ (+ (* (+ (.x region) (.w region)) scale) 2.0) 16.0)
+                          1.0)
+                       0.0
+                       (cast f64 (.width tiles))))]
+    (when (and (< (* (cast f64 y) 16.0)
+                  (+ (* (+ (.y region) (.h region)) scale) 2.0))
                (> (* (cast f64 (+ y 1)) 16.0) (- (* (.y region) scale) 2.0)))
       (for [x left right]
         (prepare-texture argument (cast u64 (+ (* y (.width tiles)) x))))))
@@ -678,7 +914,9 @@
 (defn measured-ink-bounds [(ink Ink)] (-> CGRect)
   (let [c (damage/cache)
         i
-          (if (and (.valid c) (>= (.order ink) 0) (< (.order ink) (al/al-len [i64] (.ink-orders c))))
+          (if (and (.valid c)
+                   (>= (.order ink) 0)
+                   (< (.order ink) (al/al-len [i64] (.ink-orders c))))
               (al/al-get [i64] (.ink-orders c) (.order ink))
               -1)]
     (if (>= i 0)
@@ -689,8 +927,15 @@
                    (primitive/fcmp-eq (.height previous) (.height ink))
                    (primitive/fcmp-eq (.size previous) (.size ink))
                    (or (= (.text previous) (.text ink))
-                       (msg bool (.text previous) (sel c"isEqualToString:") [(ptr i8)] (.text ink))))
+                       (msg bool
+                            (.text previous)
+                            (sel c"isEqualToString:")
+                            [(ptr i8)]
+                            (.text ink))))
               (let [r (.bounds previous)]
-                (cgrect (+ (.x r) (- (.x ink) (.x previous))) (+ (.y r) (- (.y ink) (.y previous))) (.w r) (.h r)))
+                (cgrect (+ (.x r) (- (.x ink) (.x previous)))
+                        (+ (.y r) (- (.y ink) (.y previous)))
+                        (.w r)
+                        (.h r)))
               (ink-bounds ink)))
         (ink-bounds ink))))
