@@ -5,6 +5,20 @@
 (extern printf :cc c [(ptr i8) ...] (-> i32))
 (extern fflush :cc c [(ptr i8)] (-> i32))
 
+(deftest navy-grain-is-cached-and-excludes-cloud-and-vermilion-stock
+  (scene/init)
+  (for [tone 0 2]
+    (let [grain (ukiyo/navy-grain tone)]
+      (assert (= grain (ukiyo/navy-grain tone)))
+      (assert (not (CGPathIsEmpty grain)))
+      (for [y 0 256]
+        (for [x 0 384]
+          (let [point (CGPoint :x (+ (* (cast f64 x) 2.0) 0.37)
+                                :y (+ (* (cast f64 y) 2.0) 0.37))]
+            (when (CGPathContainsPoint grain (cast (ptr CGAffine) 0) point true)
+              (assert (not (CGPathContainsPoint (ukiyo/cloud-path 5) (cast (ptr CGAffine) 0) point true)))
+              (assert (not (CGPathContainsPoint (ukiyo/branch-accent-path 0) (cast (ptr CGAffine) 0) point true))))))))))
+
 (deftest vermilion-branch-accent-keeps-the-lower-margin-navy
   (scene/init)
   (let [stock (ukiyo/branch-accent-path 0) fold (ukiyo/branch-accent-path 1)]

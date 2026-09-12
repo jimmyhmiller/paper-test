@@ -1,0 +1,64 @@
+(module paper-scenes.art-clipping)
+(import "coil.primitive" :as p)
+(import "paper.ffi" :use *)
+
+(defstruct Element [(kind i32) (points (ptr CGPoint))])
+(extern CGPathApply :cc c [(ptr i8) (ptr i8) (fnptr c [(ptr i8) (ptr Element)] void)] (-> void))
+(extern CGPathAddQuadCurveToPoint :cc c [(ptr i8) (ptr CGAffine) f64 f64 f64 f64] (-> void))
+
+(defstruct ClipState [(result (ptr i8)) (affected (ptr i8)) (part (ptr i8)) (bounds CGRect)])
+
+(defn intersects [(a CGRect) (b CGRect)] (-> bool)
+  (and (<= (.x a) (+ (.x b) (.w b))) (>= (+ (.x a) (.w a)) (.x b))
+       (<= (.y a) (+ (.y b) (.h b))) (>= (+ (.y a) (.h a)) (.y b))))
+
+(defn flush-contour [(state (ptr ClipState))] (-> i64)
+  (when (not (CGPathIsEmpty (.part state)))
+    (let [part (.part state)]
+      (CGPathAddPath (if (intersects (CGPathGetPathBoundingBox part) (.bounds state))
+                        (.affected state) (.result state)) (cast (ptr CGAffine) 0) part)
+      (CGPathRelease part)
+      (set! (.part state) (CGPathCreateMutable))))
+  0)
+
+(defn clip-element [(context (ptr i8)) (element (ptr Element))] (-> void)
+  (let [state (cast (ptr ClipState) context) points (.points element)
+        transform (cast (ptr CGAffine) 0)]
+    (case (.kind element)
+      0 (do (flush-contour state)
+            (CGPathMoveToPoint (.part state) transform (.x (index points 0)) (.y (index points 0))))
+      1 (CGPathAddLineToPoint (.part state) transform (.x (index points 0)) (.y (index points 0)))
+      2 (CGPathAddQuadCurveToPoint (.part state) transform (.x (index points 0)) (.y (index points 0))
+                                  (.x (index points 1)) (.y (index points 1)))
+      3 (CGPathAddCurveToPoint (.part state) transform (.x (index points 0)) (.y (index points 0))
+                              (.x (index points 1)) (.y (index points 1))
+                              (.x (index points 2)) (.y (index points 2)))
+      (CGPathCloseSubpath (.part state))))
+  0)
+
+;;; Subtraction distributes over the XOR of contours used by even-odd fill.
+;;; Keep disjoint contours verbatim and batch all possibly affected contours
+;;; into one Boolean operation. Clipping every mark separately repeats the
+;;; expensive occluder preparation and is slower than whole-path subtraction.
+;;; This is for filled artwork, not stroke geometry or nonzero winding fill.
+(defn subtract-contours [(source (ptr i8)) (occluder (ptr i8))] (-> (ptr i8))
+  (let [state (p/alloc-stack ClipState)]
+    (set! (.result state) (CGPathCreateMutable))
+    (set! (.affected state) (CGPathCreateMutable))
+    (set! (.part state) (CGPathCreateMutable))
+    (set! (.bounds state) (CGPathGetPathBoundingBox occluder))
+    (CGPathApply source (cast (ptr i8) state) (fnptr-of clip-element))
+    (flush-contour state)
+    (CGPathRelease (.part state))
+    (cond
+      (CGPathIsEmpty (.affected state))
+        (do (CGPathRelease (.result state)) (set! (.result state) (CGPathCreateCopy source)))
+      (CGPathIsEmpty (.result state))
+        (do (CGPathRelease (.result state))
+            (set! (.result state) (CGPathCreateCopyBySubtractingPath source occluder true)))
+      :else
+        (let [clipped (CGPathCreateCopyBySubtractingPath (.affected state) occluder true)]
+          (CGPathAddPath (.result state) (cast (ptr CGAffine) 0) clipped)
+          (CGPathRelease clipped) 0))
+    (CGPathRelease (.affected state))
+    (.result state)))

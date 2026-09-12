@@ -9,6 +9,8 @@
 (import "paper-scenes.mountain-paths" :as fuji)
 (import "paper-scenes.pane-paths" :as panes)
 (import "paper-scenes.cloud-paths" :as clouds)
+(import "paper-scenes.navy-paths" :as navy)
+(import "paper-scenes.art-clipping" :as clipping)
 (import "paper-scenes.folds" :as folds)
 (import "paper.ffi" :use [sin cos sqrt CGPathCreateMutable CGPathAddEllipseInRect CGPathRelease CGAffine cgrect
                            CGPathMoveToPoint CGPathAddLineToPoint CGPathCloseSubpath CGPathAddCurveToPoint
@@ -212,6 +214,18 @@
     (begin-sheet) (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) path)
     (finish height color seed) (CGPathRelease path))
   0)
+
+(defstruct NavyArt [(paths (array (ptr i8) 2))])
+(defn navy-art [] (-> (ptr NavyArt)) (p/alloc-static NavyArt))
+(defn navy-grain [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (navy-art) paths) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (let [cloud (cloud-path 5) accent (branch-accent-path 0)]
+        (begin-sheet) (navy/grain-path which 1.0 1.0)
+        (let [clear-sky (clipping/subtract-contours (.path (scene/scene)) cloud)]
+          (store! slot (clipping/subtract-contours clear-sky accent))
+          (CGPathRelease clear-sky) 0)))
+    (load slot)))
 
 (defn panels [] (-> i64)
   (for [which 0 4]
@@ -559,7 +573,11 @@
                (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
     (begin-sheet) (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) sky)
     (finish 17.0 0xe1cead 0.43) (CGPathRelease sky))
-  (mountain) (panels) (clouds)
+  (mountain) (panels)
+  (ink-height 19.0)
+  (print-path (navy-grain 0) 0x2b4e5e)
+  (print-path (navy-grain 1) 0x224555)
+  (clouds)
   (path-stock (branch-accent-path 0) 18.0 0xa8412c 0.64)
   (path-stock (branch-accent-path 1) 18.4 0xb66b45 0.29)
   (shoji)

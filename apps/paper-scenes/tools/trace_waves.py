@@ -26,14 +26,8 @@ def ink_details(rgb, ink):
             ('pale-path', pale, .45), ('dark-path', dark, .45)]
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("reference")
-    args = parser.parse_args()
-    image = cv2.imread(args.reference)
-    if image is None or image.shape[:2] != (1024, 1536):
-        parser.error("expected the supplied 1536 × 1024 four-scene collage")
-    rgb = cv2.cvtColor(image[:512, 768:], cv2.COLOR_BGR2RGB).astype(np.float32)
+def foreground_ownership():
+    """Semantic surf regions shared by foreground and backing authoring."""
     left = [(7, 482), (24, 477), (47, 481), (67, 475), (68, 412), (81, 399), (100, 407), (114, 429), (137, 432),
             (154, 446), (176, 463), (197, 462), (219, 489), (237, 506),
             (267, 511), (7, 511)]
@@ -43,6 +37,18 @@ def main():
              (694, 361), (712, 357), (731, 346), (750, 352), (767, 341), (767, 511)]
     roi = np.zeros((512, 768), np.uint8)
     cv2.fillPoly(roi, [np.array(left), np.array(right)], 255)
+    return roi
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("reference")
+    args = parser.parse_args()
+    image = cv2.imread(args.reference)
+    if image is None or image.shape[:2] != (1024, 1536):
+        parser.error("expected the supplied 1536 × 1024 four-scene collage")
+    rgb = cv2.cvtColor(image[:512, 768:], cv2.COLOR_BGR2RGB).astype(np.float32)
+    roi = foreground_ownership()
     red, green, blue = rgb.transpose(2, 0, 1)
     ink = ((red < 139) & (blue > red * 1.05) & (green > red * 1.04) & (roi != 0)).astype(np.uint8) * 255
     print('(module paper-scenes.wave-paths)')

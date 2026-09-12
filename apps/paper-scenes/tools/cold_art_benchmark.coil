@@ -1,0 +1,39 @@
+(module paper-scenes.cold-art-benchmark)
+(import "paper-scenes.ukiyo" :as ukiyo)
+(import "paper-scenes.navy-paths" :as navy)
+(import "paper-scenes.art-clipping" :as clipping)
+(import "paper.scene" :as scene)
+(import "paper.surface" :use [begin-sheet])
+(import "paper.objc" :as o)
+(import "paper.ffi" :use [CACurrentMediaTime CGPathCreateCopyBySubtractingPath CGPathRelease])
+
+(extern printf :cc c [(ptr i8) ...] (-> i32))
+
+;;; Separate canonical artwork preparation from rasterization and presentation.
+;;; Each invocation starts fresh; neither this nor stage-benchmark proves fps.
+(defn main [] (-> i64)
+  (let [pool (o/new c"NSAutoreleasePool")]
+    (scene/init)
+    (let [start (CACurrentMediaTime)
+          cloud (ukiyo/cloud-path 5) accent (ukiyo/branch-accent-path 0)
+          prepared (CACurrentMediaTime)]
+      (printf c"occluder_preparation_ms,%.4f\n" (* 1000.0 (- prepared start)))
+      (printf c"tone,source_path_ms,cloud_subtraction_ms,accent_subtraction_ms,contour_subtraction_ms\n")
+      (for [tone 0 2]
+        (let [start (CACurrentMediaTime)]
+          (begin-sheet) (navy/grain-path tone 1.0 1.0)
+          (let [built (CACurrentMediaTime)
+                clear-sky (CGPathCreateCopyBySubtractingPath (.path (scene/scene)) cloud true)
+                sky-clipped (CACurrentMediaTime)
+                grain (CGPathCreateCopyBySubtractingPath clear-sky accent true)
+                finished (CACurrentMediaTime)
+                local-sky (clipping/subtract-contours (.path (scene/scene)) cloud)
+                local-grain (clipping/subtract-contours local-sky accent)
+                local-finished (CACurrentMediaTime)]
+            (printf c"%lld,%.4f,%.4f,%.4f,%.4f\n" tone (* 1000.0 (- built start))
+                    (* 1000.0 (- sky-clipped built)) (* 1000.0 (- finished sky-clipped))
+                    (* 1000.0 (- local-finished finished)))
+            (CGPathRelease local-grain) (CGPathRelease local-sky)
+            (CGPathRelease grain) (CGPathRelease clear-sky)))))
+    (o/release pool))
+  0)
