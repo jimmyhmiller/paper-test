@@ -18,6 +18,8 @@
     (let [sun (get (.hits (scene/scene)) 0)]
       (assert (= (.id sun) 500)) (assert (= (.role sun) 0)))
     (assert (= (host/hit-test 582.0 46.0) 500))
+    ; Foreground cloud stock occludes this part of the circular sun.
+    (assert (!= (host/hit-test 605.0 56.0) 500))
     (assert (!= (host/hit-test 547.0 11.0) 500))
     (assert (!= (host/hit-test 665.0 146.0) 500))
     (gallery/event 3 500 582.0 46.0)
