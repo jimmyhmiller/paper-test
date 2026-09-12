@@ -5,6 +5,21 @@
 (extern printf :cc c [(ptr i8) ...] (-> i32))
 (extern fflush :cc c [(ptr i8)] (-> i32))
 
+(deftest foothill-stock-and-printed-grain-are-cached-with-cloud-occlusion
+  (scene/init)
+  (let [interiors [(CGPoint :x 470.0 :y 115.0) (CGPoint :x 500.0 :y 130.0)]]
+    (for [ridge 0 2]
+      (let [path (ukiyo/ridge-path ridge) grain (ukiyo/ridge-grain ridge)]
+        (assert (= path (ukiyo/ridge-path ridge)))
+        (assert (= grain (ukiyo/ridge-grain ridge)))
+        (assert (not (CGPathIsEmpty grain)))
+        (assert (CGPathContainsPoint path (cast (ptr CGAffine) 0) (get interiors ridge) true))
+        (for [y 100 175]
+          (for [x 350 710]
+            (let [point (CGPoint :x (+ (cast f64 x) 0.5) :y (+ (cast f64 y) 0.5))]
+              (when (CGPathContainsPoint (ukiyo/cloud-path 3) (cast (ptr CGAffine) 0) point true)
+                (assert (not (CGPathContainsPoint path (cast (ptr CGAffine) 0) point true)))))))))))
+
 (deftest traced-paper-keeps-continuous-printable-interiors
   (scene/init)
   (let [regions [(cgrect 96.0 167.0 101.0 230.0)

@@ -92,6 +92,26 @@
         (CGPathRelease circle) 0))
     (load slot)))
 
+;;; Reference-derived cut stock. Cache canonical outlines separately from ink.
+(defstruct RidgeArt [(paths (array (ptr i8) 2)) (grain (array (ptr i8) 2))])
+(defn ridge-art [] (-> (ptr RidgeArt)) (p/alloc-static RidgeArt))
+(defn ridge-path [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (ridge-art) paths) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (begin-sheet)
+      (if (= which 0) (fuji/blue-stock-path 1.0 1.0)
+                       (fuji/charcoal-stock-path 1.0 1.0))
+      (let [outline (CGPathCreateCopy (.path (scene/scene)))]
+        (store! slot (CGPathCreateCopyBySubtractingPath outline (cloud-path 3) true))
+        (CGPathRelease outline) 0))
+    (load slot)))
+
+(defn ridge-grain [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (ridge-art) grain) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (store! slot (CGPathCreateCopyByIntersectingPath (ridge-path which) (mountain-path 2) true)))
+    (load slot)))
+
 (defn mountain [] (-> i64)
   (let [visible (CGPathCreateCopyByTransformingPath (sun-path)
                    (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
@@ -100,10 +120,23 @@
     (ink-height 17.0)
     (host/paper_path_hit 500 visible c"Sun: adjust lighting" 0 0.0)
     (CGPathRelease visible))
-  (ink-height 18.0)
-  (print-path (mountain-path 0) 0x1b3e51)
+  (let [base (CGPathCreateCopyByTransformingPath (mountain-path 0)
+                (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
+    (begin-sheet) (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) base)
+    (finish 17.0 0x1b3e51 0.38) (CGPathRelease base))
+  (ink-height 17.0)
   (print-path (mountain-path 1) 0x405c65)
   (print-path (mountain-path 2) 0x385663)
+  (for [ridge 0 2]
+    (let [path (CGPathCreateCopyByTransformingPath (ridge-path ridge)
+                 (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
+      (begin-sheet) (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) path)
+      (finish (+ 18.0 (* (cast f64 ridge) 0.8))
+              (if (= ridge 0) 0x4d6875 0x424c4a)
+              (+ 0.29 (* (cast f64 ridge) 0.17)))
+      (CGPathRelease path)
+      (ink-height (+ 18.0 (* (cast f64 ridge) 0.8)))
+      (print-path (ridge-grain ridge) (if (= ridge 0) 0x556e7a 0x4a534f))))
   0)
 
 ;;; Reference-derived connected cloud stock, cached in design coordinates.

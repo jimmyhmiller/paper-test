@@ -29,11 +29,33 @@ def main():
     gray = cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32)
     grain = ((cv2.erode(ink, np.ones((3, 3), np.uint8)) != 0) &
              (gray - cv2.GaussianBlur(gray, (0, 0), 1.2) > 6)).astype(np.uint8) * 255
+    # These are cut stocks, not the disconnected marks selected for printed ink.
+    # Close fiber-sized pigment breaks and fill interior printing; retain the
+    # observed outer contour instead of imposing a polygonal mountain profile.
+    below_summit = np.indices(ink.shape)[0] > 94
+    blue_stock = ((ink != 0) & below_summit & (red > 53) &
+                  (green - red > 14) & (blue - green < 24))
+    charcoal_stock = ((ink != 0) & below_summit & (red > 25) &
+                      (abs(green - red) < 15) & (blue - green < 7))
+    stocks = []
+    for name, selection in [('blue-stock-path', blue_stock),
+                             ('charcoal-stock-path', charcoal_stock)]:
+        connected = cv2.morphologyEx(selection.astype(np.uint8) * 255,
+                                    cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        edges, _ = cv2.findContours(connected, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        stock = np.zeros_like(ink)
+        # The two ridge stocks are each one connected piece. Small matching
+        # patches elsewhere belong to foreground ink, not additional cut paper.
+        if not edges:
+            parser.error(f"no ridge stock found for {name}")
+        edge = max(edges, key=cv2.contourArea)
+        cv2.drawContours(stock, [edge], -1, 255, cv2.FILLED)
+        stocks.append((name, stock, 2.0))
     print('(module paper-scenes.mountain-paths)')
     print('(import "paper-scenes.wave-paths" :use [append-contours])')
     print(';;; Native contours of Fuji, summit snow breaks and lower ridges from the supplied reference.')
     for name, mask, minimum in [('ink-path', ink, .2), ('ridge-path', mid, .5),
-                                 ('grain-path', grain, .35)]:
+                                 ('grain-path', grain, .35)] + stocks:
         level_set = (cv2.resize(mask, None, fx=4, fy=4, interpolation=cv2.INTER_LINEAR) > 127).astype(np.uint8) * 255
         contours, _ = cv2.findContours(level_set, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         values = []

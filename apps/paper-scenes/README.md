@@ -128,15 +128,25 @@ remaps moved slots and rebuilds the hash index after the batch.
 
 `src/ukiyo.coil` uses a 768 × 512 design coordinate system. Cut-paper geometry has
 height and material; printed ornament uses `paper_path_ink` without changing the
-paper surface. `paper_path_hit` gives the red sun a circular interaction region.
+paper surface. For the red sun, we use the same visible path for drawing and
+`paper_path_hit`, subtracting the foreground cloud from the circle.
 
-Use `tools/trace_waves.py`, `tools/trace_mountain.py`, and `tools/trace_panels.py`
+Use `tools/trace_waves.py`, `tools/trace_mountain.py`, `tools/trace_panels.py`,
+and `tools/trace_clouds.py`
 to extract vector contours from the surf, Fuji, and paper stocks in the supplied
 second collage. Each takes the reference image path, requires OpenCV and NumPy,
 and emits Coil source on stdout. The corresponding editable assets are
-`src/wave_paths.coil`, `src/mountain_paths.coil`, and `src/pane_paths.coil`.
+`src/wave_paths.coil`, `src/mountain_paths.coil`, `src/pane_paths.coil`, and
+`src/cloud_paths.coil`.
 At runtime we combine these native contours with hand-authored engraving paths;
 we do not load reference image pixels or baked reference lighting.
+
+For the Fuji foothills, we author blue-gray and charcoal stock contours apart
+from the printed ink. We close fiber-sized pigment breaks and fill interior
+printing during extraction, then retain the largest connected piece of each
+stock. The native scene puts these ridges above supporting mountain paper and
+prints clipped grain on their surfaces. We cache the canonical stock paths and
+grain intersections; viewport changes require transformed copies.
 
 The pane tests check continuous printable interiors and stock containment at
 1×, 2×, and 3×. They allow a 0.05-reference-unit boundary tolerance for Core
@@ -144,7 +154,7 @@ Graphics Boolean-curve precision. Runtime paths do not use that test expansion.
 
 ## Remaining work
 
-Compare the broad cloud banks and flat navy backing against the reference.
+Compare the cloud lips and flat navy backing against the reference.
 The red pane folds need more crease detail, and the surf engraving needs closer
 alignment with the reference currents. Inspect the contour extraction boundaries
 before accepting the composition.
