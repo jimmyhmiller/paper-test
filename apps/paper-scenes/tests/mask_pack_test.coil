@@ -7,6 +7,7 @@
 (import "paper.render" :as render)
 (import "paper.damage" :as damage)
 (import "paper.masks" :as masks)
+(import "paper.gpu" :as gpu)
 (import "paper.platform" :as host)
 (import "paper.workers" :as workers)
 (import "paper.lettering" :as lettering)
@@ -19,6 +20,57 @@
 (extern memcpy :cc c [(ptr u8) (ptr u8) u64] (-> (ptr u8)))
 
 (extern memcmp :cc c [(ptr u8) (ptr u8) u64] (-> i32))
+
+(deftest frame-draw-records-match-key-validated-encoding
+  (let [pool (o/new c"NSAutoreleasePool") bytes (cast u64 (* (* 1031 679) 4))
+        copy (cast (ptr u8) (alloc/malloc (cast isize bytes)))]
+    (scene/init)
+    (set! (.headless (host/host)) true)
+    (set! (.width (scene/scene)) 1031) (set! (.height (scene/scene)) 679)
+    (set! (.scale (scene/scene)) 1.5)
+    (render/setup)
+    (for [theme 0 8]
+      (for [scenario 0 3]
+        (for [mode 0 2]
+          (set! (.frame-reference (masks/cache)) (= mode 1))
+          (masks/reset)
+          (set! (.valid (damage/cache)) false)
+          (bench/draw-case theme scenario 0 4)
+          (render/render-frame true)
+          (bench/draw-case theme scenario 13 4)
+          (render/render-frame true)
+          (assert (not (.frame-ready (masks/cache))))
+          (assert (= (len (.frame-masks (masks/cache))) 0))
+          (if (= mode 0)
+              (do (memcpy copy (CGBitmapContextGetData (.output-context (scene/scene))) bytes) 0)
+              (do (assert (= (memcmp copy (CGBitmapContextGetData (.output-context (scene/scene))) bytes)
+                             (cast i32 0))) 0)))))
+    (set! (.frame-reference (masks/cache)) false)
+    (masks/reset) (p/free (cast (ptr i8) copy)) (workers/stop) (o/release pool)))
+
+(deftest frame-draw-records-own-textures-after-cache-eviction
+  (let [pool (o/new c"NSAutoreleasePool") bytes (cast u64 (* (* 384 256) 4))
+        copy (cast (ptr u8) (alloc/malloc (cast isize bytes)))]
+    (scene/init)
+    (set! (.headless (host/host)) true)
+    (set! (.width (scene/scene)) 384) (set! (.height (scene/scene)) 256)
+    (set! (.scale (scene/scene)) 1.0)
+    (render/setup)
+    (bench/draw-case 5 2 13 4)
+    (scene/sort-commands)
+    (masks/prepare-region (masks/canvas-bounds))
+    (masks/encode-region (masks/canvas-bounds))
+    (gpu/synchronize) (masks/read-inputs)
+    (memcpy copy (CGBitmapContextGetData (.color-context (scene/scene))) bytes)
+    (while (> (len (.entries (masks/cache))) 0) (masks/evict-oldest))
+    (masks/rebuild-index 2048)
+    (assert (.frame-ready (masks/cache)))
+    (masks/encode-region (masks/canvas-bounds))
+    (masks/release-frame)
+    (gpu/synchronize) (masks/read-inputs)
+    (assert (= (memcmp copy (CGBitmapContextGetData (.color-context (scene/scene))) bytes) (cast i32 0)))
+    (assert (= (len (.entries (masks/cache))) 0))
+    (masks/reset) (p/free (cast (ptr i8) copy)) (workers/stop) (o/release pool)))
 
 (defn unpack [(packed pack/Packed) (width i64) (height i64) (x i64) (y i64)] (-> u16)
   (if (.tiled packed)

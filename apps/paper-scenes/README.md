@@ -146,6 +146,19 @@ on hash matches. Positive and negative zero share a hash. The cache tracks recen
 with linked entry indices and queues raster work for unbuilt masks only. Eviction
 remaps moved slots and rebuilds the hash index after the batch.
 
+For plain paper and ink, we snapshot mask textures and draw bounds once per
+composition. We retain those textures before cache trimming and reuse the records
+across damage regions and visibility passes. After encoding, we release the frame
+records; Metal retains the resources referenced by its command buffer. Relief
+commands keep their existing key-validated path. Tests compare the two encoding
+paths byte-for-byte across the eight fixtures and exercise encoding after cache
+eviction. This preserves the mask samples and painter order while avoiding repeated
+path translation and full-key comparison.
+
+The stage benchmark also reports CPU mask reservation, mask rasterization,
+material compute encoding, and composition encoding. Run timing measurements after
+tests and builds finish, with other scene windows closed.
+
 ## Scene authoring
 
 `src/ukiyo.coil` uses a 768 × 512 design coordinate system. Cut-paper geometry has
