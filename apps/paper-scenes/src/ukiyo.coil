@@ -10,6 +10,7 @@
 (import "paper-scenes.pane-paths" :as panes)
 (import "paper-scenes.cloud-paths" :as clouds)
 (import "paper-scenes.navy-paths" :as navy)
+(import "paper-scenes.bark-paths" :as bark)
 (import "paper-scenes.art-clipping" :as clipping)
 (import "paper-scenes.folds" :as folds)
 (import "paper.ffi" :use [sin cos sqrt CGPathCreateMutable CGPathAddEllipseInRect CGPathRelease CGAffine cgrect
@@ -345,30 +346,56 @@
   (host/paper_path_ink (.path (scene/scene)) 0xa4663e)
   0)
 
-(defstruct BarkArt [(paths (array (ptr i8) 2))])
+(defstruct BarkArt [(paths (array (ptr i8) 4))])
 (defn bark-art [] (-> (ptr BarkArt)) (p/alloc-static BarkArt))
-(defn bark-path [(which i64) (branch (ptr i8))] (-> (ptr i8))
-  (let [slot (index (field (bark-art) paths) which)]
+(defn bark-path [(which i64) (tone i64) (branch (ptr i8))] (-> (ptr i8))
+  (let [slot (index (field (bark-art) paths) (+ (* which 2) tone))]
     (when (= (load slot) (cast (ptr i8) 0))
       (let [clip (CGPathCreateCopyByTransformingPath branch
                    (CGAffine :a (/ 1.0 (.sx (canvas))) :b 0.0 :c 0.0
                              :d (/ 1.0 (.sy (canvas))) :tx 0.0 :ty 0.0))]
-        (begin-sheet)
-        (for [i 0 25]
-          (let [offset (* (- (cast f64 i) 12.0) 0.53)]
-            (if (= which 0)
-                (do (move-to (+ 2.0 offset) 324.0)
-                    (curve-to (+ 30.0 (* offset 0.8)) 205.0
-                              (+ -5.0 (* offset 0.5)) 57.0 160.0 -12.0))
-                (do (move-to (+ 5.0 offset) 96.0)
-                    (curve-to (+ 39.0 (* offset 0.4)) 54.0
-                              (+ 126.0 (* offset 0.3)) 16.0 228.0 -7.0)))))
-        (let [lines (CGPathCreateCopyByStrokingPath (.path (scene/scene)) (cast (ptr CGAffine) 0)
-                       0.22 1 1 10.0)]
-          (store! slot (CGPathCreateCopyByIntersectingPath lines clip true))
-          (CGPathRelease lines) (CGPathRelease clip)
-          0)))
+        (begin-sheet) (bark/marks tone)
+        (store! slot (clipping/intersect-contours (.path (scene/scene)) clip))
+        (CGPathRelease clip) 0))
     (load slot)))
+
+(defn print-bark [(which i64) (height f64)] (-> i64)
+  ; Initializing either cached ink path changes the current construction path.
+  ; Retain the original branch while preparing both tones.
+  (let [branch (CGPathCreateCopy (.path (scene/scene)))]
+    (ink-height height)
+    (print-path (bark-path which 0 branch) 0x67533f)
+    (print-path (bark-path which 1 branch) 0x302d27)
+    (CGPathRelease branch))
+  0)
+
+(defstruct Twig [(ax f64) (ay f64) (bx f64) (by f64) (cx f64) (cy f64)
+                (dx f64) (dy f64) (width f64)])
+(defn sprig [(ax f64) (ay f64) (bx f64) (by f64) (cx f64) (cy f64)
+             (dx f64) (dy f64) (width f64)] (-> Twig)
+  (Twig :ax ax :ay ay :bx bx :by by :cx cx :cy cy :dx dx :dy dy :width width))
+(defn twig-pose [(i i64)] (-> Twig)
+  ; Branch junctions lead into the authored flower clusters, not evenly spaced
+  ; side shoots. Hidden tips continue beneath the petals during their motion.
+  (let [twigs [
+    (sprig 9.0 286.2 8.0 276.0 11.0 266.0 12.0 258.0 1.5)
+    (sprig 19.0 253.3 15.0 239.0 10.0 231.0 9.0 224.0 1.1)
+    (sprig 16.6 218.4 19.0 202.0 22.0 192.0 25.0 184.0 1.1)
+    (sprig 20.4 186.4 29.0 173.0 31.0 161.0 32.0 154.0 1.7)
+    (sprig 25.0 158.2 26.0 146.0 26.0 138.0 28.0 131.0 0.8)
+    (sprig 30.0 135.6 36.0 132.0 39.0 129.0 40.0 126.0 1.2)
+    (sprig 38.8 107.9 40.0 99.0 34.0 93.0 32.0 87.0 1.2)
+    (sprig 47.1 88.5 49.0 81.0 49.0 76.0 47.0 72.0 1.4)
+    (sprig 60.5 65.3 65.0 59.0 72.0 54.0 77.0 48.0 0.9)
+    (sprig 82.7 41.3 92.0 40.0 99.0 34.0 108.0 33.0 1.5)
+    (sprig 98.9 33.9 104.0 27.0 108.0 21.0 111.0 14.0 1.1)
+    (sprig 116.1 26.7 121.0 31.0 126.0 35.0 129.0 39.0 0.9)
+    (sprig 132.1 23.3 131.0 15.0 133.0 8.0 138.0 6.0 1.4)
+    (sprig 151.0 20.3 155.0 23.0 154.0 27.0 151.0 29.0 1.3)
+    (sprig 175.1 19.5 173.0 28.0 175.0 36.0 178.0 42.0 1.2)
+    (sprig 197.0 17.4 205.0 17.0 207.0 26.0 208.0 34.0 1.2)
+    (sprig 204.1 -1.3 216.0 4.0 224.0 5.0 230.0 9.0 0.8)]]
+    (get twigs i)))
 
 ;;; Authored blossom centers and face proportions follow the reference clusters.
 ;;; Keep the broad flowers at branch junctions and small flowers on their tips.
@@ -405,11 +432,11 @@
     (flower 129.0 39.0 7.0 0.7 0.65)]]
     (get poses i)))
 
-(defn branches [(motion f64)] (-> i64)
+(defn branch-stock [] (-> i64)
   (stroke 2.0 324.0 30.0 205.0 -5.0 57.0 160.0 -12.0 12.0 27.0 0x41382c)
-  (ink-height 27.1) (print-path (bark-path 0 (.path (scene/scene))) 0x64513d)
+  (print-bark 0 27.1)
   (stroke 5.0 96.0 39.0 54.0 126.0 16.0 228.0 -7.0 10.0 28.0 0x44352a)
-  (ink-height 28.1) (print-path (bark-path 1 (.path (scene/scene))) 0x64513d)
+  (print-bark 1 28.1)
   (stroke 9.0 281.0 37.0 206.0 37.0 185.0 60.0 155.0 6.5 28.0 0x51412f)
   (stroke 11.0 203.0 30.0 163.0 46.0 141.0 63.0 116.0 4.5 28.0 0x46382c)
   (stroke 68.0 58.0 76.0 30.0 59.0 8.0 85.0 -5.0 5.0 28.0 0x54432e)
@@ -417,11 +444,14 @@
   (stroke 14.0 300.0 25.0 284.0 32.0 276.0 46.0 280.0 2.0 29.0 0x5a4734)
   (stroke 22.0 268.0 39.0 251.0 40.0 240.0 52.0 235.0 2.2 29.0 0x5a4734)
   (stroke 39.0 62.0 28.0 54.0 23.0 48.0 16.0 38.0 1.8 29.0 0x5a4734)
+  0)
+
+(defn branches [(motion f64)] (-> i64)
+  (branch-stock)
   (for [i 0 17]
-    (let [n (cast f64 i) y (+ 26.0 (* n 16.0)) x (+ 15.0 (* 13.0 (sin (* n 0.7))))
-          dx (if (= (% i 2) 0) 21.0 -15.0)]
-      (stroke x y (+ x (* dx 0.4)) (- y 10.0) (+ x dx) (- y 12.0)
-              (+ x dx) (- y 21.0) 1.4 29.0 0x5a4734)))
+    (let [pose (twig-pose i)]
+      (stroke (.ax pose) (.ay pose) (.bx pose) (.by pose) (.cx pose) (.cy pose)
+              (.dx pose) (.dy pose) (.width pose) 29.0 0x5a4734)))
   (for [i 0 26]
     (let [pose (blossom-pose i) n (cast f64 i)]
       (blossom (+ (.x pose) (* motion (* 0.025 (sin n)))) (.y pose)

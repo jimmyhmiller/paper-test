@@ -5,6 +5,32 @@
 (extern printf :cc c [(ptr i8) ...] (-> i32))
 (extern fflush :cc c [(ptr i8)] (-> i32))
 
+(deftest cherry-twigs-join-parent-stock-and-bark-print-stays-on-wood
+  (scene/init) (scene/clear 0xffffff)
+  (set! (.sx (ukiyo/canvas)) 1.0) (set! (.sy (ukiyo/canvas)) 1.0)
+  (ukiyo/branch-stock)
+  (assert (= (len (.sheets (scene/scene))) 9))
+  (for [i 0 17]
+    (let [pose (ukiyo/twig-pose i) (mut attached) false
+          flowers [18 23 22 13 21 14 20 12 24 2 3 25 4 5 7 8 10]
+          flower (ukiyo/blossom-pose (get flowers i))
+          dx (- (.dx pose) (.x flower)) dy (- (.dy pose) (.y flower))]
+      (assert (< (+ (* dx dx) (* dy dy)) 0.000001))
+      (for [parent 0 9]
+        (let [sheet (get (.sheets (scene/scene)) parent)]
+          (when (CGPathContainsPoint (.path sheet)
+                   (cast (ptr CGAffine) 0) (CGPoint :x (.ax pose) :y (.ay pose)) true)
+            (set! attached true))))
+      (assert (load attached))))
+  (for [parent 0 2]
+    (let [sheet (get (.sheets (scene/scene)) parent) stock (.path sheet)]
+      (for [tone 0 2]
+        (let [marks (ukiyo/bark-path parent tone stock)]
+          (assert (= marks (ukiyo/bark-path parent tone stock)))
+          (assert (not (CGPathIsEmpty marks)))
+          (assert-supported-stock (+ 20 (+ (* parent 2) tone)) stock marks)))))
+  (scene/clear 0xffffff))
+
 (deftest navy-grain-is-cached-and-excludes-cloud-and-vermilion-stock
   (scene/init)
   (for [tone 0 2]
