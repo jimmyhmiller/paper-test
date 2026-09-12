@@ -6,10 +6,12 @@
 (import "paper.platform" :as host)
 (import "paper.scene" :as scene)
 (import "paper-scenes.wave-paths" :as waves)
+(import "paper-scenes.mountain-paths" :as fuji)
+(import "paper-scenes.pane-paths" :as panes)
 (import "paper.ffi" :use [sin cos sqrt CGPathCreateMutable CGPathAddEllipseInRect CGPathRelease CGAffine cgrect
                            CGPathMoveToPoint CGPathAddLineToPoint CGPathCloseSubpath CGPathAddCurveToPoint
                            CGPathCreateCopyByStrokingPath
-                           CGPathCreateCopyByTransformingPath
+                           CGPathCreateCopyByTransformingPath CGPathAddPath CGPathCreateCopyByUnioningPath
                            CGPathCreateCopy CGPathCreateCopyByIntersectingPath])
 
 ;;; Reference-sized design coordinates. Geometry and typesetting share the same
@@ -64,6 +66,22 @@
 (defn sun-bounds [(w f64) (h f64)] (-> Rect)
   (rect (* (/ 546.0 768.0) w) (* (/ 10.0 512.0) h) (* (/ 72.0 768.0) w) (* (/ 72.0 512.0) h)))
 
+(defn print-path [(source (ptr i8)) (color u32)] (-> i64)
+  (let [path (CGPathCreateCopyByTransformingPath source
+               (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
+    (host/paper_path_ink path color) (CGPathRelease path))
+  0)
+
+(defstruct MountainArt [(paths (array (ptr i8) 3))])
+(defn mountain-art [] (-> (ptr MountainArt)) (p/alloc-static MountainArt))
+(defn mountain-path [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (mountain-art) paths) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (begin-sheet)
+      (case which 0 (fuji/ink-path 1.0 1.0) 1 (fuji/ridge-path 1.0 1.0) (fuji/grain-path 1.0 1.0))
+      (store! slot (CGPathCreateCopy (.path (scene/scene)))))
+    (load slot)))
+
 (defn mountain [] (-> i64)
   (disc 582.0 46.0 36.0 36.0 6.0 0xad3e2d)
   (let [path (CGPathCreateMutable)
@@ -72,41 +90,19 @@
     (ink-height 6.0)
     (host/paper_path_hit 500 path c"Sun: adjust lighting" 0 0.0)
     (CGPathRelease path))
-  ; Broad Fuji flanks and the broken summit, with an asymmetric snow line.
-  (begin-sheet) (move 332.0 130.0)
-  (curve 398.0 110.0 437.0 54.0 475.0 29.0)
-  (line 484.0 26.0) (line 492.0 29.0) (line 502.0 27.0)
-  (curve 527.0 59.0 549.0 92.0 601.0 111.0)
-  (line 658.0 145.0) (line 333.0 155.0) (close-path) (finish 16.0 0x1b3e51 0.53)
-  (begin-sheet) (move 414.0 86.0) (line 442.0 59.0) (line 475.0 29.0)
-  (line 484.0 26.0) (line 492.0 29.0) (line 502.0 27.0)
-  (line 530.0 63.0) (line 551.0 86.0) (line 529.0 74.0)
-  (line 520.0 64.0) (line 526.0 83.0) (line 514.0 70.0)
-  (line 515.0 93.0) (line 504.0 75.0) (line 501.0 85.0)
-  (line 496.0 62.0) (line 491.0 89.0) (line 485.0 69.0)
-  (line 477.0 94.0) (line 480.0 70.0) (line 467.0 88.0)
-  (line 470.0 69.0) (line 457.0 85.0) (line 462.0 66.0)
-  (line 446.0 81.0) (line 450.0 69.0) (close-path) (finish 16.5 0xe8d8b9 0.31)
-  (for [i 0 47]
-    (let [n (cast f64 i) x (+ 449.0 (* n 1.9))
-          y (+ 82.0 (* 9.0 (sin (* n 0.65)))) dx (* (- x 490.0) 0.65)]
-      (stroke x y (+ x (* dx 0.2)) (+ y 13.0) (+ x (* dx 0.6)) 108.0 (+ x dx) 129.0
-              (+ 0.3 (* 0.16 (sin n))) 16.65 (if (= (% i 3) 0) 0x526b74 0x325565))))
-  ; Foothills overlap in four distinct profiles, not sine-wave repetitions.
-  (for [layer 0 4]
-    (let [n (cast f64 layer) offset (* n 10.0)
-          colors [0x526878 0x294650 0x647065 0x263e40]]
-      (begin-sheet) (move 336.0 (+ 137.0 offset))
-      (curve 374.0 (+ 127.0 offset) 386.0 (+ 128.0 offset) 400.0 (+ 123.0 offset))
-      (curve 423.0 (+ 119.0 offset) 427.0 (+ 102.0 offset) (+ 449.0 (* n 7.0)) (+ 116.0 offset))
-      (line (+ 482.0 (* n 5.0)) (+ 104.0 offset))
-      (curve 493.0 (+ 107.0 offset) 493.0 (+ 116.0 offset) 510.0 (+ 110.0 offset))
-      (curve 534.0 (+ 97.0 offset) 532.0 (+ 115.0 offset) 552.0 (+ 118.0 offset))
-      (curve 580.0 (+ 116.0 offset) 600.0 (+ 137.0 offset) 621.0 (+ 130.0 offset))
-      (curve 659.0 (+ 120.0 offset) 693.0 (+ 142.0 offset) 723.0 (+ 158.0 offset))
-      (line 330.0 203.0) (close-path) (finish (+ 17.0 n) (cast u32 (get colors layer)) (+ 0.13 (* n 0.17)))
-      (stroke 356.0 (+ 140.0 offset) 442.0 (+ 143.0 offset) 509.0 (+ 108.0 offset)
-              570.0 (+ 132.0 offset) 0.65 (+ 17.3 n) 0x9a9b83)))
+  (ink-height 16.0)
+  ; A continuous lower ink field meets the cloud cut edge. The reference's
+  ; engraved ridges and grain overlay it without exposing the backing sky.
+  (begin-sheet) (move 344.0 137.0)
+  (curve 398.0 131.0 438.0 125.0 472.0 110.0)
+  (curve 498.0 101.0 519.0 112.0 542.0 103.0)
+  (curve 567.0 103.0 582.0 120.0 617.0 119.0)
+  (curve 655.0 125.0 680.0 143.0 711.0 164.0)
+  (line 711.0 182.0) (line 337.0 166.0) (close-path)
+  (host/paper_path_ink (.path (scene/scene)) 0x294754)
+  (print-path (mountain-path 0) 0x1b3e51)
+  (print-path (mountain-path 1) 0x405c65)
+  (print-path (mountain-path 2) 0x385663)
   0)
 
 ;;; Cloud banks are cut paper with elongated horizontal inlets. The lower bank
@@ -171,59 +167,33 @@
   (stroke 232.0 58.0 310.0 70.0 299.0 127.0 386.0 145.0 1.2 23.3 0xf3e5c8)
   0)
 
-(defn panel-path [(which i64) (q f64)] (-> i64)
-  (case which
-    0 (do (move (- 106.0 q) (- 148.0 q))
-          (curve 148.0 (- 144.0 q) (+ 211.0 q) (- 142.0 q) (+ 211.0 q) 177.0)
-          (line (+ 210.0 q) 390.0)
-          (curve (+ 210.0 q) (+ 437.0 q) 192.0 (+ 463.0 q) 158.0 (+ 452.0 q))
-          (curve (- 85.0 q) (+ 449.0 q) (- 85.0 q) 429.0 (- 85.0 q) 383.0)
-          (line (- 85.0 q) 180.0)
-          (curve (- 85.0 q) (- 155.0 q) (- 90.0 q) (- 150.0 q) (- 106.0 q) (- 148.0 q)))
-    1 (do (move (- 247.0 q) (- 145.0 q)) (line 319.0 (- 145.0 q))
-          (curve 344.0 (- 145.0 q) 341.0 (- 174.0 q) 367.0 (- 173.0 q))
-          (line 502.0 (- 174.0 q))
-          (curve (+ 528.0 q) (- 173.0 q) (+ 528.0 q) 184.0 (+ 528.0 q) 208.0)
-          (line (+ 527.0 q) 409.0)
-          (curve (+ 527.0 q) (+ 455.0 q) 506.0 (+ 462.0 q) 467.0 (+ 461.0 q))
-          (curve 396.0 (+ 456.0 q) 309.0 (+ 468.0 q) 260.0 (+ 457.0 q))
-          (curve (- 226.0 q) (+ 452.0 q) (- 227.0 q) 438.0 (- 227.0 q) 405.0)
-          (line (- 227.0 q) 182.0)
-          (curve (- 227.0 q) (- 156.0 q) (- 228.0 q) (- 145.0 q) (- 247.0 q) (- 145.0 q)))
-    2 (do (move (- 573.0 q) (- 193.0 q))
-          (curve 609.0 (- 191.0 q) 644.0 (- 187.0 q) 670.0 (- 198.0 q))
-          (curve (+ 697.0 q) (- 207.0 q) (+ 696.0 q) 223.0 (+ 696.0 q) 247.0)
-          (curve (+ 696.0 q) (+ 294.0 q) 656.0 (+ 299.0 q) 619.0 (+ 300.0 q))
-          (curve (- 552.0 q) (+ 304.0 q) (- 554.0 q) 280.0 (- 554.0 q) 249.0)
-          (line (- 554.0 q) 218.0)
-          (curve (- 554.0 q) (- 195.0 q) (- 556.0 q) (- 194.0 q) (- 573.0 q) (- 193.0 q)))
-    (do (move (- 574.0 q) (- 319.0 q)) (line 695.0 (- 319.0 q))
-        (curve (+ 720.0 q) (- 319.0 q) (+ 719.0 q) 339.0 (+ 719.0 q) 366.0)
-        (line (+ 712.0 q) (+ 459.0 q)) (line (- 554.0 q) (+ 475.0 q))
-        (line (- 554.0 q) 348.0)
-        (curve (- 554.0 q) (- 323.0 q) (- 554.0 q) (- 319.0 q) (- 574.0 q) (- 319.0 q))))
-  (close-path))
+(defstruct PaneArt [(paths (array (ptr i8) 16))])
+(defn pane-art [] (-> (ptr PaneArt)) (p/alloc-static PaneArt))
+(defn pane-path [(which i64) (layer i64)] (-> (ptr i8))
+  (let [slot (index (field (pane-art) paths) (+ (* which 4) layer))]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (let [inner (if (< layer 3) (pane-path which (+ layer 1)) (cast (ptr i8) 0))]
+        (begin-sheet) (panes/pane-path which layer 1.0 1.0)
+        (store! slot (if (= inner (cast (ptr i8) 0))
+                        (CGPathCreateCopy (.path (scene/scene)))
+                        (CGPathCreateCopyByUnioningPath (.path (scene/scene)) inner true)))))
+    (load slot)))
 
 (defn panels [] (-> i64)
-  (for [i 0 4]
-    (for [layer 0 8]
-      (let [q (* (cast f64 (- 7 layer)) 1.6)
-            colors [0x173e50 0x294e5b 0x913b29 0xb34c31 0xc76b43 0x9e472f 0xc6a278 0xe5d0a8]
-            color (if (= i 0) (case layer 0 0x133648 1 0x2c5260 2 0x214655 3 0x18394a 4 0x325969 5 0xaa9471 6 0xd1b88e 0xe5d0a8)
-                      (cast u32 (get colors layer)))]
-        (begin-sheet) (panel-path i q) (finish (+ 20.0 (* (cast f64 layer) 0.75)) color (+ 0.1 (* (cast f64 layer) 0.11))))))
-  ; Wide red folds pool at the foot of the editor, with independent cut edges.
-  (for [i 0 4]
-    (let [n (cast f64 i) colors [0x8c3527 0xaf4930 0xc76a43 0xbc5837]]
-      (begin-sheet) (move (+ 220.0 (* n 3.0)) 422.0)
-      (curve 230.0 (+ 480.0 (* n 1.6)) 252.0 (+ 472.0 (* n 1.8)) 292.0 (+ 469.0 (* n 1.4)))
-      (curve 347.0 (+ 462.0 (* n 2.1)) 381.0 (+ 496.0 (* n 0.8)) 422.0 (+ 471.0 (* n 0.8)))
-      (curve 476.0 (- 443.0 (* n 1.5)) 509.0 477.0 (- 535.0 (* n 2.0)) 424.0)
-      (curve 533.0 480.0 506.0 485.0 464.0 475.0)
-      (curve 408.0 482.0 393.0 491.0 338.0 478.0)
-      (curve 274.0 479.0 222.0 477.0 (+ 220.0 (* n 3.0)) 422.0)
-      (close-path) (finish (+ 25.4 (* n 0.25)) (cast u32 (get colors i)) (+ 0.2 (* n 0.12)))))
+  (for [which 0 4]
+    (for [layer 0 4]
+      (let [colors [0x8c3427 0xb94f32 0xc99a69 0xe5d0a8]
+            sidebar [0xab906b 0xc5ac80 0xd8bf94 0xe5d0a8]
+            heights [20.0 21.5 24.0 25.25]
+            source (pane-path which layer)
+            path (CGPathCreateCopyByTransformingPath source
+                   (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
+        (begin-sheet) (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) path)
+        (finish (get heights layer) (cast u32 (if (= which 0) (get sidebar layer) (get colors layer)))
+                (+ 0.1 (* (cast f64 layer) 0.21)))
+        (CGPathRelease path))))
   0)
+
 
 ;;; Five notched cherry petals, independent overlapping sheets, a warm calyx,
 ;;; fine radial filaments and individual anthers. No circular-dot flower stand-in.
@@ -275,9 +245,36 @@
   (host/paper_path_ink (.path (scene/scene)) 0xa4663e)
   0)
 
+(defstruct BarkArt [(paths (array (ptr i8) 2))])
+(defn bark-art [] (-> (ptr BarkArt)) (p/alloc-static BarkArt))
+(defn bark-path [(which i64) (branch (ptr i8))] (-> (ptr i8))
+  (let [slot (index (field (bark-art) paths) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (let [clip (CGPathCreateCopyByTransformingPath branch
+                   (CGAffine :a (/ 1.0 (.sx (canvas))) :b 0.0 :c 0.0
+                             :d (/ 1.0 (.sy (canvas))) :tx 0.0 :ty 0.0))]
+        (begin-sheet)
+        (for [i 0 25]
+          (let [offset (* (- (cast f64 i) 12.0) 0.53)]
+            (if (= which 0)
+                (do (move-to (+ 2.0 offset) 324.0)
+                    (curve-to (+ 30.0 (* offset 0.8)) 205.0
+                              (+ -5.0 (* offset 0.5)) 57.0 160.0 -12.0))
+                (do (move-to (+ 5.0 offset) 96.0)
+                    (curve-to (+ 39.0 (* offset 0.4)) 54.0
+                              (+ 126.0 (* offset 0.3)) 16.0 228.0 -7.0)))))
+        (let [lines (CGPathCreateCopyByStrokingPath (.path (scene/scene)) (cast (ptr CGAffine) 0)
+                       0.22 1 1 10.0)]
+          (store! slot (CGPathCreateCopyByIntersectingPath lines clip true))
+          (CGPathRelease lines) (CGPathRelease clip)
+          0)))
+    (load slot)))
+
 (defn branches [(motion f64)] (-> i64)
-  (stroke 2.0 324.0 30.0 205.0 -5.0 57.0 160.0 -12.0 19.0 27.0 0x41382c)
-  (stroke 15.0 130.0 45.0 39.0 158.0 41.0 254.0 -8.0 10.0 28.0 0x44352a)
+  (stroke 2.0 324.0 30.0 205.0 -5.0 57.0 160.0 -12.0 12.0 27.0 0x41382c)
+  (ink-height 27.1) (print-path (bark-path 0 (.path (scene/scene))) 0x64513d)
+  (stroke 5.0 96.0 39.0 54.0 126.0 16.0 228.0 -7.0 10.0 28.0 0x44352a)
+  (ink-height 28.1) (print-path (bark-path 1 (.path (scene/scene))) 0x64513d)
   (stroke 9.0 281.0 37.0 206.0 37.0 185.0 60.0 155.0 6.5 28.0 0x51412f)
   (stroke 11.0 203.0 30.0 163.0 46.0 141.0 63.0 116.0 4.5 28.0 0x46382c)
   (stroke 68.0 58.0 76.0 30.0 59.0 8.0 85.0 -5.0 5.0 28.0 0x54432e)
@@ -333,11 +330,7 @@
     (load slot)))
 
 (defn print-wave-asset [(which i64) (color u32)] (-> i64)
-  (let [source (wave-asset which)
-        path (CGPathCreateCopyByTransformingPath source
-               (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
-    (host/paper_path_ink path color) (CGPathRelease path))
-  0)
+  (print-path (wave-asset which) color))
 
 (defn surf [] (-> i64)
   ; Uneven ivory undercut separates the foreground wave group from the panes.
@@ -440,6 +433,18 @@
   (curve 684.0 22.0 638.0 123.0 602.0 127.0)
   (line 327.0 138.0) (close-path) (finish 5.0 0xe1cead 0.43)
   (mountain) (panels) (clouds)
+  ; The vermilion stock behind the left cherry branch is part of the reference
+  ; composition, with a narrower ochre fold along the workspace pane.
+  (begin-sheet) (move 6.0 108.0)
+  (curve 40.0 116.0 76.0 121.0 96.0 139.0)
+  (curve 80.0 158.0 84.0 187.0 78.0 214.0)
+  (curve 63.0 236.0 73.0 270.0 60.0 299.0)
+  (curve 41.0 325.0 46.0 371.0 16.0 399.0)
+  (line 5.0 388.0) (close-path) (finish 18.0 0xa8412c 0.64)
+  (begin-sheet) (move 89.0 142.0)
+  (curve 73.0 180.0 82.0 220.0 64.0 259.0)
+  (curve 67.0 224.0 65.0 189.0 78.0 158.0)
+  (close-path) (finish 18.4 0xc47a4c 0.29)
   ; Shoji at the right edge: translucent stock and separate wooden lattice.
   (box 743.0 78.0 25.0 267.0 0.0 25.0 0x633b28)
   (box 731.0 100.0 30.0 227.0 0.0 26.0 0x9b5438)

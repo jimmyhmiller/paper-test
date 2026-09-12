@@ -17,9 +17,9 @@ def main():
     if image is None or image.shape[:2] != (1024, 1536):
         parser.error("expected the supplied 1536 × 1024 four-scene collage")
     rgb = cv2.cvtColor(image[:512, 768:], cv2.COLOR_BGR2RGB).astype(np.float32)
-    left = [(68, 412), (81, 399), (100, 407), (114, 429), (137, 432),
+    left = [(7, 482), (24, 477), (47, 481), (67, 475), (68, 412), (81, 399), (100, 407), (114, 429), (137, 432),
             (154, 446), (176, 463), (197, 462), (219, 489), (237, 506),
-            (267, 511), (69, 511)]
+            (267, 511), (7, 511)]
     right = [(381, 511), (409, 494), (432, 470), (451, 462), (473, 466),
              (486, 477), (507, 470), (531, 447), (554, 427), (577, 422),
              (600, 427), (619, 432), (639, 418), (658, 402), (674, 376),
@@ -55,23 +55,26 @@ def main():
     medium = ((red > 68) & (ink != 0)).astype(np.uint8) * 255
     highlight = ((gray - cv2.GaussianBlur(gray, (0, 0), 2.0) > 7) & interior).astype(np.uint8) * 255
     for name, mask, minimum in [('ink-path', ink, .45), ('mid-path', medium, 1.0), ('line-path', highlight, .8)]:
-        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        # Trace a bilinear level set at quarter-pixel spacing. Direct contours
+        # through source pixel centers collapse one-pixel engraving to zero area.
+        level_set = (cv2.resize(mask, None, fx=4, fy=4, interpolation=cv2.INTER_LINEAR) > 127).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(level_set, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         values = []
         kept = 0
         for contour in contours:
-            if abs(cv2.contourArea(contour)) < minimum:
+            if abs(cv2.contourArea(contour)) < minimum * 16:
                 continue
             if name == 'line-path':
                 _, _, cw, ch = cv2.boundingRect(contour)
-                if max(cw, ch) < 5:
+                if max(cw, ch) < 20:
                     continue
-            points = cv2.approxPolyDP(contour, 0.26, True).reshape(-1, 2)
+            points = cv2.approxPolyDP(contour, 0.26 * 4, True).reshape(-1, 2)
             if len(points) < 3:
                 continue
             kept += 1
             values.append(len(points))
             for x, y in points:
-                values.extend([int(x) * 100 + 50, int(y) * 100 + 50])
+                values.extend([round((float(x) + .5) * 25), round((float(y) + .5) * 25)])
         print(f'(defn {name} [(sx f64) (sy f64)] (-> i64)')
         print('  (let [data [')
         for i in range(0, len(values), 28):

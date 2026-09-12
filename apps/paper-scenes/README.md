@@ -100,18 +100,24 @@ remaps moved slots and rebuilds the hash index after the batch.
 height and material; printed ornament uses `paper_path_ink` without changing the
 paper surface. `paper_path_hit` gives the red sun a circular interaction region.
 
-`tools/trace_waves.py` extracts vector contours from selected surf regions in the
-user-supplied second collage. It requires OpenCV and NumPy and emits Coil source
-on stdout. `src/wave_paths.coil` contains the resulting editable contour data.
-The scene combines those contours with hand-authored engraving paths. It does not
-load reference image pixels or baked reference lighting at runtime.
+Use `tools/trace_waves.py`, `tools/trace_mountain.py`, and `tools/trace_panels.py`
+to extract vector contours from the surf, Fuji, and paper stocks in the supplied
+second collage. Each takes the reference image path, requires OpenCV and NumPy,
+and emits Coil source on stdout. The corresponding editable assets are
+`src/wave_paths.coil`, `src/mountain_paths.coil`, and `src/pane_paths.coil`.
+At runtime we combine these native contours with hand-authored engraving paths;
+we do not load reference image pixels or baked reference lighting.
+
+The pane tests check continuous printable interiors and stock containment at
+1×, 2×, and 3×. They allow a 0.05-reference-unit boundary tolerance for Core
+Graphics Boolean-curve precision. Runtime paths do not use that test expansion.
 
 ## Remaining work
 
-The ukiyo-e panel borders still have uniform nested spacing. The mountain needs
-less regular foothills and a more natural snow edge; the tree needs finer bark
-structure. The surf needs better integration at its traced-region boundaries.
-Compare these areas against the reference before accepting the composition.
+Compare the broad cloud banks and flat navy backing against the reference.
+The red pane folds need more crease detail, and the surf engraving needs closer
+alignment with the reference currents. Inspect the contour extraction boundaries
+before accepting the composition.
 The remaining themes also need reference-specific artwork.
 
 Cold preparation still exceeds 16.67 ms. Warm 60 fps does not cover first appearance,
