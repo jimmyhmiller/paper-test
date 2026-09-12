@@ -18,14 +18,17 @@
 (extern memcmp :cc c [(ptr u8) (ptr u8) u64] (-> i32))
 
 (deftest motion-workloads-change-geometry-in-all-eight-themes
-  (let [pool (o/new c"NSAutoreleasePool")]
-    (setup 640 420 0.5)
-    (for [theme 0 8]
-      (bench/draw-case theme 2 11 4) (render/render-frame true)
-      (bench/draw-case theme 2 12 4) (scene/sort-commands)
-      (let [bounds (damage/measure)]
-        (assert (and (> (.w bounds) 0.0) (> (.h bounds) 0.0)))))
-    (workers/stop) (o/release pool)))
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (setup 640 420 0.5)
+           (for [theme 0 8]
+             (bench/draw-case theme 2 11 4)
+             (render/render-frame true)
+             (bench/draw-case theme 2 12 4)
+             (scene/sort-commands)
+             (let [bounds (damage/measure)]
+               (assert (and (> (.w bounds) 0.0) (> (.h bounds) 0.0)))))
+           (workers/stop)
+           (o/release pool)))
 
 (defn setup [(width i64) (height i64) (scale f64)] (-> i64)
   (scene/init)
@@ -76,6 +79,71 @@
              (cast i32 0)))
   (set! (.reference (masks/visibility)) false)
   0)
+
+(defn separated-edits [(selection i64) (cursor bool)] (-> i64)
+  (host/paper_begin 0xeee8d9)
+  (panel (rect 4.0 4.0 280.0 180.0) 7.0 1.0 (cream))
+  (ink-height 10.0)
+  (host/paper_rule (+ 20.0 (* 10.0 (cast f64 selection)))
+                   20.0
+                   8.0
+                   12.0
+                   0x273c38)
+  (panel (rect 220.0 40.0 45.0 40.0) 5.0 11.0 (sage))
+  (ink-height 12.0)
+  (when cursor (host/paper_rule 32.0 80.0 2.0 19.0 0x273c38))
+  0)
+
+(deftest independent-selection-and-cursor-edits-retain-interior-commands
+         (let [pool (o/new c"NSAutoreleasePool")
+               copy (cast (ptr u8) (alloc/malloc 240000))]
+           (setup 300 200 1.0)
+           (separated-edits 0 false)
+           (render/render-frame true)
+           (for [i 0 8]
+             (separated-edits (% (+ i 1) 2) (= (% i 2) 0))
+             (scene/sort-commands)
+             (let [bounds (damage/measure)]
+               (assert (> (.x bounds) 15.0))
+               (assert (< (+ (.x bounds) (.w bounds)) 45.0)))
+             (render/render-frame true)
+             (assert-full-agreement copy 240000))
+           (render/free (cast (ptr i8) copy))
+           (workers/stop)
+           (o/release pool)))
+
+(deftest repeated-and-reordered-painter-commands-match-full-render
+         (let [pool (o/new c"NSAutoreleasePool")
+               copy (cast (ptr u8) (alloc/malloc 240000))]
+           (setup 300 200 1.0)
+           (for [frame 0 48]
+             (host/paper_begin 0xeee8d9)
+             (for [i 0 (+ 3 (% frame 5))]
+               (let [token (% (+ (* i (+ frame 1)) (/ frame 3)) 3)]
+                 (panel (rect (+ 30.0 (* 15.0 (cast f64 token)))
+                              35.0
+                              100.0
+                              90.0)
+                        5.0
+                        10.0
+                        (if (= token 0) (cream) (if (= token 1) (clay) (sage))))))
+             (render/render-frame true)
+             (assert-full-agreement copy 240000))
+           ; Exceed the edit budget: conservative fallback must retain correctness.
+           (for [frame 0 2]
+             (host/paper_begin 0xeee8d9)
+             (for [i 0 80]
+               (ink-height 10.0)
+               (host/paper_rule (cast f64 (+ 5 (* (% i 20) 12)))
+                                (cast f64 (+ 5 (* (/ i 20) 35)))
+                                8.0
+                                20.0
+                                (if (= frame 0) 0x273c38 0xa8412c)))
+             (render/render-frame true)
+             (assert-full-agreement copy 240000))
+           (render/free (cast (ptr i8) copy))
+           (workers/stop)
+           (o/release pool)))
 
 (deftest incremental-insert-remove-and-equal-height-interleaving-match-full-render
          (let [pool (o/new c"NSAutoreleasePool")

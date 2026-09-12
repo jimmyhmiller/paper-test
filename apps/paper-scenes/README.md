@@ -70,10 +70,18 @@ there. Its manifest needs the sibling coil-experiments checkout.
 
 ## Renderer changes
 
-Damage comparison merges sheets and ink in painter order. It preserves equal
-prefixes and suffixes across command insertion/removal, while including changed
-ordering and geometry. Material composition visits commands intersecting its
-pixel-aligned damage region.
+For damage comparison we merge sheets and ink in painter order, strip equal ends,
+and use an exact Myers edit comparison to retain unchanged interior commands.
+A selection change and cursor insertion can now share a frame without invalidating
+the paper stocks between them. We cap the search at 64 edits and use conservative
+redraw beyond that budget. Reordering remains an edit; raster quality is unchanged.
+Material composition visits commands intersecting its pixel-aligned damage region.
+We still combine separated dirty areas into one rectangle.
+
+In the 60 fps native report, `missed_intervals` counts presentation gaps of at
+least 25 ms, with a 1 µs timestamp tolerance. Earlier reports used a strict
+greater-than comparison and undercounted 25 ms gaps; regenerate those summaries
+from their source CSVs before comparing results.
 
 Coverage masks use a lossless RG8 atlas for large sparse or solid shapes. A
 64 × 64 tile is empty, solid, or contains exact mixed-coverage samples. Mixed tiles

@@ -42,6 +42,21 @@ class PresentationReportTest(unittest.TestCase):
     def test_missing_tail_rejected(self):
         self.assertNotEqual(self.report(lambda rows: rows.pop()).returncode, 0)
 
+    def test_half_period_late_boundary_is_independent_of_uptime_rounding(self):
+        for offset in [10, 2_791_000]:
+            def cadence(rows):
+                elapsed = 0
+                for frame, interval in enumerate([0, 1 / 60, .025 - 1e-7,
+                                                   .025 + 1e-7, .024, 1 / 60,
+                                                   1 / 60, 1 / 60]):
+                    elapsed += interval
+                    rows[frame]["presented_s"] = offset + elapsed
+            with self.subTest(offset=offset):
+                result = self.report(cadence)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                first = next(csv.DictReader(io.StringIO(result.stdout)))
+                self.assertEqual(first["missed_intervals"], "2")
+
     def test_shared_presentation_time_is_not_an_extra_refresh(self):
         result = self.report(lambda rows: rows[3].update(
             presented_s=rows[2]["presented_s"]))

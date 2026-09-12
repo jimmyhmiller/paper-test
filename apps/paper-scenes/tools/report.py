@@ -76,7 +76,10 @@ def main():
                                                   for row in rows[:args.warmup]),
                           fps=round(1000 / statistics.mean(intervals), 3),
                           interval_p95_ms=round(percentile(intervals, .95), 3),
-                          missed_intervals=sum(x > 25 for x in intervals),
+                          # At 60 fps, 25 ms is already 1.5 frame periods.
+                          # Include that boundary with 1 us timestamp tolerance:
+                          # subtraction of large uptime values can straddle it.
+                          missed_intervals=sum(x >= 25 - .001 for x in intervals),
                           intervals=len(intervals))
         output.append(result)
     writer = csv.DictWriter(sys.stdout, fieldnames=output[0].keys())
