@@ -18,6 +18,8 @@
    (valid bool)
    (background u32)
    (bounds CGRect)
+   (regions (array CGRect 32))
+   (region-count i64)
    (light-x f64)
    (light-y f64)
    (elevation f64)
@@ -54,12 +56,62 @@
       (set! (.previous-order c) (al/al-new [i64] (alloc/malloc-allocator)))
       (set! (.ready c) true))
     (set! (.valid c) false)
+    (set! (.region-count c) 0)
     (set! (.lit c) false)
     (set! (.bounds c) (cgrect 0.0 0.0 0.0 0.0)))
   0)
 
+(defn union-bounds [(a CGRect) (r CGRect)] (-> CGRect)
+  (if (<= (.w a) 0.0)
+      r
+      (let [x (if (< (.x a) (.x r)) (.x a) (.x r))
+            y (if (< (.y a) (.y r)) (.y a) (.y r))
+            right
+              (if (> (+ (.x a) (.w a)) (+ (.x r) (.w r)))
+                  (+ (.x a) (.w a))
+                  (+ (.x r) (.w r)))
+            bottom
+              (if (> (+ (.y a) (.h a)) (+ (.y r) (.h r)))
+                  (+ (.y a) (.h a))
+                  (+ (.y r) (.h r)))]
+        (cgrect x y (- right x) (- bottom y)))))
+
+;;; Keep separated edits separate. Merge touching rectangles transitively; if
+;;; fragmentation exceeds bounded storage, conservatively collapse to the union.
+(defn include-region [(r CGRect)] (-> i64)
+  (let [c (cache)
+        (mut merged) (load r)
+        (mut i) 0]
+    (while (< (load i) (.region-count c))
+      (let [a (load (index (field c regions) (load i)))
+            b (load merged)]
+        (if (and (<= (.x a) (+ (.x b) (.w b)))
+                 (<= (.x b) (+ (.x a) (.w a)))
+                 (<= (.y a) (+ (.y b) (.h b)))
+                 (<= (.y b) (+ (.y a) (.h a))))
+            (do
+              (set! merged (union-bounds a b))
+              (set! (.region-count c) (- (.region-count c) 1))
+              (store! (index (field c regions) (load i))
+                      (load (index (field c regions) (.region-count c))))
+              (set! i 0))
+            (set! i (+ (load i) 1)))))
+    (if (= (.region-count c) 32)
+        (do
+          (for [j 0 32]
+            (set! merged
+                  (union-bounds (load merged)
+                                (load (index (field c regions) j)))))
+          (store! (index (field c regions) 0) (load merged))
+          (set! (.region-count c) 1))
+        (do
+          (store! (index (field c regions) (.region-count c)) (load merged))
+          (set! (.region-count c) (+ (.region-count c) 1)))))
+  0)
+
 (defn include [(r CGRect)] (-> i64)
   (when (and (> (.w r) 0.0) (> (.h r) 0.0))
+    (include-region r)
     (let [c (cache)
           a (.bounds c)]
       (if (<= (.w a) 0.0)
@@ -277,6 +329,7 @@
   (let [c (cache)
         s (scene)]
     (set! (.bounds c) (cgrect 0.0 0.0 0.0 0.0))
+    (set! (.region-count c) 0)
     (if (or (not (.valid c)) (!= (.background c) (.background s)))
         (include (cgrect 0.0
                          0.0

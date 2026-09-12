@@ -224,7 +224,21 @@
     (set! (.bounds (damage/cache)) bounds)
     (when (> (.w bounds) 0.0)
       (if (.available (gpu/gpu))
-          (do (masks/render bounds) 0)
+          (do
+            (let [c (damage/cache)]
+              (for [i 0 (.region-count c)]
+                (let [r (index (field c regions) i)
+                      pixels (masks/pixel-bounds (load r))
+                      scale (.scale (scene))]
+                  (store! r
+                          (cgrect (/ (.x pixels) scale)
+                                  (/ (.y pixels) scale)
+                                  (/ (.w pixels) scale)
+                                  (/ (.h pixels) scale)))))
+              (masks/render-regions (index (field c regions) 0)
+                                    (.region-count c)
+                                    bounds))
+            0)
           (do
             (workers/apply (cast u64
                                  (al/al-len [RasterBand]

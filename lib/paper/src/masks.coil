@@ -388,8 +388,12 @@
 ; CGPath equality compares the sequence of elements, not allocation identity.
 ; Hash the same sequence; still verify full equality on every hash match.
 (defstruct PathElement [(kind i32) (points (ptr CGPoint))])
-(extern CGPathApply :cc c
-  [(ptr i8) (ptr i8) (fnptr c [(ptr i8) (ptr PathElement)] void)] (-> void))
+
+(extern CGPathApply
+        :cc
+        c
+        [(ptr i8) (ptr i8) (fnptr c [(ptr i8) (ptr PathElement)] void)]
+        (-> void))
 
 (defn hash-part [(state i64) (value i64)] (-> i64)
   (p/imul (p/ixor state value) 1099511628211))
@@ -398,8 +402,12 @@
   ; Avalanche high coordinate bits into bucket bits. Binary fractions often
   ; share many low zero bits, which a word-wise multiply alone cannot mix.
   (let [a (cast u64 value)
-        b (p/imul (p/ixor a (p/ishr a (cast u64 33))) (cast u64 0xff51afd7ed558ccd))
-        c (p/imul (p/ixor b (p/ishr b (cast u64 33))) (cast u64 0xc4ceb9fe1a85ec53))]
+        b
+          (p/imul (p/ixor a (p/ishr a (cast u64 33)))
+                  (cast u64 0xff51afd7ed558ccd))
+        c
+          (p/imul (p/ixor b (p/ishr b (cast u64 33)))
+                  (cast u64 0xc4ceb9fe1a85ec53))]
     (cast i64 (p/ixor c (p/ishr c (cast u64 33))))))
 
 (defn float-bits [(value f64)] (-> i64)
@@ -430,12 +438,15 @@
     (set! hash (hash-part (load hash) (float-bits (.size key))))
     (set! hash (hash-part (load hash) (msg i64 (.text key) (sel c"hash") [])))
     (when (!= (.path key) (nil))
-      (CGPathApply (.path key) (cast (ptr i8) hash) (fnptr-of hash-path-element))
+      (CGPathApply (.path key)
+                   (cast (ptr i8) hash)
+                   (fnptr-of hash-path-element))
       0)
     (hash-final (load hash))))
 
 (defn index-entry [(slot i64)] (-> i64)
-  (let [c (cache) entry (al/al-elem [Entry] (field c entries) slot)
+  (let [c (cache)
+        entry (al/al-elem [Entry] (field c entries) slot)
         bucket (& (.fingerprint entry) (- (len (.buckets c)) 1))]
     (set! (.next entry) (get (.buckets c) bucket))
     (set! (mut (.buckets c)) bucket slot))
@@ -449,16 +460,20 @@
   0)
 
 (defn queue-mask [(slot i64)] (-> i64)
-  (let [c (cache) entry (al/al-elem [Entry] (field c entries) slot)]
-    (when (and (.preparing c) (= (.texture entry) (nil))
+  (let [c (cache)
+        entry (al/al-elem [Entry] (field c entries) slot)]
+    (when (and (.preparing c)
+               (= (.texture entry) (nil))
                (!= (.queued entry) (.frame-start c)))
       (set! (.queued entry) (.frame-start c))
       (push! (mut (.pending c)) slot)))
   0)
 
 (defn unlink-recent [(slot i64)] (-> i64)
-  (let [c (cache) entry (al/al-elem [Entry] (field c entries) slot)
-        older (.older entry) newer (.newer entry)]
+  (let [c (cache)
+        entry (al/al-elem [Entry] (field c entries) slot)
+        older (.older entry)
+        newer (.newer entry)]
     (if (>= older 0)
         (set! (.newer (al/al-elem [Entry] (field c entries) older)) newer)
         (set! (.oldest c) newer))
@@ -468,7 +483,8 @@
   0)
 
 (defn link-newest [(slot i64)] (-> i64)
-  (let [c (cache) entry (al/al-elem [Entry] (field c entries) slot)]
+  (let [c (cache)
+        entry (al/al-elem [Entry] (field c entries) slot)]
     (set! (.older entry) (.newest c))
     (set! (.newer entry) -1)
     (if (>= (.newest c) 0)
@@ -478,7 +494,9 @@
   0)
 
 (defn evict-oldest [] (-> i64)
-  (let [c (cache) slot (.oldest c) last (- (len (.entries c)) 1)
+  (let [c (cache)
+        slot (.oldest c)
+        last (- (len (.entries c)) 1)
         entry (al/al-elem [Entry] (field c entries) slot)]
     (assert (>= slot 0))
     (set! (.bytes c) (- (.bytes c) (.bytes entry)))
@@ -488,10 +506,12 @@
       (al/al-set! [Entry] (mut (.entries c)) slot (get (.entries c) last))
       (let [moved (al/al-elem [Entry] (field c entries) slot)]
         (if (>= (.older moved) 0)
-            (set! (.newer (al/al-elem [Entry] (field c entries) (.older moved))) slot)
+            (set! (.newer (al/al-elem [Entry] (field c entries) (.older moved)))
+                  slot)
             (set! (.oldest c) slot))
         (if (>= (.newer moved) 0)
-            (set! (.older (al/al-elem [Entry] (field c entries) (.newer moved))) slot)
+            (set! (.older (al/al-elem [Entry] (field c entries) (.newer moved)))
+                  slot)
             (set! (.newest c) slot))))
     (al/al-pop! [Entry] (mut (.entries c))))
   0)
@@ -665,19 +685,20 @@
     (let [(mut slot) (get (.buckets c) (& fingerprint (- (len (.buckets c)) 1)))]
       (while (>= (load slot) 0)
         (let [entry (al/al-elem [Entry] (field c entries) (load slot))]
-        (when (and (= (.fingerprint entry) fingerprint)
-                   (= (.width entry) width)
-                   (= (.height entry) height)
-                   (equal (.key entry) key))
-          (set! found (load slot))
-          (break))
-        (set! slot (.next entry)))))
+          (when (and (= (.fingerprint entry) fingerprint)
+                     (= (.width entry) width)
+                     (= (.height entry) height)
+                     (equal (.key entry) key))
+            (set! found (load slot))
+            (break))
+          (set! slot (.next entry)))))
     (if (>= (load found) 0)
         (let [entry (al/al-elem [Entry] (field c entries) (load found))]
           (set! (.last-entry c) (load found))
           (set! (.used entry) (.serial c))
           (when (!= (load found) (.newest c))
-            (unlink-recent (load found)) (link-newest (load found)))
+            (unlink-recent (load found))
+            (link-newest (load found)))
           (queue-mask (load found))
           (CGPathRelease (.path key))
           (when (and (= (.texture entry) (nil)) (not (.preparing c)))
@@ -719,7 +740,8 @@
 ;;; Oversized frames may temporarily exceed the persistent budget; once encoded,
 ;;; the command buffer owns their textures and the cache can release its copies.
 (defn trim [(keep-current bool)] (-> i64)
-  (let [c (cache) (mut changed) false]
+  (let [c (cache)
+        (mut changed) false]
     (while (> (.bytes c) 268435456)
       (when (< (.oldest c) 0) (break))
       (when (and keep-current
@@ -1313,11 +1335,14 @@
     (set! (.preparing c) false)
     (for [i 0 (len (.pending c))]
       (set! (.bytes c)
-            (+ (.bytes c) (.bytes (al/al-elem [Entry] (field c entries) (get (.pending c) i))))))
+            (+ (.bytes c)
+               (.bytes (al/al-elem [Entry]
+                                   (field c entries)
+                                   (get (.pending c) i))))))
     (trim true))
   0)
 
-(defn render-region [(region CGRect)] (-> i64)
+(defn set-composition-region [(region CGRect)] (-> i64)
   (let [pixels (gpu/pixel-region region 0.0)
         scale (.scale (scene))]
     (store! (composition-region)
@@ -1325,9 +1350,48 @@
                     (/ (cast f64 (.y pixels)) scale)
                     (/ (cast f64 (.width pixels)) scale)
                     (/ (cast f64 (.height pixels)) scale))))
+  0)
+
+(defn prepare-region [(region CGRect)] (-> i64)
+  (set-composition-region region)
   (prepare-masks)
   (prepare-micro)
   (visibility-setup)
+  0)
+
+(defn render-region [(region CGRect)] (-> i64)
+  (store! (last-composed-area) 0.0)
+  (prepare-region region)
+  (encode-region region)
+  (trim false)
+  0)
+
+;;; Reserve the complete frame working set once, then compose disjoint damage
+;;; rectangles without composing the unchanged pixels between them. Encoder-owned
+;;; textures remain pinned until all regions have been encoded.
+(defn render-regions [(regions (ptr CGRect)) (count i64) (bounds CGRect)] (-> i64)
+  (store! (last-composed-area) 0.0)
+  (prepare-region bounds)
+  (for [i 0 count]
+    (let [region (load (index regions i))
+          pixels (gpu/pixel-region region 0.0)]
+      (when (and (> (.width pixels) (cast u64 0))
+                 (> (.height pixels) (cast u64 0)))
+        (encode-region region))))
+  (let [pixels (gpu/pixel-region bounds 0.0)]
+    (store! (last-damage)
+            (cgrect (cast f64 (.x pixels))
+                    (cast f64 (.y pixels))
+                    (cast f64 (.width pixels))
+                    (cast f64 (.height pixels)))))
+  (trim false)
+  0)
+
+(defn last-composed-area [] (-> (ptr f64))
+  (p/alloc-static f64))
+
+(defn encode-region [(region CGRect)] (-> i64)
+  (set-composition-region region)
   (let [s (scene)
         g (gpu/gpu)
         command (gpu/command-buffer)
@@ -1343,6 +1407,9 @@
                (= (.y pixels) 0)
                (= (.width pixels) (cast u64 (.width s)))
                (= (.height pixels) (cast u64 (.height s))))]
+    (store! (last-composed-area)
+            (+ (load (last-composed-area))
+               (cast f64 (* (.width pixels) (.height pixels)))))
     (let [depth (msg (ptr i8) descriptor (sel c"depthAttachment") [])]
       (msg i64 depth (sel c"setTexture:") [(ptr i8)] (.texture (visibility)))
       (msg i64 depth (sel c"setLoadAction:") [u64] 2)
@@ -1487,12 +1554,7 @@
           (set! (.rank (visibility)) (+ (.rank (visibility)) 1))))
       (set! (.prepass (visibility)) false)
       (msg i64 encoder (sel c"endEncoding") []))
-    (trim false)
-    (set! (.pending g)
-          (cgrect 0.0
-                  0.0
-                  (/ (cast f64 (.width s)) (.scale s))
-                  (/ (cast f64 (.height s)) (.scale s)))))
+    (gpu/include-preparation (load (composition-region))))
   0)
 
 (defn read-inputs [] (-> i64)

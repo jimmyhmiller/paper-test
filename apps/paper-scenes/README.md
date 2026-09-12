@@ -75,8 +75,14 @@ and use an exact Myers edit comparison to retain unchanged interior commands.
 A selection change and cursor insertion can now share a frame without invalidating
 the paper stocks between them. We cap the search at 64 edits and use conservative
 redraw beyond that budget. Reordering remains an edit; raster quality is unchanged.
-Material composition visits commands intersecting its pixel-aligned damage region.
-We still combine separated dirty areas into one rectangle.
+For Metal material composition we retain up to 32 separated damage regions,
+merge touching regions, and collapse to their union if fragmentation exceeds
+that bound. We prepare the frame mask working set once, encode each pixel-aligned
+region, then allow cache eviction. Normal/material preparation accumulates changed
+bounds with a two-pixel dependency halo; we still rebuild the shadow-height
+hierarchy. The CPU fallback and lighting cover the enclosing bounds.
+`masks/last-composed-area` records the summed pixel area
+of the composition passes, including any overlap from antialias padding.
 
 In the 60 fps native report, `missed_intervals` counts presentation gaps of at
 least 25 ms, with a 1 µs timestamp tolerance. Earlier reports used a strict

@@ -308,6 +308,28 @@
   (assert (= (msg i64 command (sel c"status") []) 4))
   (* 1000.0 (- (msg f64 command (sel c"GPUEndTime") []) (msg f64 command (sel c"GPUStartTime") []))))
 
+;;; Preparation reads only the current pixel and adjacent height samples. Keep
+;;; all unprepared updates, including several rasterizations before a render;
+;;; render adds the dependency halo and still rebuilds the shadow hierarchy.
+(defn include-preparation [(r CGRect)] (-> i64)
+  (when (and (> (.w r) 0.0) (> (.h r) 0.0))
+    (let [g (gpu)
+          a (.pending g)]
+      (if (<= (.w a) 0.0)
+          (set! (.pending g) r)
+          (let [x (if (< (.x a) (.x r)) (.x a) (.x r))
+                y (if (< (.y a) (.y r)) (.y a) (.y r))
+                right
+                  (if (> (+ (.x a) (.w a)) (+ (.x r) (.w r)))
+                      (+ (.x a) (.w a))
+                      (+ (.x r) (.w r)))
+                bottom
+                  (if (> (+ (.y a) (.h a)) (+ (.y r) (.h r)))
+                      (+ (.y a) (.h a))
+                      (+ (.y r) (.h r)))]
+            (set! (.pending g) (cgrect x y (- right x) (- bottom y)))))))
+  0)
+
 (defn render [(bounds CGRect) (all bool) (readback bool)] (-> i64)
   (let [g (gpu)
         s (scene)
