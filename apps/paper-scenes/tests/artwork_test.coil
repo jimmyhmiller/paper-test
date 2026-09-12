@@ -5,6 +5,39 @@
 (extern printf :cc c [(ptr i8) ...] (-> i32))
 (extern fflush :cc c [(ptr i8)] (-> i32))
 
+(deftest vermilion-branch-accent-keeps-the-lower-margin-navy
+  (scene/init)
+  (let [stock (ukiyo/branch-accent-path 0) fold (ukiyo/branch-accent-path 1)]
+    (assert (= stock (ukiyo/branch-accent-path 0)))
+    (assert (= fold (ukiyo/branch-accent-path 1)))
+    (assert (not (CGPathIsEmpty fold)))
+    (assert (CGPathContainsPoint stock (cast (ptr CGAffine) 0) (CGPoint :x 45.0 :y 180.0) true))
+    (for [y 230 400]
+      (for [x 0 95]
+        (assert (not (CGPathContainsPoint stock (cast (ptr CGAffine) 0)
+                       (CGPoint :x (cast f64 x) :y (cast f64 y)) true)))))))
+
+(defn stock-height-at [(x f64) (y f64)] (-> f64)
+  (let [(mut height) 0.0]
+    (for [i 0 (len (.sheets (scene/scene)))]
+      (let [stock (get (.sheets (scene/scene)) i)]
+        (when (and (> (.z stock) (load height))
+                   (CGPathContainsPoint (.path stock) (cast (ptr CGAffine) 0) (CGPoint :x x :y y) true))
+          (set! height (.z stock)))))
+    (load height)))
+
+(deftest shoji-leaves-overlap-with-recessed-paper-and-raised-rails
+  (scene/init) (scene/clear 0xffffff)
+  (set! (.sx (ukiyo/canvas)) 1.0) (set! (.sy (ukiyo/canvas)) 1.0)
+  (ukiyo/shoji)
+  (let [back (stock-height-at 766.0 80.0)
+        middle (stock-height-at 757.0 90.0)
+        front (stock-height-at 730.0 125.0)]
+    (assert (> back 25.0)) (assert (> middle back)) (assert (> front middle))
+    (assert (> (stock-height-at 724.5 125.0) front))
+    (assert (> (stock-height-at 730.0 146.5) front)))
+  (scene/clear 0xffffff))
+
 (deftest cherry-petal-folds-have-supporting-stock-at-authored-proportions
   (scene/init)
   (for [scale 1 4]
