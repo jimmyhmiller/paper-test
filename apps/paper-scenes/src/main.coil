@@ -1,0 +1,4 @@
+(module paper-scenes.main)
+(import "paper-scenes.gallery" :as gallery)
+
+(defn main [] (-> i64) (gallery/run))

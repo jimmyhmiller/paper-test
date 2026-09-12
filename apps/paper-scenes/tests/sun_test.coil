@@ -1,0 +1,32 @@
+(module paper-scenes.sun-test)
+(import "paper-scenes.gallery" :as gallery)
+(import "paper-scenes.ukiyo" :as ukiyo)
+(import "paper.scene" :as scene)
+(import "paper.platform" :as host)
+(import "paper.lighting" :as light)
+(import "paper.objc" :as o)
+(import "paper.geometry" :use [rect])
+
+(deftest red-sun-is-the-shaped-lighting-launcher-and-opens-anchored-popover
+  (let [pool (o/new c"NSAutoreleasePool") state (gallery/state)]
+    (scene/init)
+    (set! (.width (scene/scene)) 1536) (set! (.height (scene/scene)) 1024)
+    (set! (.scale (scene/scene)) 2.0)
+    (set! (.theme state) 5) (set! (.density state) 4)
+    (set! (.lighting state) (light/lighting 0.2 -0.3 700.0 0.45 0.8))
+    (gallery/compose 5 768.0 512.0 4 0.0 0 false)
+    (let [sun (get (.hits (scene/scene)) 0)]
+      (assert (= (.id sun) 500)) (assert (= (.role sun) 0)))
+    (assert (= (host/hit-test 582.0 46.0) 500))
+    (assert (!= (host/hit-test 547.0 11.0) 500))
+    (assert (!= (host/hit-test 665.0 146.0) 500))
+    (gallery/event 3 500 582.0 46.0)
+    (assert (.open (.lighting state)))
+    (light/apply-light (field state lighting) (rect 0.0 0.0 768.0 512.0))
+    (light/popover-panel (field state lighting) 500 (ukiyo/sun-bounds 768.0 512.0))
+    (let [bounds (.bounds (.lighting state))]
+      (assert (> (.y bounds) 82.0))
+      (assert (< (+ (.x bounds) (.w bounds)) 768.0)))
+    (gallery/event 4 53 0.0 0.0)
+    (assert (not (.open (.lighting state))))
+    (o/release pool)))

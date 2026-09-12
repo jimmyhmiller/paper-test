@@ -1,0 +1,147 @@
+(module paper-scenes.art)
+(import "paper.surface" :use *)
+(import "paper.material" :use *)
+(import "paper.geometry" :use [Rect rect inset])
+(import "paper.charts" :as charts)
+(import "paper.ffi" :use [sin cos])
+
+;;; Eight palettes follow the eight reference compositions, in reading order.
+(defn pigment [(theme i64) (i i64)] (-> u32)
+  (let [colors
+    [0x293f35 0x66714b 0x9eaa73 0xd7bd7d 0xb65d43 0xf0dca6
+     0x102e3b 0x175571 0x3889a0 0xe8b752 0xe88343 0xb94d36
+     0x111d2a 0x213e68 0x315f91 0x625397 0x9e427d 0xce6b8e
+     0x125563 0x23818a 0xefb849 0xf3d888 0xdd623e 0xec9670
+     0x132f45 0x245575 0x4a839d 0xd2a951 0xe8cd83 0x8c985d
+     0x153543 0x315765 0xa23e2e 0xc46b45 0xd3b67f 0xe8d2a4
+     0x393e46 0x748b9d 0xb98e9f 0xd9afa1 0xe3c576 0xc6b890
+     0x163f45 0x28676b 0x28608a 0xd05535 0xe8ad36 0xe6c76b]]
+    (cast u32 (get colors (+ (* theme 6) (% i 6))))))
+
+(defn paper [(theme i64) (i i64)] (-> Material)
+  (stock (pigment theme i) 0.85 0.85 (+ 0.11 (* 0.07 (cast f64 (% i 9))))))
+
+;;; A continuous cubic contour with broad corners and asymmetric cut shoulders.
+;;; The safe text rectangle is inset 30 points from this outline.
+(defn aperture [(r Rect) (phase f64)] (-> i64)
+  (let [x (.x r) y (.y r) w (.w r) h (.h r)
+        shoulder (+ 24.0 (* 6.0 (sin phase)))]
+    (move-to (+ x 34.0) y)
+    (line-to (+ x (* w 0.26)) y)
+    (curve-to (+ x (* w 0.36)) y (+ x (* w 0.28)) (+ y shoulder) (+ x (* w 0.43)) (+ y shoulder))
+    (curve-to (+ x (* w 0.7)) (+ y shoulder) (+ x w) (- y 8.0) (+ x w) (+ y 54.0))
+    (line-to (+ x w) (+ y (* h 0.73)))
+    (curve-to (+ x w) (+ y h) (+ x (* w 0.84)) (+ y h) (+ x (* w 0.65)) (+ y h))
+    (curve-to (+ x (* w 0.4)) (+ y h) (+ x (* w 0.19)) (+ y (- h 16.0)) (+ x 33.0) (+ y h))
+    (curve-to x (+ y h) x (+ y (- h 15.0)) x (+ y (- h 42.0)))
+    (line-to x (+ y 36.0))
+    (curve-to x (+ y 8.0) (+ x 8.0) y (+ x 34.0) y)
+    (close-path)))
+
+(defn disc [(x f64) (y f64) (radius f64) (z f64) (stock Material)] (-> i64)
+  (begin-sheet)
+  (oval-path (rect (- x radius) (- y radius) (* radius 2.0) (* radius 2.0)))
+  (finish-sheet z stock))
+
+;;; A narrow closed ribbon: real relief, not a line painted into the background.
+(defn ribbon [(x f64) (y f64) (w f64) (h f64) (thickness f64) (z f64) (stock Material)] (-> i64)
+  (begin-sheet)
+  (move-to x y)
+  (curve-to (+ x (* w 0.3)) (- y h) (+ x (* w 0.65)) (+ y h) (+ x w) y)
+  (line-to (+ x w) (+ y thickness))
+  (curve-to (+ x (* w 0.65)) (+ (+ y h) thickness) (+ x (* w 0.3)) (+ (- y h) thickness) x (+ y thickness))
+  (close-path)
+  (finish-sheet z stock))
+
+(defn flower [(x f64) (y f64) (radius f64) (z f64) (theme i64)] (-> i64)
+  (for [petal 0 7]
+    (let [a (* (cast f64 petal) 0.8975979)
+          dx (* radius (cos a)) dy (* radius (sin a))]
+      (begin-sheet)
+      (move-to x y)
+      (curve-to (+ x (- (* dx 0.35) (* dy 0.45))) (+ y (+ (* dy 0.35) (* dx 0.45)))
+                (+ x (- dx (* dy 0.35))) (+ y (+ dy (* dx 0.35))) (+ x dx) (+ y dy))
+      (curve-to (+ x (+ dx (* dy 0.35))) (+ y (- dy (* dx 0.35)))
+                (+ x (+ (* dx 0.35) (* dy 0.45))) (+ y (- (* dy 0.35) (* dx 0.45))) x y)
+      (close-path)
+      (finish-sheet (+ z (* 0.3 (cast f64 petal)))
+                    (stock (if (= theme 0) 0xe4aa7e 0xe9bba5) 0.9 0.8 (* 0.11 (cast f64 petal))))))
+  (disc x y (* radius 0.12) (+ z 3.0) (cotton 0xd4a957)))
+
+(defn foliage [(w f64) (h f64) (theme i64) (motion f64)] (-> i64)
+  (for [side 0 2]
+    (let [x (if (= side 0) 25.0 (- w 25.0)) direction (if (= side 0) 1.0 -1.0)]
+      (for [i 0 28]
+        (let [t (cast f64 i) y (+ 35.0 (* t (/ (- h 80.0) 28.0)))
+              sway (* motion (sin (* t 0.7)))]
+          (charts/leaf (+ x sway) (+ y 38.0) (* direction (+ 22.0 (* 12.0 (sin t)))) 53.0
+                       (+ 27.0 (* 0.4 (cast f64 (% i 5)))) (paper theme (+ i 1)))
+          (ribbon (+ x sway) (+ y 38.0) (* direction 32.0) 16.0 1.4 31.0 (paper theme 3))))
+      (for [i 0 5]
+        (flower (+ x (* direction (+ 12.0 motion))) (+ 72.0 (* (cast f64 i) (/ (- h 120.0) 5.0)))
+                (if (= theme 0) 29.0 19.0) 33.0 theme))))
+  0)
+
+(defn mountains [(w f64) (h f64) (theme i64)] (-> i64)
+  (disc (* w 0.73) 74.0 54.0 5.0 (paper theme (if (= theme 5) 2 3)))
+  (for [layer 0 9]
+    (let [l (cast f64 layer) base (+ 40.0 (* l 16.0))]
+      (begin-sheet)
+      (move-to 0.0 (+ base 30.0))
+      (for [i 0 33]
+        (let [t (/ (cast f64 i) 32.0)
+              y (+ base (+ (* 28.0 (sin (+ (* t 16.0) (* l 0.45)))) (* 12.0 (sin (+ (* t 53.0) l)))))]
+          (line-to (* t w) y)))
+      (line-to w h) (line-to 0.0 h) (close-path)
+      (finish-sheet (+ 6.0 l) (paper theme (+ layer 1)))))
+  (when (= theme 5)
+    (begin-sheet) (move-to (* w 0.45) 158.0) (line-to (* w 0.69) 29.0)
+    (line-to (* w 0.72) 27.0) (line-to (* w 0.91) 166.0) (close-path)
+    (finish-sheet 16.0 (paper theme 1))
+    (begin-sheet) (move-to (* w 0.62) 72.0) (line-to (* w 0.69) 29.0)
+    (line-to (* w 0.72) 27.0) (line-to (* w 0.78) 75.0)
+    (line-to (* w 0.73) 59.0) (line-to (* w 0.72) 82.0)
+    (line-to (* w 0.69) 59.0) (line-to (* w 0.67) 74.0) (close-path)
+    (finish-sheet 17.0 (cotton 0xe9dbb9)))
+  0)
+
+(defn night [(w f64) (h f64) (theme i64) (density i64) (motion f64)] (-> i64)
+  (for [i 0 (* density 90)]
+    (let [n (cast f64 i)
+          x (* w (/ (cast f64 (% (* i 71) 997)) 997.0))
+          y (* h (/ (cast f64 (% (* i 193) 991)) 991.0))]
+      (if (= theme 4)
+        (ribbon x y (+ 10.0 (* 14.0 (sin n))) (+ 4.0 (* 4.0 (cos n)))
+                2.4 (+ 15.0 (* 0.2 (cast f64 (% i 7)))) (paper theme (+ i 1)))
+        (disc x y (+ 0.7 (* 0.45 (cast f64 (% i 4)))) 16.0 (cotton 0xebd5af)))))
+  (for [i 0 (if (= theme 4) 36 10)]
+    (let [n (cast f64 i)]
+      (ribbon 0.0 (+ 40.0 (* n (if (= theme 4) 4.2 12.0))) w
+              (+ 70.0 motion) (if (= theme 4) 3.0 9.0) (+ 17.0 (* n 0.12)) (paper theme (+ i 1)))))
+  (for [i 0 (if (= theme 4) 5 1)]
+    (let [cx (* w (+ 0.2 (* (cast f64 i) 0.17))) cy (+ 66.0 (* 19.0 (sin (cast f64 i))))]
+      (for [ring 0 (if (= theme 4) 15 4)]
+        (disc cx cy (- 47.0 (* 2.8 (cast f64 ring))) (+ 23.0 (* 0.25 (cast f64 ring)))
+              (if (= theme 4) (paper theme (+ ring 3)) (cotton 0xcbb89a))))))
+  0)
+
+(defn geometric [(w f64) (h f64) (theme i64) (motion f64)] (-> i64)
+  (for [i 0 48]
+    (let [x (+ (* (/ w 12.0) (cast f64 (% i 12))) (* motion (sin (cast f64 i))))
+          y (* (/ h 4.0) (cast f64 (/ i 12)))]
+      (if (= theme 6)
+        (do
+          (disc (+ x 28.0) (+ y 65.0) 66.0 (+ 8.0 (* 0.2 (cast f64 i))) (paper theme i))
+          (charts/arc-sheet (+ x 28.0) (+ y 65.0) 65.0 64.2 0.0 6.2831853 24.0 (cotton 0xe9d59c)))
+        (do
+          (begin-sheet) (move-to x y) (line-to (+ x (/ w 10.0)) (+ y 18.0))
+          (line-to (+ x (/ w 13.0)) (+ y (/ h 3.4))) (line-to (- x 22.0) (+ y (/ h 4.0)))
+          (close-path) (finish-sheet (+ 8.0 (* 0.2 (cast f64 i))) (paper theme i))))))
+  (when (= theme 7)
+    (for [i 0 17]
+      (let [x (+ (* w 0.42) (* (cast f64 i) 36.0)) y (+ 62.0 (* 24.0 (sin (cast f64 i))))]
+        (panel (rect x y 26.0 71.0) 0.0 21.0 (paper theme (+ i 3)))
+        (begin-sheet) (move-to (- x 6.0) y) (line-to (+ x 13.0) (- y 25.0))
+        (line-to (+ x 32.0) y) (close-path) (finish-sheet 22.0 (paper theme (+ i 1)))
+        (panel (rect (+ x 11.0) (+ y 32.0) 6.0 24.0) 0.0 23.0 (paper theme 0)))))
+  0)

@@ -1,0 +1,81 @@
+(module paper.mask-pack)
+(import "coil.alloc" :as alloc)
+(import "coil.primitive" :as p)
+
+;;; Lossless RG8 coverage atlas. Table entries 0/1 mean empty/solid paper;
+;;; entries 2..65535 address 64-square mixed tiles after the table rows.
+;;; The atlas is 1024 texels wide. Both channels, including antialiased paper
+;;; edges, remain byte-exact. Dense masks are used when packing would grow them.
+(defstruct Packed [(data (ptr u16)) (width i64) (height i64) (tiled bool)])
+
+(defn coverage [(source (ptr u32)) (width i64) (height i64) (x i64) (y i64)] (-> u16)
+  (if (and (< x width) (< y height))
+      (cast u16
+            (p/iand (load (index source (+ (* y width) x))) (cast u32 65535)))
+      (cast u16 0)))
+
+(defn pack [(source (ptr u32)) (width i64) (height i64)] (-> Packed)
+  (let [columns (/ (+ width 63) 64)
+        rows (/ (+ height 63) 64)
+        count (* columns rows)
+        header (/ (+ count 1023) 1024)
+        table (cast (ptr u16) (alloc/malloc (cast isize (* count 2))))
+        (mut mixed) 0]
+    (assert (!= table (cast (ptr u16) 0)))
+    (for [tile 0 count]
+      (let [ox (* (% tile columns) 64)
+            oy (* (/ tile columns) 64)
+            first (coverage source width height ox oy)
+            (mut uniform) (or (= first (cast u16 0)) (= first (cast u16 255)))]
+        (for [y 0 64]
+          (when (not (load uniform)) (break))
+          (for [x 0 64]
+            (when (!= first (coverage source width height (+ ox x) (+ oy y)))
+              (set! uniform false)
+              (break))))
+        (if (load uniform)
+            (set! (index table tile)
+                  (if (= first (cast u16 0)) (cast u16 0) (cast u16 1)))
+            (do
+              (set! (index table tile) (cast u16 (+ (load mixed) 2)))
+              (set! mixed (+ (load mixed) 1))))))
+    (let [atlas-height (+ header (* (/ (+ (load mixed) 15) 16) 64))
+          tiled
+            (and (<= (load mixed) 65534)
+                 ; Do not turn a supported source into an over-tall texture.
+                 (<= atlas-height (if (> width height) width height))
+                 (< (* 1024 atlas-height) (* width height)))
+          out-width (if tiled 1024 width)
+          out-height (if tiled atlas-height height)
+          data
+            (cast (ptr u16)
+                  (alloc/malloc (cast isize (* (* out-width out-height) 2))))]
+      (assert (!= data (cast (ptr u16) 0)))
+      (if tiled
+          (do
+            (for [i 0 (* out-width out-height)]
+              (set! (index data i) (cast u16 0)))
+            (for [tile 0 count]
+              (let [id (cast i64 (load (index table tile)))]
+                (set! (index data tile) (cast u16 id))
+                (when (>= id 2)
+                  (let [ox (* (% tile columns) 64)
+                        oy (* (/ tile columns) 64)
+                        ax (* (% (- id 2) 16) 64)
+                        ay (+ header (* (/ (- id 2) 16) 64))]
+                    (for [y 0 64]
+                      (for [x 0 64]
+                        (set! (index data (+ (* (+ ay y) 1024) (+ ax x)))
+                              (coverage source width height (+ ox x) (+ oy y)))))))))
+            0)
+          (do
+            (for [i 0 (* width height)]
+              (set! (index data i)
+                    (cast u16 (p/iand (load (index source i)) (cast u32 65535)))))
+            0))
+      (p/free (cast (ptr i8) table))
+      (Packed
+        :data data
+        :width out-width
+        :height out-height
+        :tiled tiled))))

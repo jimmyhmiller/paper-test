@@ -1,0 +1,21 @@
+(module paper-scenes.workload)
+(import "paper-scenes.gallery" :as gallery)
+(import "paper.scene" :as scene)
+(import "paper.platform" :as host)
+(import "paper.gpu" :as gpu)
+(import "paper.objc" :as o)
+(import "paper.ffi" :use [sin])
+
+(defn setting [(name (ptr i8)) (fallback i64)] (-> i64)
+  (let [v (gpu/getenv name)]
+    (if (= v (o/nil)) fallback (o/msg i64 (o/ns v) (o/sel c"integerValue") []))))
+
+(defn draw-case [(theme i64) (scenario i64) (frame i64) (density i64)] (-> i64)
+  (let [w (/ (cast f64 (.width (scene/scene))) (.scale (scene/scene)))
+        h (/ (cast f64 (.height (scene/scene))) (.scale (scene/scene)))
+        phase (* (cast f64 frame) 0.065)]
+    (gallery/compose theme w h density (if (= scenario 2) (* 8.0 (sin phase)) 0.0)
+                     (if (= scenario 1) (% (/ frame 8) 4) 0) (if (= scenario 1) (= (% frame 2) 0) true))
+    (host/paper_light (if (= scenario 0) (+ (* w 0.5) (* w (* 0.5 (sin phase)))) 256.0)
+                      -220.0 700.0 0.45 0.8))
+  0)

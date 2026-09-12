@@ -12,6 +12,8 @@
   [(sheets (al/ArrayList Sheet))
    (inks (al/ArrayList Ink))
    (ink-orders (al/ArrayList i64))
+   (paint-order (al/ArrayList i64))
+   (previous-order (al/ArrayList i64))
    (ready bool)
    (valid bool)
    (background u32)
@@ -48,6 +50,8 @@
       (set! (.sheets c) (al/al-new [Sheet] (alloc/malloc-allocator)))
       (set! (.inks c) (al/al-new [Ink] (alloc/malloc-allocator)))
       (set! (.ink-orders c) (al/al-new [i64] (alloc/malloc-allocator)))
+      (set! (.paint-order c) (al/al-new [i64] (alloc/malloc-allocator)))
+      (set! (.previous-order c) (al/al-new [i64] (alloc/malloc-allocator)))
       (set! (.ready c) true))
     (set! (.valid c) false)
     (set! (.lit c) false)
@@ -75,7 +79,6 @@
 
 (defn sheet-equal [(a Sheet) (b Sheet)] (-> bool)
   (and (p/fcmp-eq (.z a) (.z b))
-       (= (.order a) (.order b))
        (= (.color a) (.color b))
        (p/fcmp-eq (.rough a) (.rough b))
        (p/fcmp-eq (.fiber a) (.fiber b))
@@ -92,7 +95,6 @@
        (p/fcmp-eq (.height a) (.height b))
        (p/fcmp-eq (.size a) (.size b))
        (p/fcmp-eq (.z a) (.z b))
-       (= (.order a) (.order b))
        (= (.color a) (.color b))
        (= (.font a) (.font b))
        (= (.kind a) (.kind b))
@@ -103,6 +105,96 @@
                   [(ptr i8)]
                   (.text b)))
        (CGPathEqualToPath (.clip a) (.clip b))))
+
+;;; Merge sheets and ink into their actual painter sequence. Positive tokens
+;;; name sheets, negative tokens ink; zero is never a command. Raw submission
+;;; ordinals are only tie breakers, not visual identity: inserting one cursor
+;;; must not invalidate every later sheet merely because its ordinal increased.
+(defn order-commands [(sheets (al/ArrayList Sheet))
+                      (inks (al/ArrayList Ink))
+                      (out (mut (al/ArrayList i64)))] (-> i64)
+  (al/al-clear! [i64] (mut out))
+  (let [(mut next) 0
+        count (al/al-len [Ink] inks)]
+    (for [i 0 (al/al-len [Sheet] sheets)]
+      (let [sheet (al/al-get [Sheet] sheets i)]
+        (while (< (load next) count)
+          (let [ink (al/al-get [Ink] inks (load next))]
+            (if (or (< (.z ink) (.z sheet))
+                    (and (p/fcmp-eq (.z ink) (.z sheet))
+                         (< (.order ink) (.order sheet))))
+                (do
+                  (al/al-push! [i64] (mut out) (- -1 (load next)))
+                  (set! next (+ (load next) 1)))
+                (break))))
+        (al/al-push! [i64] (mut out) (+ i 1))))
+    (while (< (load next) count)
+      (al/al-push! [i64] (mut out) (- -1 (load next)))
+      (set! next (+ (load next) 1))))
+  0)
+
+(defn command-equal [(current i64) (previous i64)] (-> bool)
+  (let [s (scene)
+        c (cache)]
+    (cond (and (> current 0) (> previous 0))
+            (sheet-equal (al/al-get [Sheet] (.sheets s) (- current 1))
+                         (al/al-get [Sheet] (.sheets c) (- previous 1)))
+          (and (< current 0) (< previous 0))
+            (ink-equal (al/al-get [Ink] (.inks s) (- -1 current))
+                       (al/al-get [Ink] (.inks c) (- -1 previous)))
+          :else false)))
+
+(defn include-command [(token i64) (previous bool)] (-> i64)
+  (if (> token 0)
+      (let [item
+              (if previous
+                  (al/al-get [Sheet] (.sheets (cache)) (- token 1))
+                  (al/al-get [Sheet] (.sheets (scene)) (- token 1)))]
+        (include (CGPathGetPathBoundingBox (.path item))))
+      (let [item
+              (if previous
+                  (al/al-get [Ink] (.inks (cache)) (- -1 token))
+                  (al/al-get [Ink] (.inks (scene)) (- -1 token)))]
+        (include (.bounds item)))))
+
+;;; Retain the equal prefix/suffix across insertions and removals. If the middle
+;;; lengths differ, conservatively include both middles; otherwise compare each
+;;; pair. This is linear, preserves equal-height interleaving, and never guesses
+;;; that matching geometry is unchanged when its painter order moved.
+(defn measure-commands [] (-> i64)
+  (let [c (cache)
+        s (scene)]
+    (order-commands (.sheets s) (.inks s) (mut (.paint-order c)))
+    (order-commands (.sheets c) (.inks c) (mut (.previous-order c)))
+    (let [a (.paint-order c)
+          b (.previous-order c)
+          (mut first) 0
+          (mut end-a) (al/al-len [i64] a)
+          (mut end-b) (al/al-len [i64] b)]
+      (while (and (< (load first) (load end-a))
+                  (< (load first) (load end-b))
+                  (command-equal (al/al-get [i64] a (load first))
+                                 (al/al-get [i64] b (load first))))
+        (set! first (+ (load first) 1)))
+      (while (and (> (load end-a) (load first))
+                  (> (load end-b) (load first))
+                  (command-equal (al/al-get [i64] a (- (load end-a) 1))
+                                 (al/al-get [i64] b (- (load end-b) 1))))
+        (set! end-a (- (load end-a) 1))
+        (set! end-b (- (load end-b) 1)))
+      (if (= (load end-a) (load end-b))
+          (for [i (load first) (load end-a)]
+            (let [x (al/al-get [i64] a i)
+                  y (al/al-get [i64] b i)]
+              (when (not (command-equal x y))
+                (include-command x false)
+                (include-command y true))))
+          (do
+            (for [i (load first) (load end-a)]
+              (include-command (al/al-get [i64] a i) false))
+            (for [i (load first) (load end-b)]
+              (include-command (al/al-get [i64] b i) true))))))
+  0)
 
 ;;; Compare exact retained commands, including old bounds for removed geometry.
 ;;; Clip damage to integral backing pixels so antialiasing remains unchanged.
@@ -115,32 +207,7 @@
                          0.0
                          (/ (cast f64 (.width s)) (.scale s))
                          (/ (cast f64 (.height s)) (.scale s))))
-        (do
-          (for [i 0 (al/al-len [Sheet] (.sheets s))]
-            (let [a (al/al-get [Sheet] (.sheets s) i)]
-              (if (>= i (al/al-len [Sheet] (.sheets c)))
-                  (include (CGPathGetPathBoundingBox (.path a)))
-                  (let [b (al/al-get [Sheet] (.sheets c) i)]
-                    (when (not (sheet-equal a b))
-                      (include (CGPathGetPathBoundingBox (.path a)))
-                      (include (CGPathGetPathBoundingBox (.path b))))))))
-          (for [i
-                (al/al-len [Sheet] (.sheets s))
-                (al/al-len [Sheet] (.sheets c))]
-            (include (CGPathGetPathBoundingBox (.path (al/al-elem [Sheet]
-                                                                  (field c
-                                                                         sheets)
-                                                                  i)))))
-          (for [i 0 (al/al-len [Ink] (.inks s))]
-            (let [a (al/al-get [Ink] (.inks s) i)]
-              (if (>= i (al/al-len [Ink] (.inks c)))
-                  (include (.bounds a))
-                  (let [b (al/al-get [Ink] (.inks c) i)]
-                    (when (not (ink-equal a b))
-                      (include (.bounds a))
-                      (include (.bounds b)))))))
-          (for [i (al/al-len [Ink] (.inks s)) (al/al-len [Ink] (.inks c))]
-            (include (.bounds (al/al-elem [Ink] (field c inks) i))))))
+        (measure-commands))
     (let [r (.bounds c)
           scale (.scale s)]
       (if (<= (.w r) 0.0)

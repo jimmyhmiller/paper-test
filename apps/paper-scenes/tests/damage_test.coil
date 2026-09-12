@@ -1,0 +1,106 @@
+(module paper-scenes.damage-test)
+(import "paper-scenes.workload" :as bench)
+(import "paper.scene" :as scene)
+(import "paper.render" :as render)
+(import "paper.damage" :as damage)
+(import "paper.masks" :as masks)
+(import "paper.platform" :as host)
+(import "paper.workers" :as workers)
+(import "paper.surface" :use *)
+(import "paper.material" :use *)
+(import "paper.geometry" :use [rect])
+(import "paper.objc" :as o)
+(import "paper.ffi" :use [CGBitmapContextGetData])
+(import "coil.alloc" :as alloc)
+
+(extern memcpy :cc c [(ptr u8) (ptr u8) u64] (-> (ptr u8)))
+
+(extern memcmp :cc c [(ptr u8) (ptr u8) u64] (-> i32))
+
+(deftest motion-workloads-change-geometry-in-all-eight-themes
+  (let [pool (o/new c"NSAutoreleasePool")]
+    (setup 640 420 0.5)
+    (for [theme 0 8]
+      (bench/draw-case theme 2 11 4) (render/render-frame true)
+      (bench/draw-case theme 2 12 4) (scene/sort-commands)
+      (let [bounds (damage/measure)]
+        (assert (and (> (.w bounds) 0.0) (> (.h bounds) 0.0)))))
+    (workers/stop) (o/release pool)))
+
+(defn setup [(width i64) (height i64) (scale f64)] (-> i64)
+  (scene/init)
+  (set! (.headless (host/host)) true)
+  (set! (.width (scene/scene)) width)
+  (set! (.height (scene/scene)) height)
+  (set! (.scale (scene/scene)) scale)
+  (render/setup))
+
+(defn cursor-scene [(cursor bool) (crossing bool)] (-> i64)
+  (host/paper_begin 0xeee8d9)
+  (panel (rect 4.0 4.0 280.0 180.0) 7.0 10.0 (cream))
+  (when crossing (panel (rect 40.0 36.0 110.0 45.0) 5.0 10.0 (clay)))
+  (ink-height 10.0)
+  (host/paper_ink 30.0 40.0 18.0 0x273c38 2 c"overlapping ink")
+  (when cursor (host/paper_rule 32.0 80.0 2.0 19.0 0x273c38))
+  (when (not crossing) (panel (rect 40.0 36.0 110.0 45.0) 5.0 10.0 (clay)))
+  (panel (rect 220.0 110.0 45.0 40.0) 5.0 20.0 (sage))
+  (host/paper_ink 220.0 115.0 10.0 0x273c38 0 c"later")
+  0)
+
+(deftest cursor-insertion-and-removal-retain-the-unchanged-painter-suffix
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (setup 300 200 1.0)
+           (cursor-scene false false)
+           (render/render-frame true)
+           (for [i 0 4]
+             (cursor-scene (= (% i 2) 0) false)
+             (scene/sort-commands)
+             (let [bounds (damage/measure)]
+               (assert (< (.x bounds) 33.0))
+               (assert (> (.x bounds) 28.0))
+               (assert (< (.w bounds) 8.0))
+               (assert (< (.h bounds) 25.0)))
+             (render/render-frame true))
+           (workers/stop)
+           (o/release pool)))
+
+(defn assert-full-agreement [(copy (ptr u8)) (bytes u64)] (-> i64)
+  (memcpy copy (CGBitmapContextGetData (.output-context (scene/scene))) bytes)
+  (set! (.valid (damage/cache)) false)
+  (set! (.geometry-dirty (scene/scene)) true)
+  (set! (.reference (masks/visibility)) true)
+  (render/render-frame true)
+  (assert (= (memcmp copy
+                     (CGBitmapContextGetData (.output-context (scene/scene)))
+                     bytes)
+             (cast i32 0)))
+  (set! (.reference (masks/visibility)) false)
+  0)
+
+(deftest incremental-insert-remove-and-equal-height-interleaving-match-full-render
+         (let [pool (o/new c"NSAutoreleasePool")
+               copy (cast (ptr u8) (alloc/malloc 240000))]
+           (setup 300 200 1.0)
+           (for [i 0 16]
+             (cursor-scene (= (% i 2) 0) (= (% (/ i 2) 2) 0))
+             (render/render-frame true)
+             (assert-full-agreement copy 240000))
+           (render/free (cast (ptr i8) copy))
+           (workers/stop)
+           (o/release pool)))
+
+(deftest complex-scenes-incremental-and-visibility-reference-agree
+         (let [pool (o/new c"NSAutoreleasePool")
+               copy (cast (ptr u8) (alloc/malloc 1075200))]
+           (setup 640 420 0.5)
+           (for [theme 0 8]
+             (for [scenario 0 3]
+               (for [frame 0 3]
+                 (let [frame-pool (o/new c"NSAutoreleasePool")]
+                   (bench/draw-case theme scenario (+ frame 7) 4)
+                   (render/render-frame true)
+                   (assert-full-agreement copy 1075200)
+                   (o/release frame-pool)))))
+           (render/free (cast (ptr i8) copy))
+           (workers/stop)
+           (o/release pool)))

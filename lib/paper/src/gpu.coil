@@ -427,7 +427,9 @@
 ;;; The image remains on the GPU through presentation. A fullscreen triangle
 ;;; samples the native-resolution result directly into the drawable; there is
 ;;; no CPU readback or CGImage allocation in the interactive path.
-(defn present [(layer (ptr i8))] (-> bool)
+;;; The optional Objective-C block is borrowed for this call; the drawable
+;;; copies it for asynchronous delivery. Captured state must survive delivery.
+(defn present-with-handler [(layer (ptr i8)) (handler (ptr i8))] (-> bool)
   (let [g (gpu)
         drawable (msg (ptr i8) layer (sel c"nextDrawable") [])]
     (if (= drawable (nil))
@@ -446,8 +448,13 @@
             (msg i64 encoder (sel c"endEncoding") []))
           (release (.last-drawable g))
           (set! (.last-drawable g) (retain drawable))
+          (when (!= handler (nil))
+            (msg i64 drawable (sel c"addPresentedHandler:") [(ptr i8)] handler))
           (if (> (.presentation-time g) 0.0)
               (msg i64 command (sel c"presentDrawable:atTime:") [(ptr i8) f64] drawable (.presentation-time g))
               (msg i64 command (sel c"presentDrawable:") [(ptr i8)] drawable))
           (submit)
           true))))
+
+(defn present [(layer (ptr i8))] (-> bool)
+  (present-with-handler layer (nil)))

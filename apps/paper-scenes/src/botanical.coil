@@ -1,0 +1,273 @@
+(module paper-scenes.botanical)
+(import "coil.primitive" :as p)
+(import "paper.surface" :use *)
+(import "paper.material" :use *)
+(import "paper.geometry" :use [Rect rect])
+(import "paper.ffi" :use [sin cos sqrt])
+
+;;; Hand-authored botanical composition in a 1280 × 840 design space.
+;;; Every contour, vein and petal is editable sheet geometry with real elevation.
+(defstruct Canvas [(sx f64) (sy f64)])
+(defn canvas [] (-> (ptr Canvas)) (p/alloc-static Canvas))
+(defn move [(x f64) (y f64)] (-> i64) (move-to (* x (.sx (canvas))) (* y (.sy (canvas)))))
+(defn line [(x f64) (y f64)] (-> i64) (line-to (* x (.sx (canvas))) (* y (.sy (canvas)))))
+(defn curve [(a f64) (b f64) (c f64) (d f64) (e f64) (f f64)] (-> i64)
+  (curve-to (* a (.sx (canvas))) (* b (.sy (canvas))) (* c (.sx (canvas)))
+            (* d (.sy (canvas))) (* e (.sx (canvas))) (* f (.sy (canvas)))))
+
+(defn pigment [(i i64)] (-> u32)
+  (let [colors [0x273f37 0x526044 0x87906a 0xb4ab76 0xd9bd82 0xa46649
+                0xc48461 0x6f7450 0x344b3c 0xbbac74 0xdbc38e 0x5c684a
+                0x2e4638 0x9f9f70 0xd7ba7d 0x7c8860]]
+    (cast u32 (get colors (% i 16)))))
+(defn stock-at [(i i64)] (-> Material)
+  (stock (pigment i) 0.9 0.95 (+ 0.06 (* 0.041 (cast f64 (% i 19))))))
+
+(defn pane [(i i64) (w f64) (h f64)] (-> Rect)
+  (case i 0 (rect (* w 0.102) (* h 0.245) (* w 0.196) (* h 0.71))
+          1 (rect (* w 0.365) (* h 0.249) (* w 0.365) (* h 0.666))
+          2 (rect (* w 0.777) (* h 0.296) (* w 0.182) (* h 0.264))
+          (rect (* w 0.784) (* h 0.624) (* w 0.179) (* h 0.321))))
+
+;;; The apertures wander independently around a fixed content rectangle. Broad
+;;; deviations create flowing terraces; small deviations make the cut feel hand made.
+(defn opening [(i i64) (level f64)] (-> i64)
+  (let [q level k (+ (* q 1.8) (* (* q q) 0.055)) wave (* 5.0 (sin (* q 0.6)))]
+    (case i
+      0 (do
+        (move (- 155.0 k) (- 201.0 (* q 5.5)))
+        (curve 204.0 (- 184.0 (* q 5.0)) (+ 303.0 k) (- 192.0 (* q 4.2)) (+ 342.0 k) (+ 222.0 wave))
+        (curve (+ 379.0 k) 252.0 (+ 378.0 k) 315.0 (+ 369.0 (* q 1.2)) 382.0)
+        (curve (+ 360.0 (* q 0.8)) 434.0 (+ 373.0 k) 495.0 (+ 348.0 k) 555.0)
+        (curve (+ 326.0 k) 617.0 (+ 324.0 k) 655.0 (+ 359.0 k) 720.0)
+        (curve (+ 393.0 k) (+ 789.0 q) 358.0 (+ 819.0 (* q 0.6)) 301.0 (+ 816.0 q))
+        (curve 258.0 (+ 812.0 q) 231.0 (+ 802.0 q) 180.0 (+ 813.0 q))
+        (curve (- 115.0 k) (+ 828.0 q) (- 95.0 k) 794.0 (- 111.0 k) 741.0)
+        (curve (- 128.0 k) 676.0 (- 164.0 k) 667.0 (- 158.0 k) 608.0)
+        (curve (- 151.0 k) 554.0 (- 118.0 k) 535.0 (- 120.0 k) 476.0)
+        (curve (- 123.0 k) 414.0 (- 115.0 k) 385.0 (- 119.0 k) 315.0)
+        (curve (- 124.0 k) 253.0 (- 111.0 k) (- 214.0 (* q 4.5)) (- 155.0 k) (- 201.0 (* q 5.5))))
+      1 (do
+        (move (- 481.0 k) (- 201.0 (* q 5.8)))
+        (curve 516.0 (- 195.0 (* q 5.9)) 565.0 (- 198.0 (* q 10.2)) 594.0 (- 218.0 (* q 7.0)))
+        (curve 623.0 (- 238.0 (* q 3.8)) 648.0 (- 253.0 (* q 4.4)) 706.0 (- 253.0 (* q 4.4)))
+        (curve 784.0 (- 253.0 (* q 4.4)) 844.0 (- 239.0 (* q 8.2)) 882.0 (- 252.0 (* q 6.7)))
+        (curve (+ 920.0 k) (- 265.0 (* q 5.2)) (+ 948.0 (* q 1.8)) 269.0 (+ 944.0 (* q 1.1)) 315.0)
+        (curve (+ 938.0 (* q 0.8)) 416.0 (+ 950.0 q) 514.0 (+ 938.0 (* q 0.7)) 608.0)
+        (curve (+ 930.0 k) 667.0 (+ 953.0 k) 711.0 (+ 917.0 k) (+ 749.0 (* q 2.3)))
+        (curve 884.0 (+ 784.0 (* q 2.5)) 846.0 (+ 774.0 (* q 2.6)) 793.0 (+ 778.0 (* q 2.0)))
+        (curve 711.0 (+ 784.0 (* q 1.7)) 632.0 (+ 773.0 (* q 1.5)) 557.0 (+ 778.0 (* q 1.5)))
+        (curve (- 473.0 k) (+ 787.0 (* q 1.2)) (- 453.0 k) 747.0 (- 455.0 (* q 1.6)) 688.0)
+        (curve (- 458.0 (* q 1.6)) 587.0 (- 451.0 (* q 1.3)) 470.0 (- 458.0 (* q 1.4)) 370.0)
+        (curve (- 466.0 (* q 1.5)) 297.0 (- 446.0 k) (- 207.0 (* q 5.7)) (- 481.0 k) (- 201.0 (* q 5.8))))
+      2 (do
+        (move (- 1015.0 k) (- 245.0 (* q 5.4)))
+        (curve 1060.0 (- 237.0 (* q 7.8)) 1081.0 (- 241.0 (* q 7.0)) 1104.0 (- 247.0 (* q 7.0)))
+        (curve 1138.0 (- 256.0 (* q 6.0)) 1139.0 (- 224.0 (* q 6.6)) 1173.0 (- 227.0 (* q 5.3)))
+        (curve (+ 1224.0 q) (- 232.0 (* q 4.5)) (+ 1242.0 (* q 0.8)) 291.0 (+ 1231.0 q) 356.0)
+        (curve (+ 1224.0 q) 420.0 1208.0 (+ 441.0 k) 1177.0 (+ 464.0 (* q 1.7)))
+        (curve 1134.0 (+ 496.0 (* q 1.1)) 1115.0 (+ 479.0 (* q 1.4)) 1066.0 (+ 472.0 (* q 1.7)))
+        (curve (- 1000.0 k) (+ 464.0 (* q 2.0)) (- 981.0 k) 447.0 (- 986.0 (* q 1.1)) 404.0)
+        (curve (- 991.0 q) 357.0 (- 980.0 k) 287.0 (- 1015.0 k) (- 245.0 (* q 5.4))))
+      (do
+        (move (- 1019.0 k) (- 518.0 (* q 2.0)))
+        (curve 1060.0 (- 510.0 k) 1106.0 (- 536.0 k) 1150.0 (- 535.0 k))
+        (curve (+ 1225.0 q) (- 532.0 k) (+ 1232.0 q) 575.0 (+ 1230.0 q) 633.0)
+        (curve (+ 1228.0 q) 690.0 (+ 1220.0 q) 748.0 (+ 1222.0 q) 780.0)
+        (curve (+ 1224.0 q) (+ 817.0 q) 1156.0 (+ 815.0 q) 1110.0 (+ 804.0 q))
+        (curve 1070.0 (+ 795.0 q) (- 1010.0 k) (+ 803.0 q) (- 1003.0 k) 761.0)
+        (curve (- 996.0 k) 719.0 (- 1003.0 k) 672.0 (- 998.0 k) 633.0)
+        (curve (- 991.0 k) 585.0 (- 988.0 k) 534.0 (- 1019.0 k) (- 518.0 (* q 2.0)))))
+    (close-path)))
+
+(defstruct Spine [(ax f64) (ay f64) (bx f64) (by f64) (cx f64) (cy f64) (dx f64) (dy f64)])
+(defn cubic [(a f64) (b f64) (c f64) (d f64) (t f64)] (-> f64)
+  (let [u (- 1.0 t)] (+ (+ (* (* (* u u) u) a) (* (* (* 3.0 u) u) (* t b)))
+                        (+ (* (* (* 3.0 u) t) (* t c)) (* (* (* t t) t) d)))))
+(defn tangent [(a f64) (b f64) (c f64) (d f64) (t f64)] (-> f64)
+  (let [u (- 1.0 t)] (+ (+ (* (* 3.0 (* u u)) (- b a)) (* (* 6.0 (* u t)) (- c b)))
+                        (* (* 3.0 (* t t)) (- d c)))))
+
+;;; Tapered cubic ribbon with an actual curved shoulder. Multiple sheets follow
+;;; the same spine, so turning the light reveals its relief instead of painted highlights.
+(defn vine-path [(s Spine) (width f64) (start f64) (end f64)] (-> i64)
+  (for [side 0 2]
+    (for [i 0 81]
+      (let [t (/ (cast f64 (if (= side 0) i (- 80 i))) 80.0)
+            dx (tangent (.ax s) (.bx s) (.cx s) (.dx s) t)
+            dy (tangent (.ay s) (.by s) (.cy s) (.dy s) t)
+            length (+ 0.001 (sqrt (+ (* dx dx) (* dy dy))))
+            thickness (* (if (= side 0) 1.0 -1.0)
+                         (+ (+ (* start (- 1.0 t)) (* end t)) (* width (sin (* t 3.14159265)))))
+            x (- (cubic (.ax s) (.bx s) (.cx s) (.dx s) t) (* (/ dy length) thickness))
+            y (+ (cubic (.ay s) (.by s) (.cy s) (.dy s) t) (* (/ dx length) thickness))]
+        (if (and (= side 0) (= i 0)) (move x y) (line x y)))))
+  (close-path))
+
+(defn vine [(s Spine) (width f64) (z f64) (color i64)] (-> i64)
+  (for [layer 0 4]
+    (begin-sheet)
+    (vine-path s (- width (* (cast f64 layer) 0.7)) 0.4 0.15)
+    (finish-sheet (+ z (* (cast f64 layer) 0.42))
+                  (tint (stock-at color) 0xe9d5a5 (* (cast f64 layer) 0.07))))
+  0)
+
+(defn transformed-point [(ox f64) (oy f64) (angle f64) (x f64) (y f64) (first bool)] (-> i64)
+  (let [px (+ ox (- (* x (cos angle)) (* y (sin angle))))
+        py (+ oy (+ (* x (sin angle)) (* y (cos angle))))]
+    (if first (move px py) (line px py))))
+
+(defn rotated-curve [(ox f64) (oy f64) (angle f64)
+                     (a f64) (b f64) (c f64) (d f64) (e f64) (f f64)] (-> i64)
+  (let [co (cos angle) si (sin angle)]
+    (curve (+ ox (- (* a co) (* b si))) (+ oy (+ (* a si) (* b co)))
+           (+ ox (- (* c co) (* d si))) (+ oy (+ (* c si) (* d co)))
+           (+ ox (- (* e co) (* f si))) (+ oy (+ (* e si) (* f co))))))
+
+;;; A petal is a cupped spoon with a curled lip, not a scaled leaf. Its left
+;;; and right shoulders converge at different rates as the folded ridge rises.
+(defn petal-path [(x f64) (y f64) (length f64) (width f64) (angle f64) (fold f64)] (-> i64)
+  (let [w (* width (- 1.0 (* fold 0.22))) shift (* width (* fold 0.08))]
+    (transformed-point x y angle 0.0 0.0 true)
+    (rotated-curve x y angle (- shift (* w 0.6)) (* length -0.25)
+                   (- shift (* w 1.3)) (* length -0.68) (- shift (* w 0.65)) (* length -0.93))
+    (rotated-curve x y angle (- shift (* w 0.30)) (* length -1.10)
+                   (+ shift (* w 0.64)) (* length -1.01) (+ shift (* w 0.80)) (* length -0.83))
+    (rotated-curve x y angle (+ shift (* w 1.05)) (* length -0.57)
+                   (+ shift (* w 0.15)) (* length -0.19) 0.0 0.0)
+    (close-path)))
+
+;;; Lobed blade with an arched midrib, tapered stem, and slightly unequal sides.
+(defn blade [(x f64) (y f64) (length f64) (width f64) (angle f64)
+             (bend f64) (lobes f64) (ridge f64)] (-> i64)
+  (for [side 0 2]
+    (for [i 0 65]
+      (let [t (/ (cast f64 (if (= side 0) i (- 64 i))) 64.0)
+            swell (sqrt (if (and (> t 0.0) (< t 1.0)) (sin (* t 3.14159265)) 0.0))
+            scallop (+ 0.76 (* 0.24 (cos (+ (* t lobes) (if (= side 0) 0.0 0.8)))))
+            middle (* bend (sin (* t 3.14159265)))
+            half (* (* width swell) scallop)
+            px (+ middle (* (if (= side 0) 1.0 -1.0) (* half ridge)))]
+        (transformed-point x y angle px (- 0.0 (* t length)) (and (= side 0) (= i 0))))))
+  (close-path))
+
+(defn leaf [(x f64) (y f64) (length f64) (width f64) (angle f64) (bend f64) (z f64) (color i64)] (-> i64)
+  (for [layer 0 4]
+    (begin-sheet)
+    (blade x y length width angle bend 20.0 (- 1.0 (* (cast f64 layer) 0.19)))
+    (finish-sheet (+ z (* (cast f64 layer) 0.32))
+                  (tint (stock-at color) 0xdec795 (* (cast f64 layer) 0.06))))
+  (let [s (Spine :ax x :ay y
+                 :bx (+ x (* length (* 0.25 (sin angle)))) :by (- y (* length (* 0.25 (cos angle))))
+                 :cx (+ x (* length (* 0.7 (sin angle)))) :cy (- y (* length (* 0.7 (cos angle))))
+                 :dx (+ x (* length (sin angle))) :dy (- y (* length (cos angle))))]
+    (begin-sheet) (vine-path s 0.28 0.22 0.0) (finish-sheet (+ z 1.45) (stock-at (+ color 1))))
+  0)
+
+;;; Each petal is spoon-shaped and separately folded. The fan is deliberately
+;;; asymmetric; its outer petals turn away while the inner petals stand upright.
+(defn blossom [(x f64) (y f64) (size f64) (angle f64) (z f64)] (-> i64)
+  (for [petal 0 7]
+    (let [i (cast f64 petal) spread (+ angle (* (- i 3.0) 0.28))
+          length (* size (- 65.0 (* 5.0 (if (< i 3.0) (- 3.0 i) (- i 3.0)))))
+          width (* size (+ 9.5 (* 1.4 (sin (+ i 0.8)))))
+          pigment (case (% petal 4) 0 0xd39a71 1 0xdba27b 2 0xe6b18b 0xc48b64)]
+      (for [fold 0 4]
+        (begin-sheet)
+        (petal-path (+ x (* size (* 2.0 (- i 3.0)))) y length width spread (cast f64 fold))
+        (finish-sheet (+ (+ z (* i 0.22)) (* (cast f64 fold) 0.3))
+                      (tint (cotton (cast u32 pigment)) 0xf0c79a (* (cast f64 fold) 0.09))))))
+  (for [petal 0 4]
+    (let [i (cast f64 petal) spread (+ angle (* (- i 1.5) 0.71))]
+      (for [fold 0 4]
+        (begin-sheet)
+        (petal-path (+ x (* size (* 3.0 (- i 1.5)))) (+ y (* size 5.0))
+                    (* size (+ 32.0 (* 5.0 (sin i)))) (* size 12.0) spread (cast f64 fold))
+        (finish-sheet (+ (+ z 3.0) (+ (* i 0.2) (* (cast f64 fold) 0.32)))
+                      (tint (cotton 0xc58664) 0xf0c99b (* (cast f64 fold) 0.14))))))
+  (leaf x (+ y (* size 16.0)) (* size 30.0) (* size 8.0) (+ angle -0.95) 2.0 (+ z 3.0) 7)
+  (leaf x (+ y (* size 16.0)) (* size 33.0) (* size 7.0) (+ angle 0.75) -3.0 (+ z 3.2) 11)
+  0)
+
+(defn header [] (-> i64)
+  ; Nested, asymmetric cartouche around the wordmark.
+  (for [layer 0 7]
+    (let [k (* (cast f64 layer) 2.3)]
+      (begin-sheet)
+      (move (+ 77.0 k) (+ 18.0 k))
+      (curve 143.0 (+ 11.0 k) 264.0 (+ 9.0 k) (- 314.0 k) (+ 21.0 k))
+      (curve (- 365.0 k) (+ 34.0 k) (- 363.0 k) (- 79.0 k) (- 322.0 k) (- 110.0 k))
+      (curve 294.0 (- 132.0 k) 211.0 (- 119.0 k) 160.0 (- 133.0 k))
+      (curve (+ 99.0 k) (- 150.0 k) (+ 48.0 k) (- 147.0 k) (+ 49.0 k) 106.0)
+      (curve (+ 50.0 k) 61.0 (+ 42.0 k) (+ 22.0 k) (+ 77.0 k) (+ 18.0 k))
+      (close-path)
+      (finish-sheet (+ 30.0 (* (cast f64 layer) 0.75))
+                    (stock-at (case layer 0 4 1 9 2 0 3 4 4 3 5 11 0)))))
+  ; Search and two small inset medallions share a shaped paper housing.
+  (for [layer 0 5]
+    (let [k (* (cast f64 layer) 3.0)]
+      (panel (rect (* (+ 693.0 k) (.sx (canvas))) (* (+ 13.0 k) (.sy (canvas)))
+                   (* (- 554.0 (* k 2.0)) (.sx (canvas))) (* (- 105.0 (* k 2.0)) (.sy (canvas))))
+             39.0 (+ 31.0 (* (cast f64 layer) 0.8))
+             (stock-at (case layer 0 4 1 9 2 0 3 3 0)))))
+  (for [i 0 2]
+    (let [x (+ 1141.0 (* (cast f64 i) 65.0))]
+      (panel (rect (* (- x 22.0) (.sx (canvas))) (* 40.0 (.sy (canvas)))
+                   (* 44.0 (.sx (canvas))) (* 44.0 (.sy (canvas))))
+             22.0 40.0 (cotton 0xe9d4a1))))
+  (leaf 1142.0 74.0 26.0 7.0 0.4 2.0 42.0 11)
+  0)
+
+(defn draw [(w f64) (h f64) (motion f64)] (-> i64)
+  (set! (.sx (canvas)) (/ w 1280.0)) (set! (.sy (canvas)) (/ h 840.0))
+  (panel (rect 0.0 0.0 w h) 0.0 2.0 (cotton 0xccac75))
+  (for [layer 0 5]
+    (let [k (cast f64 layer)]
+      (panel (rect (* (+ 9.0 (* k 3.2)) (.sx (canvas))) (* (+ 10.0 (* k 2.6)) (.sy (canvas)))
+                   (- w (* (+ 18.0 (* k 6.4)) (.sx (canvas)))) (- h (* (+ 20.0 (* k 5.2)) (.sy (canvas)))))
+             (+ 18.0 (* k 4.0)) (+ 5.0 (* k 1.0)) (stock-at (case layer 0 4 1 9 2 0 3 4 0)))))
+  (for [layer 0 14]
+    (let [n (cast f64 layer)]
+      (begin-sheet)
+      (rounded-path (rect (* 27.0 (.sx (canvas))) (* 22.0 (.sy (canvas)))
+                          (- w (* 54.0 (.sx (canvas)))) (- h (* 44.0 (.sy (canvas))))) 26.0)
+      (for [i 0 4] (opening i n))
+      (finish-sheet (+ 12.0 (* n 1.25)) (stock-at (if (= layer 13) 0 (+ layer 1))))))
+  (for [i 0 4]
+    (begin-sheet) (opening i -0.7) (finish-sheet 11.0 (stock 0xe5d0a4 0.84 0.95 (+ 0.13 (* (cast f64 i) 0.19)))))
+  (header)
+  ; Header scrolls join the panel contours into the outer border.
+  (vine (Spine :ax 28.0 :ay 253.0 :bx 122.0 :by 44.0 :cx 278.0 :cy 262.0 :dx 430.0 :dy 104.0) 8.0 36.0 4)
+  (vine (Spine :ax 375.0 :ay 254.0 :bx 373.0 :by 158.0 :cx 413.0 :cy 33.0 :dx 466.0 :dy 28.0) 10.0 36.0 4)
+  (vine (Spine :ax 466.0 :ay 28.0 :bx 538.0 :by 18.0 :cx 501.0 :cy 110.0 :dx 474.0 :dy 62.0) 12.0 33.0 4)
+  (vine (Spine :ax 414.0 :ay 125.0 :bx 570.0 :by -2.0 :cx 581.0 :cy 202.0 :dx 813.0 :dy 145.0) 6.0 36.0 3)
+  (vine (Spine :ax 486.0 :ay 145.0 :bx 706.0 :by 44.0 :cx 669.0 :cy 217.0 :dx 950.0 :dy 177.0) 5.0 36.0 14)
+  (vine (Spine :ax 917.0 :ay 295.0 :bx 1000.0 :by 117.0 :cx 1146.0 :cy 218.0 :dx 1249.0 :dy 99.0) 7.0 36.0 4)
+  (vine (Spine :ax 1166.0 :ay 213.0 :bx 1208.0 :by 152.0 :cx 1294.0 :cy 263.0 :dx 1253.0 :dy 382.0) 7.0 36.0 3)
+  ; Long peripheral stalks carry grouped leaves and flowers, not a repeating border.
+  (vine (Spine :ax 31.0 :ay 806.0 :bx 159.0 :by 630.0 :cx 66.0 :cy 599.0 :dx 70.0 :dy 407.0) 4.8 37.0 9)
+  (vine (Spine :ax 42.0 :ay 804.0 :bx -4.0 :by 696.0 :cx 108.0 :cy 627.0 :dx 126.0 :dy 631.0) 6.0 38.0 4)
+  (vine (Spine :ax 1241.0 :ay 815.0 :bx 1112.0 :by 720.0 :cx 1211.0 :cy 663.0 :dx 1153.0 :dy 616.0) 4.7 37.0 9)
+  (vine (Spine :ax 997.0 :ay 805.0 :bx 1023.0 :by 691.0 :cx 1150.0 :cy 843.0 :dx 1175.0 :dy 737.0) 8.0 36.0 4)
+  (vine (Spine :ax 40.0 :ay 400.0 :bx 47.0 :by 311.0 :cx 112.0 :cy 238.0 :dx 99.0 :dy 199.0) 4.5 36.0 9)
+  (leaf 91.0 650.0 79.0 18.0 -1.09 13.0 40.0 3)
+  (leaf 91.0 650.0 95.0 20.0 0.58 -15.0 40.0 11)
+  (leaf 76.0 544.0 79.0 17.0 -0.56 -15.0 40.0 9)
+  (leaf 83.0 505.0 71.0 19.0 0.75 13.0 40.0 13)
+  (leaf 47.0 348.0 71.0 17.0 0.45 10.0 39.0 3)
+  (leaf 45.0 279.0 65.0 17.0 -0.26 -10.0 39.0 11)
+  (leaf 80.0 232.0 55.0 15.0 0.57 12.0 39.0 9)
+  (leaf 273.0 148.0 90.0 19.0 0.87 10.0 38.0 13)
+  (leaf 298.0 135.0 53.0 19.0 1.49 -8.0 39.0 3)
+  (leaf 593.0 101.0 78.0 18.0 0.09 10.0 37.0 13)
+  (leaf 591.0 106.0 64.0 17.0 -0.83 -9.0 38.0 3)
+  (leaf 600.0 114.0 69.0 17.0 0.84 6.0 38.0 9)
+  (leaf 1174.0 734.0 83.0 18.0 -0.9 12.0 40.0 11)
+  (leaf 1207.0 760.0 65.0 17.0 0.59 12.0 40.0 13)
+  (leaf 1110.0 777.0 69.0 22.0 -1.1 12.0 40.0 4)
+  (leaf 1155.0 681.0 52.0 15.0 0.78 12.0 40.0 9)
+  (blossom (+ 75.0 (* motion 0.15)) 436.0 1.12 -0.12 43.0)
+  (blossom 1162.0 636.0 0.86 0.48 43.0)
+  (blossom (+ 1206.0 (* motion 0.12)) 786.0 0.96 -0.28 44.0)
+  (blossom 83.0 79.0 0.58 0.69 43.0)
+  0)

@@ -517,7 +517,27 @@ fragment float4 paper_fragment(ScreenVertex v [[stage_in]], texture2d<float> pap
     return paper.sample(filtered, v.uv);
 }
 
-struct MaskDraw { float4 rect; float4 pigment_height; float4 material_kind; float2 canvas; float2 padding; float4 pattern; float4 origin_scale_seed; float4 finish_shape; float4 finish_weight; };
+struct MaskDraw { float4 rect; float4 pigment_height; float4 material_kind; float2 canvas; float2 padding; float4 pattern; float4 origin_scale_seed; float4 finish_shape; float4 finish_weight; float4 mask_info; };
+// Lossless coverage: constant tiles need no storage, mixed tiles preserve the
+// exact original RG8 samples and backing-pixel phase.
+inline float2 mask_coverage(float2 uv, constant MaskDraw& d, texture2d<float, access::read> mask) {
+    if (d.mask_info.x < 0.5f) {
+        uint2 size(mask.get_width(), mask.get_height());
+        return mask.read(min(uint2(uv * float2(size)), size - 1)).rg;
+    }
+    uint2 size = uint2(d.rect.zw);
+    uint2 pixel = min(uint2(uv * float2(size)), size - 1);
+    uint columns = (size.x + 63) / 64, rows = (size.y + 63) / 64;
+    uint tile = (pixel.y / 64) * columns + pixel.x / 64;
+    uint2 code = uint2(round(mask.read(uint2(tile % 1024, tile / 1024)).rg * 255.0f));
+    uint id = code.x + code.y * 256;
+    if (id == 0) return float2(0);
+    if (id == 1) return float2(1, 0);
+    id -= 2;
+    uint header = (columns * rows + 1023) / 1024;
+    return mask.read(uint2((id % 16) * 64 + pixel.x % 64,
+                           header + (id / 16) * 64 + pixel.y % 64)).rg;
+}
 struct MaskVertex { float4 position [[position]]; float2 uv; };
 vertex MaskVertex mask_vertex(uint id [[vertex_id]], constant MaskDraw& d [[buffer(0)]]) {
     const float2 corners[] = {float2(0,0),float2(1,0),float2(0,1),float2(0,1),float2(1,0),float2(1,1)};
@@ -529,8 +549,7 @@ vertex MaskVertex mask_vertex(uint id [[vertex_id]], constant MaskDraw& d [[buff
 // the height/material buffers; fractional paper coverage must blend normally.
 fragment void opaque_fragment(MaskVertex v [[stage_in]], constant MaskDraw& d [[buffer(0)]],
                               texture2d<float, access::read> mask [[texture(0)]]) {
-    uint2 size(mask.get_width(), mask.get_height());
-    if (d.material_kind.w > 0.5f || mask.read(min(uint2(v.uv * float2(size)), size - 1)).r < 1.0f)
+    if (d.material_kind.w > 0.5f || mask_coverage(v.uv, d, mask).r < 1.0f)
         discard_fragment();
 }
 struct MaskOutput { float4 pigment [[color(0)]]; float4 height [[color(1)]]; float4 material [[color(2)]]; float4 micro [[color(3)]]; float4 finish_shape [[color(4)]]; float4 finish_weight [[color(5)]]; };
@@ -566,8 +585,7 @@ inline float3 material_micro(float2 xy, constant MaskDraw& d, texture2d<float, a
 }
 [[early_fragment_tests]]
 fragment MaskOutput mask_fragment(MaskVertex v [[stage_in]], constant MaskDraw& d [[buffer(0)]], texture2d<float, access::read> mask [[texture(0)]], texture2d<float, access::read> micro [[texture(2)]]) {
-    uint2 size(mask.get_width(),mask.get_height());
-    float2 coverage = mask.read(min(uint2(v.uv * float2(size)), size - 1)).rg;
+    float2 coverage = mask_coverage(v.uv, d, mask);
     float a = coverage.r, b = coverage.g;
     if (a == 0.0f && b == 0.0f) { discard_fragment(); return {}; }
     float z = clamp(d.pigment_height.w,0.0f,64.0f) / 64.0f;
@@ -606,8 +624,7 @@ inline MaskOutput relief_mix(MaskOutput a, MaskOutput b, float t) {
 fragment MaskOutput relief_fragment(MaskVertex v [[stage_in]], constant ReliefDraw& d [[buffer(0)]],
         texture2d<float, access::read> mask [[texture(0)]], texture2d<float> sdf [[texture(1)]],
         texture2d<float, access::read> top_micro [[texture(2)]], texture2d<float, access::read> edge_micro [[texture(3)]]) {
-    uint2 size(mask.get_width(), mask.get_height());
-    float a = mask.read(min(uint2(v.uv * float2(size)), size - 1)).r;
+    float a = mask_coverage(v.uv, d.panel, mask).r;
     if (a == 0.0f) { discard_fragment(); return {}; }
     float scale = d.panel.origin_scale_seed.z;
     float2 xy = v.position.xy / scale;
