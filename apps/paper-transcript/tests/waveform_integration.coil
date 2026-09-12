@@ -1,0 +1,46 @@
+(module transcript.tests.waveform-integration)
+(import "coil.primitive" :as p)
+(import "coil.assert" :use *)
+(import "transcript.library" :as lib)
+(import "transcript.sound" :as sound)
+(import "transcript.waveform" :as wave)
+
+;;; Read-only comparison with the same native decoder used for playback.
+(deftest source_waveform_matches_native_decoded_pcm
+         (let [path
+                 (lib/source-path (index (lib/path-buffer) 0)
+                                  c"demo_fillers.wav")
+               audio (sound/sound)
+               w (wave/state)]
+           (wave/request path 0 true)
+           (assert (.ready w))
+           (assert (sound/decode audio path))
+           (assert-eq (.frames w) (.source-frames audio))
+           (assert-eq (.channels w) (.channels audio))
+           (assert (p/fcmp-eq (.rate w) (.rate audio)))
+           (let [start (/ (.frames w) 2)
+                 end (+ start 2048)]
+             (assert (wave/ensure-detail w start end))
+             (for [ch 0 (.channels w)]
+               (for [i start end]
+                 (assert (p/fcmp-eq (wave/sample w ch i)
+                                    (cast f64
+                                          (load (index (load (index (field audio
+                                                                           source)
+                                                                    ch))
+                                                       i))))))))
+           (wave/stop w)
+           (sound/release-source audio)))
+
+(deftest replacing_an_in_flight_index_cancels_and_recovers
+         (let [path
+                 (lib/source-path (index (lib/path-buffer) 0)
+                                  c"demo_fillers.wav")
+               w (wave/state)]
+           (wave/request path 0 false)
+           (wave/request c"/nonexistent-paper-transcript-test.wav" 1 true)
+           (assert (not (.ready w)))
+           (wave/request path 2 true)
+           (assert (.ready w))
+           (assert-eq (.take w) 2)
+           (wave/stop w)))

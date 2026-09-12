@@ -64,6 +64,13 @@
 (defn cut-through [(floor f64)] (-> i64)
   (host/paper_cut floor))
 
+;;; Everything outlined so far in this sheet is a paper edge; outline added after
+;;; this meets paper at the same height and is drawn with no edge. A sheet laid
+;;; into a hole in another, or continuing it, then reads as one piece of paper
+;;; instead of two with a groove between them. Cuts and clips still add edge.
+(defn seamless-outline [] (-> i64)
+  (host/paper_seamless_outline))
+
 ;;; Elevation is absolute, in paper points, in [0,64]. Rendering sorts by elevation.
 ;;; Submit low base sheets as well as cut upper sheets to reveal real lower material.
 (defn finish-sheet [(z f64) (material Material)] (-> i64)

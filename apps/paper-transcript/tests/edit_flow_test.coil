@@ -1,0 +1,186 @@
+(module transcript.tests.editflow)
+(import "coil.primitive" :as primitive)
+(import "coil.assert" :use *)
+(import "paper.ffi" :use [snprintf])
+(import "transcript.model" :as model)
+(import "transcript.history" :as history)
+(import "transcript.app" :as app)
+(import "transcript.diagnostics" :as diag)
+(import "transcript.ui" :as ui)
+(import "paper.platform" :as host)
+(import "paper.geometry" :use [rect])
+
+;;; The actions as the buttons and keys invoke them, including the persistence
+;;; and history bookkeeping around each edit. The take is a scratch name so the
+;;; edit list is written somewhere harmless.
+(defn fixture [] (-> (ptr model/Session))
+  (let [s (model/session)
+        t (model/take-at 0)
+        name c"paper-transcript-editflow-test.wav"]
+    (model/reset-session s)
+    (history/clear (history/history))
+    (snprintf (index (model/name-arena) 0) 128 c"%s" name)
+    (set! (.off t) 0)
+    (set! (.len t) 40)
+    (set! (.dur-ms t) 8000.0)
+    (set! (.take-count s) 1)
+    (set! (.take s) 0)
+    (for [i 0 8]
+      (let [w (model/word i)
+            start (* (cast f64 i) 1000.0)]
+        (set! (.t0 w) start)
+        (set! (.t1 w) (+ start 200.0))
+        (set! (.gap-keep w) model/GAP-UNTOUCHED)
+        (set! (.deleted w) false)
+        (set! (.filler w) (or (= i 2) (= i 5)))
+        (set! (.para w) false)))
+    (set! (.word-count s) 8)
+    (set! (.dur-ms s) 8000.0)
+    (model/rebuild-clips s)
+    s))
+
+(deftest cutting_fillers_is_one_undoable_step
+         (let [s (fixture)
+               h (history/history)]
+           (app/cut-fillers s)
+           (assert-eq (model/kept-word-count s) 6)
+           (assert (history/can-undo? h))
+           (app/undo s)
+           (assert-eq (model/kept-word-count s) 8)
+           (app/redo s)
+           (assert-eq (model/kept-word-count s) 6)))
+
+(deftest vertical_wave_magnification_does_not_edit_or_change_transport
+         (let [s (fixture)
+               duration (model/edited-ms s)]
+           (set! (.wave-gain s) 1.0)
+           (set! (.speed s) 1.25)
+           (set! (.cur-ms s) 1200.0)
+           (for [i 0 6] (app/activate s ui/ID-WAVE-GAIN))
+           (assert (primitive/fcmp-eq (.wave-gain s) 1.0))
+           (assert (primitive/fcmp-eq (.speed s) 1.25))
+           (assert (primitive/fcmp-eq (.cur-ms s) 1200.0))
+           (assert (primitive/fcmp-eq (model/edited-ms s) duration))
+           (assert-eq (model/kept-word-count s) 8)
+           (assert (not (history/can-undo? (history/history))))))
+
+(deftest sun_height_drag_changes_only_light_height_and_clamps_to_range
+         (let [s (fixture)
+               l (ui/lighting)]
+           (set! (.sun-height (ui/frame)) (rect 100.0 200.0 220.0 30.0))
+           (set! (.x l) -0.35)
+           (set! (.y l) -0.55)
+           (set! (.depth l) 0.85)
+           (set! (.grain l) 1.0)
+           (app/event 1 ui/ID-HEIGHT 210.0 215.0)
+           (assert (primitive/fcmp-eq (.height l) 1300.0))
+           (app/event 2 ui/ID-HEIGHT -20.0 215.0)
+           (assert (primitive/fcmp-eq (.height l) 200.0))
+           (app/event 2 ui/ID-HEIGHT 500.0 215.0)
+           (assert (primitive/fcmp-eq (.height l) 2400.0))
+           (assert (primitive/fcmp-eq (.x l) -0.35))
+           (assert (primitive/fcmp-eq (.y l) -0.55))
+           (assert (primitive/fcmp-eq (.depth l) 0.85))
+           (assert (primitive/fcmp-eq (.grain l) 1.0))
+           (assert (not (history/can-undo? (history/history))))))
+
+(deftest action_notices_remain_visible_but_reset_clears_routine_status
+         (let [s (fixture)]
+           (assert (not (.status-notice s)))
+           (model/set-status s c"COULD NOT START PLAYBACK")
+           (assert (.status-notice s))
+           (model/reset-session s)
+           (assert (not (.status-notice s)))))
+
+(deftest cutting_a_selection_is_one_undoable_step
+         (let [s (fixture)]
+           (set! (.sel-kind s) model/SEL-WORDS)
+           (set! (.sa s) 1)
+           (set! (.sb s) 3)
+           (app/cut-selection s)
+           (assert-eq (model/kept-word-count s) 5)
+           (app/undo s)
+           (assert-eq (model/kept-word-count s) 8)))
+
+(deftest several_edits_undo_one_at_a_time
+         (let [s (fixture)]
+           (set! (.sel-kind s) model/SEL-WORDS)
+           (set! (.sa s) 0)
+           (set! (.sb s) 0)
+           (app/cut-selection s)
+           (set! (.sa s) 7)
+           (set! (.sb s) 7)
+           (app/cut-selection s)
+           (assert-eq (model/kept-word-count s) 6)
+           (app/undo s)
+           (assert-eq (model/kept-word-count s) 7)
+           (assert (.deleted (model/word 0)))
+           (app/undo s)
+           (assert-eq (model/kept-word-count s) 8)))
+
+(deftest reset_is_a_single_undoable_step
+         (let [s (fixture)]
+           (app/cut-fillers s)
+           (set! (.sel-kind s) model/SEL-WORDS)
+           (set! (.sa s) 0)
+           (set! (.sb s) 0)
+           (app/cut-selection s)
+           (assert-eq (model/kept-word-count s) 5)
+           (app/reset-edits s)
+           (assert-eq (model/kept-word-count s) 8)
+           (app/undo s)
+           (assert-eq (model/kept-word-count s) 5)))
+
+(deftest undoing_with_nothing_to_undo_changes_nothing
+         (let [s (fixture)]
+           (app/undo s)
+           (assert-eq (model/kept-word-count s) 8)
+           (app/redo s)
+           (assert-eq (model/kept-word-count s) 8)))
+
+;;; A new edit after an undo must drop what was undone rather than leaving a
+;;; redo that would reapply an edit from a branch that no longer exists.
+(deftest a_new_edit_after_an_undo_drops_the_redo
+         (let [s (fixture)
+               h (history/history)]
+           (app/cut-fillers s)
+           (app/undo s)
+           (assert (history/can-redo? h))
+           (set! (.sel-kind s) model/SEL-WORDS)
+           (set! (.sa s) 4)
+           (set! (.sb s) 4)
+           (app/cut-selection s)
+           (assert (not (history/can-redo? h)))
+           (assert-eq (model/kept-word-count s) 7)))
+
+;;; A key the application has no use for must still be reported as handled, so
+;;; the renderer does not pass it to AppKit and get a beep.
+(deftest unused_keys_are_swallowed_rather_than_beeping
+         (let [s (fixture)]
+           (assert-eq (app/key-press s 11) 1)
+           (assert-eq (app/key-press s 40) 1)))
+
+;;; Recording rows scroll the recording list, not nothing: the wheel reports the
+;;; row under the pointer rather than the list that contains it.
+(deftest a_scroll_over_a_recording_row_scrolls_the_list
+         (assert (app/rail-scroll? (app/ui-rail-id)))
+         (assert (app/rail-scroll? (+ (app/ui-take-base) 3)))
+         (assert (not (app/rail-scroll? (app/ui-transcript-id)))))
+
+;;; Instrumentation is behind a chord: a bare D or T must do nothing, and only
+;;; Shift-Command reaches it.
+(deftest the_diagnostics_overlay_needs_shift_command
+         (let [s (fixture)
+               before (diag/overlay?)]
+           (set! (.key-flags (host/host)) 0)
+           (app/key-press s 2)
+           (assert (= (diag/overlay?) before))
+           (set! (.key-flags (host/host)) 1048576)
+           (app/key-press s 2)
+           (assert (= (diag/overlay?) before))
+           (set! (.key-flags (host/host)) (+ 1048576 131072))
+           (app/key-press s 2)
+           (assert (!= (diag/overlay?) before))
+           (app/key-press s 2)
+           (assert (= (diag/overlay?) before))
+           (set! (.key-flags (host/host)) 0)))

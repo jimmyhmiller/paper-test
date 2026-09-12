@@ -1,0 +1,431 @@
+(module transcript.waveform)
+(import "coil.primitive" :as p)
+(import "coil.atomic" :as atomic)
+(import "coil.thread" :as thread)
+(import "paper.objc" :use *)
+(import "paper.ffi" :use [floor snprintf])
+
+(extern malloc :cc c [u64] (-> (ptr i8)))
+
+(extern free :cc c [(ptr i8)] (-> void))
+
+;;; Native-rate, signed, per-channel extrema. The background scan keeps only
+;;; a min/max tree of 256-sample leaves, not a decoded copy of a whole episode.
+;;; At finer zoom, a bounded AVAudioFile window supplies the actual samples.
+;;; Nothing is downmixed, resampled, squared, smoothed, or normalized.
+(const BLOCK 256)
+
+(const CHANNELS 8)
+
+(defstruct Range [(low f32) (high f32)])
+
+(defstruct Waveform
+  [(file (ptr i8))
+   (format (ptr i8))
+   (buffer (ptr i8))
+   (buffer-cap i64)
+   (cache-start i64)
+   (cache-count i64)
+   (samples (ptr (ptr f32)))
+   (tree (ptr Range))
+   (base i64)
+   (frames i64)
+   (channels i64)
+   (rate f64)
+   (take i64)
+   (path (array i8 2048))
+   (worker thread/Thread)
+   (running bool)
+   (requested bool)
+   (ready bool)
+   (ranges (ptr Range))
+   (range-cap i64)
+   (columns i64)
+   (first-column i64)
+   (step f64)
+   (offset f64)
+   (sample-mode bool)
+   (prepared bool)
+   (view-start f64)
+   (view-zoom f64)
+   (view-width f64)
+   (view-scale f64)
+   (completion i64)
+   (cancel i64)])
+
+(defn state [] (-> (ptr Waveform))
+  (p/alloc-static Waveform))
+
+(defn min-i [(a i64) (b i64)] (-> i64)
+  (if (< a b) a b))
+
+(defn max-i [(a i64) (b i64)] (-> i64)
+  (if (> a b) a b))
+
+(defn empty-range [] (-> Range)
+  (Range :low 1.0e30 :high -1.0e30))
+
+(defn zero-range [] (-> Range)
+  (Range :low 0.0 :high 0.0))
+
+(defn merge-range [(a Range) (b Range)] (-> Range)
+  (Range :low (if (< (.low a) (.low b)) (.low a) (.low b))
+    :high (if (> (.high a) (.high b)) (.high a) (.high b))))
+
+(defn entry [(w (ptr Waveform)) (ch i64) (node i64)] (-> (ptr Range))
+  (index (.tree w) (+ (* ch (* (.base w) 2)) node)))
+
+(defn allocate-index [(w (ptr Waveform)) (frames i64) (channels i64) (rate f64)] (-> bool)
+  (let [(mut base) 1
+        blocks (/ (+ frames (- BLOCK 1)) BLOCK)]
+    (while (< (load base) blocks) (set! base (* (load base) 2)))
+    (set! (.base w) (load base))
+    (set! (.frames w) frames)
+    (set! (.channels w) channels)
+    (set! (.rate w) rate)
+    (set! (.tree w)
+          (cast (ptr Range)
+                (malloc (cast u64 (* (* (* (load base) 2) channels) 8)))))
+    (if (= (cast i64 (.tree w)) 0)
+        false
+        (do
+          (for [i 0 (* (* (load base) 2) channels)]
+            (set! (index (.tree w) i) (empty-range)))
+          true))))
+
+(defn index-samples [(w (ptr Waveform))
+                     (ch i64)
+                     (start i64)
+                     (data (ptr f32))
+                     (count i64)] (-> i64)
+  (for [i 0 count]
+    (let [value (load (index data i))
+          bin (entry w ch (+ (.base w) (/ (+ start i) BLOCK)))]
+      ;; NaN has no useful amplitude; leave finite samples in its bin intact.
+      (when (p/fcmp-eq value value)
+        (when (< value (.low bin)) (set! (.low bin) value))
+        (when (> value (.high bin)) (set! (.high bin) value)))))
+  0)
+
+(defn finish-index [(w (ptr Waveform))] (-> i64)
+  (for [ch 0 (.channels w)]
+    (let [(mut node) (- (.base w) 1)]
+      (while (> (load node) 0)
+        (set! (entry w ch (load node))
+              (merge-range (load (entry w ch (* (load node) 2)))
+                           (load (entry w ch (+ (* (load node) 2) 1)))))
+        (set! node (- (load node) 1)))))
+  0)
+
+;;; O(log blocks), including every touched leaf. When used for overview pixels
+;;; each leaf is smaller than a pixel, so this never hides a transient.
+(defn overview-range [(w (ptr Waveform)) (ch i64) (from i64) (to i64)] (-> Range)
+  (let [a (max-i 0 (min-i from (.frames w)))
+        b (max-i 0 (min-i to (.frames w)))
+        (mut result) (empty-range)
+        (mut left) (+ (.base w) (/ a BLOCK))
+        (mut right) (+ (.base w) (/ (+ b (- BLOCK 1)) BLOCK))]
+    (when (> b a)
+      (while (< (load left) (load right))
+        (when (!= (& (load left) 1) 0)
+          (set! result
+                (merge-range (load result) (load (entry w ch (load left)))))
+          (set! left (+ (load left) 1)))
+        (when (!= (& (load right) 1) 0)
+          (set! right (- (load right) 1))
+          (set! result
+                (merge-range (load result) (load (entry w ch (load right))))))
+        (set! left (/ (load left) 2))
+        (set! right (/ (load right) 2))))
+    (if (> (.low result) (.high result)) (zero-range) (load result))))
+
+(defn make-buffer [(format (ptr i8)) (count i64)] (-> (ptr i8))
+  (msg (ptr i8)
+       (msg (ptr i8) (class c"AVAudioPCMBuffer") (sel c"alloc") [])
+       (sel c"initWithPCMFormat:frameCapacity:")
+       [(ptr i8) u32]
+       format
+       (cast u32 count)))
+
+(defn read-buffer [(file (ptr i8)) (buffer (ptr i8)) (count i64)] (-> bool)
+  (let [(mut error) (nil)]
+    (msg bool
+         file
+         (sel c"readIntoBuffer:frameCount:error:")
+         [(ptr i8) u32 (mut (ptr i8))]
+         buffer
+         (cast u32 count)
+         (mut error))))
+
+(defn build-file [(w (ptr Waveform))] (-> bool)
+  (let [url
+          (msg (ptr i8)
+               (class c"NSURL")
+               (sel c"fileURLWithPath:")
+               [(ptr i8)]
+               (ns (index (field w path) 0)))
+        (mut error) (nil)
+        file
+          (msg (ptr i8)
+               (msg (ptr i8) (class c"AVAudioFile") (sel c"alloc") [])
+               (sel c"initForReading:error:")
+               [(ptr i8) (mut (ptr i8))]
+               url
+               (mut error))]
+    (set! (.file w) file)
+    (if (= file (nil))
+        false
+        (let [format (msg (ptr i8) file (sel c"processingFormat") [])
+              frames (msg i64 file (sel c"length") [])
+              channels (cast i64 (msg u32 format (sel c"channelCount") []))
+              rate (msg f64 format (sel c"sampleRate") [])]
+          (set! (.format w) (retain format))
+          (if (or (<= frames 0)
+                  (<= rate 0.0)
+                  (< channels 1)
+                  (> channels CHANNELS)
+                  (!= (msg i64 format (sel c"commonFormat") []) 1)
+                  (msg bool format (sel c"isInterleaved") []))
+              false
+              (if (not (allocate-index w frames channels rate))
+                  false
+                  (let [buffer (make-buffer format 65536)
+                        (mut cursor) 0
+                        (mut ok) (!= buffer (nil))]
+                    (while (and (load ok)
+                                (< (load cursor) frames)
+                                (= (atomic/atomic-load (field w cancel)) 0))
+                      (if (not (read-buffer file
+                                            buffer
+                                            (min-i 65536
+                                                   (- frames (load cursor)))))
+                          (set! ok false)
+                          (let [count
+                                  (cast i64
+                                        (msg u32 buffer (sel c"frameLength") []))
+                                data
+                                  (msg (ptr (ptr f32))
+                                       buffer
+                                       (sel c"floatChannelData")
+                                       [])]
+                            (if (<= count 0)
+                                (set! ok false)
+                                (do
+                                  (for [ch 0 channels]
+                                    (index-samples w
+                                                   ch
+                                                   (load cursor)
+                                                   (load (index data ch))
+                                                   count))
+                                  (set! cursor (+ (load cursor) count))
+                                  0)))))
+                    (release buffer)
+                    (if (and (load ok)
+                             (= (load cursor) frames)
+                             (= (atomic/atomic-load (field w cancel)) 0))
+                        (do (finish-index w) true)
+                        false))))))))
+
+(defn worker [(context (ptr i8))] (-> (ptr i8))
+  (let [w (cast (ptr Waveform) context)
+        pool (new c"NSAutoreleasePool")
+        ok (build-file w)]
+    (release pool)
+    (atomic/atomic-store (field w completion) (if ok 1 -1)))
+  (nil))
+
+(defn stop [(w (ptr Waveform))] (-> i64)
+  (when (.running w)
+    (atomic/atomic-store (field w cancel) 1)
+    (assert (= (thread/thread-join (field w worker)) (cast i32 0)))
+    (set! (.running w) false))
+  (when (!= (.tree w) (cast (ptr Range) 0)) (free (cast (ptr i8) (.tree w))) 0)
+  (set! (.tree w) (cast (ptr Range) 0))
+  (when (!= (.ranges w) (cast (ptr Range) 0))
+    (free (cast (ptr i8) (.ranges w)))
+    0)
+  (set! (.ranges w) (cast (ptr Range) 0))
+  (set! (.range-cap w) 0)
+  (release (.buffer w))
+  (release (.format w))
+  (release (.file w))
+  (set! (.buffer w) (nil))
+  (set! (.format w) (nil))
+  (set! (.file w) (nil))
+  (set! (.cache-count w) 0)
+  (set! (.buffer-cap w) 0)
+  (set! (.ready w) false)
+  (set! (.prepared w) false)
+  0)
+
+(defn request [(path (ptr i8)) (take i64) (synchronous bool)] (-> i64)
+  (let [w (state)]
+    (stop w)
+    (snprintf (index (field w path) 0) 2048 c"%s" path)
+    (set! (.take w) take)
+    (set! (.requested w) true)
+    (atomic/atomic-store (field w cancel) 0)
+    (atomic/atomic-store (field w completion) 0)
+    (if synchronous
+        (do
+          (worker (cast (ptr i8) w))
+          (set! (.ready w) (= (atomic/atomic-load (field w completion)) 1))
+          0)
+        (if (= (thread/thread-spawn (field w worker)
+                                    (p/fnptr-of worker)
+                                    (cast (ptr i8) w))
+               (cast i32 0))
+            (do (set! (.running w) true) 0)
+            (do (atomic/atomic-store (field w completion) -1) 0))))
+  0)
+
+;;; Acquire the immutable completed index on the UI thread. The file is never
+;;; used by both threads: join hands ownership to the detail reader.
+(defn poll [] (-> bool)
+  (let [w (state)]
+    (if (and (.running w) (!= (atomic/atomic-load (field w completion)) 0))
+        (do
+          (assert (= (thread/thread-join (field w worker)) (cast i32 0)))
+          (set! (.running w) false)
+          (set! (.ready w) (= (atomic/atomic-load (field w completion)) 1))
+          true)
+        false)))
+
+(defn ensure-detail [(w (ptr Waveform)) (from i64) (to i64)] (-> bool)
+  (let [a (max-i 0 (min-i from (.frames w)))
+        b (max-i a (min-i to (.frames w)))]
+    (if (and (>= a (.cache-start w))
+             (<= b (+ (.cache-start w) (.cache-count w)))
+             (> (.cache-count w) 0))
+        true
+        (let [start (max-i 0 (- a 4096))
+              count (- (min-i (.frames w) (+ b 4096)) start)]
+          (if (or (<= count 0) (> count 4194304))
+              false
+              (do
+                (when (> count (.buffer-cap w))
+                  (release (.buffer w))
+                  (set! (.buffer w) (make-buffer (.format w) count))
+                  (set! (.buffer-cap w) count))
+                (set! (.cache-count w) 0)
+                (msg i64 (.file w) (sel c"setFramePosition:") [i64] start)
+                (if (or (= (.buffer w) (nil))
+                        (not (read-buffer (.file w) (.buffer w) count)))
+                    false
+                    (do
+                      (set! (.cache-start w) start)
+                      (set! (.cache-count w)
+                            (cast i64
+                                  (msg u32 (.buffer w) (sel c"frameLength") [])))
+                      (set! (.samples w)
+                            (msg (ptr (ptr f32))
+                                 (.buffer w)
+                                 (sel c"floatChannelData")
+                                 []))
+                      (>= (+ start (.cache-count w)) b)))))))))
+
+(defn sample [(w (ptr Waveform)) (ch i64) (frame i64)] (-> f64)
+  (if (and (>= frame (.cache-start w))
+           (< frame (+ (.cache-start w) (.cache-count w))))
+      (cast f64
+            (load (index (load (index (.samples w) ch))
+                         (- frame (.cache-start w)))))
+      0.0))
+
+(defn detail-range [(w (ptr Waveform)) (ch i64) (from i64) (to i64)] (-> Range)
+  (let [(mut result) (empty-range)
+        a (max-i 0 from)
+        b (min-i (.frames w) to)]
+    (for [i a b]
+      (let [value (cast f32 (sample w ch i))]
+        (when (< value (.low result)) (set! (.low result) value))
+        (when (> value (.high result)) (set! (.high result) value))))
+    (if (> (.low result) (.high result)) (zero-range) (load result))))
+
+(defn column [(w (ptr Waveform)) (ch i64) (i i64)] (-> Range)
+  (load (index (.ranges w) (+ (* ch (.columns w)) i))))
+
+;;; Five logical points per cut-paper strip, irrespective of backing scale.
+;;; Merge every covered pixel range, including the time represented by the
+;;; visual gap. Never average amplitudes or sample only a strip's center.
+(defn strip-columns [(scale f64)] (-> i64)
+  (max-i 2 (cast i64 (* 5.0 scale))))
+
+(defn strip-range [(w (ptr Waveform)) (ch i64) (a i64) (b i64)] (-> Range)
+  (let [(mut result) (empty-range)]
+    (for [i a (min-i b (.columns w))]
+      (set! result (merge-range (load result) (column w ch i))))
+    (if (> (.low result) (.high result)) (zero-range) (load result))))
+
+;;; One column per backing pixel until individual sample spacing is visible.
+;;; The immutable overview tree answers wide ranges; the small PCM cache
+;;; answers narrow ranges exactly, including single samples and zero crossings.
+(defn prepare [(w (ptr Waveform))
+               (start-ms f64)
+               (zoom f64)
+               (width f64)
+               (scale f64)] (-> bool)
+  (if (not (.ready w))
+      false
+      (if (and (.prepared w)
+               (p/fcmp-eq start-ms (.view-start w))
+               (p/fcmp-eq zoom (.view-zoom w))
+               (p/fcmp-eq width (.view-width w))
+               (p/fcmp-eq scale (.view-scale w)))
+          true
+          (let [per-pixel (/ (.rate w) (* zoom scale))
+                samples (<= per-pixel 1.0)
+                span (if samples 1.0 per-pixel)
+                stride (* span (/ zoom (.rate w)))
+                first-frame (* start-ms (/ (.rate w) 1000.0))
+                group (if samples 1 (strip-columns scale))
+                first-bin
+                  (cast f64
+                        (* (/ (cast i64 (floor (/ first-frame span))) group)
+                           group))
+                count (+ (+ (cast i64 (/ width stride)) 3) (- group 1))
+                fine (< span (cast f64 BLOCK))
+                from (cast i64 (floor (* first-bin span)))
+                to
+                  (+ (cast i64 (floor (* (+ first-bin (cast f64 count)) span)))
+                     2)
+                total (* count (.channels w))]
+            (set! (.prepared w) false)
+            (when (> total (.range-cap w))
+              (when (!= (.ranges w) (cast (ptr Range) 0))
+                (free (cast (ptr i8) (.ranges w)))
+                0)
+              (set! (.ranges w)
+                    (cast (ptr Range) (malloc (cast u64 (* total 8)))))
+              (set! (.range-cap w)
+                    (if (= (.ranges w) (cast (ptr Range) 0)) 0 total)))
+            (if (or (= (.ranges w) (cast (ptr Range) 0))
+                    (and fine (not (ensure-detail w from to))))
+                false
+                (do
+                  (set! (.columns w) count)
+                  (set! (.first-column w) (cast i64 first-bin))
+                  (set! (.step w) stride)
+                  (set! (.offset w)
+                        (* (- (* first-bin span) first-frame)
+                           (/ zoom (.rate w))))
+                  (set! (.sample-mode w) samples)
+                  (for [ch 0 (.channels w)]
+                    (for [i 0 count]
+                      (let [a
+                              (cast i64
+                                    (floor (* (+ first-bin (cast f64 i)) span)))
+                            b
+                              (cast i64
+                                    (floor (* (+ first-bin (cast f64 (+ i 1)))
+                                              span)))]
+                        (set! (index (.ranges w) (+ (* ch count) i))
+                              (if fine
+                                  (detail-range w ch a b)
+                                  (overview-range w ch a b))))))
+                  (set! (.view-start w) start-ms)
+                  (set! (.view-zoom w) zoom)
+                  (set! (.view-width w) width)
+                  (set! (.view-scale w) scale)
+                  (set! (.prepared w) true)
+                  true))))))

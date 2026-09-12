@@ -13,7 +13,7 @@
     path))
 
 (defn key [(path (ptr i8))] (-> masks/Key)
-  (masks/Key :path path :text (o/nil) :x 0.0 :y 0.0 :width 0.0
+  (masks/Key :path path :edges (o/nil) :text (o/nil) :x 0.0 :y 0.0 :width 0.0
              :height 0.0 :size 0.0 :font 0 :kind 0))
 
 (deftest mask-index-grows-resolves-bucket-collisions-and-resets

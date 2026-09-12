@@ -1,0 +1,254 @@
+(module transcript.history)
+(import "coil.primitive" :as primitive)
+(import "transcript.model" :as model)
+
+;;; Undo and redo over the edit list.
+;;;
+;;; An entry records one word's editable state as it was before a change, so a
+;;; step costs only the words it actually touched: cutting six words records
+;;; six entries, and removing every filler in a two-hour transcript records only
+;;; the fillers. Regions are recorded whole, since there are at most a few
+;;; hundred of them.
+;;;
+;;; Undo and redo keep separate arenas. Both are strictly last-in-first-out on
+;;; their own arena — undoing pops the undo arena and pushes the current state
+;;; onto the redo arena — so a bump allocator is enough and nothing has to be
+;;; compacted. Making a new edit clears redo, which resets its arena to empty.
+(const MAX-STEPS 64)
+
+(const MAX-ENTRIES 131072)
+
+(const MAX-REGIONS 16384)
+
+(const SIDE-UNDO 0)
+
+(const SIDE-REDO 1)
+
+(defstruct Entry
+  [(word i64)
+   (gap-keep f64)
+   (t0 f64)
+   (t1 f64)
+   (deleted bool)])
+
+;;; One undoable step: the words it changed, the regions as they were, and the
+;;; selection at the time, so undoing shows you what came back.
+(defstruct Step
+  [(start i64)
+   (count i64)
+   (region-start i64)
+   (region-count i64)
+   (has-regions bool)
+   (sel-kind i64)
+   (sa i64)
+   (sb i64)
+   (ra f64)
+   (rb f64)])
+
+(defstruct Side
+  [(steps i64)
+   (entry-used i64)
+   (region-used i64)
+   (open bool)])
+
+(defstruct History
+  [(undo Side)
+   (redo Side)
+   (overflowed bool)])
+
+(defn history [] (-> (ptr History))
+  (primitive/alloc-static History))
+
+(defn undo-steps [] (-> (ptr (array Step 64)))
+  (primitive/alloc-static (array Step 64)))
+
+(defn redo-steps [] (-> (ptr (array Step 64)))
+  (primitive/alloc-static (array Step 64)))
+
+(defn undo-entries [] (-> (ptr (array Entry 131072)))
+  (primitive/alloc-static (array Entry 131072)))
+
+(defn redo-entries [] (-> (ptr (array Entry 131072)))
+  (primitive/alloc-static (array Entry 131072)))
+
+(defn undo-regions [] (-> (ptr (array model/Clip 16384)))
+  (primitive/alloc-static (array model/Clip 16384)))
+
+(defn redo-regions [] (-> (ptr (array model/Clip 16384)))
+  (primitive/alloc-static (array model/Clip 16384)))
+
+(defn side [(h (ptr History)) (which i64)] (-> (ptr Side))
+  (if (= which SIDE-UNDO) (field h undo) (field h redo)))
+
+(defn steps-of [(which i64)] (-> (ptr (array Step 64)))
+  (if (= which SIDE-UNDO) (undo-steps) (redo-steps)))
+
+(defn entries-of [(which i64)] (-> (ptr (array Entry 131072)))
+  (if (= which SIDE-UNDO) (undo-entries) (redo-entries)))
+
+(defn regions-of [(which i64)] (-> (ptr (array model/Clip 16384)))
+  (if (= which SIDE-UNDO) (undo-regions) (redo-regions)))
+
+(defn clear-side [(h (ptr History)) (which i64)] (-> i64)
+  (let [sd (side h which)]
+    (set! (.steps sd) 0)
+    (set! (.entry-used sd) 0)
+    (set! (.region-used sd) 0)
+    (set! (.open sd) false))
+  0)
+
+(defn clear [(h (ptr History))] (-> i64)
+  (clear-side h SIDE-UNDO)
+  (clear-side h SIDE-REDO)
+  (set! (.overflowed h) false)
+  0)
+
+(defn can-undo? [(h (ptr History))] (-> bool)
+  (> (.steps (field h undo)) 0))
+
+(defn can-redo? [(h (ptr History))] (-> bool)
+  (> (.steps (field h redo)) 0))
+
+;;; The oldest step is dropped when the stack is full. Its entries stay in the
+;;; arena — reclaiming them would mean compacting, and the arena is sized so
+;;; that running out is the rarer limit. When the arena does fill, the whole
+;;; side is dropped rather than recording a step that cannot be restored.
+(defn drop-oldest [(which i64) (sd (ptr Side))] (-> i64)
+  (let [steps (steps-of which)]
+    (for [i 0 (- (.steps sd) 1)]
+      (let [dst (index steps i)
+            src (index steps (+ i 1))]
+        (set! (.start dst) (.start src))
+        (set! (.count dst) (.count src))
+        (set! (.region-start dst) (.region-start src))
+        (set! (.region-count dst) (.region-count src))
+        (set! (.has-regions dst) (.has-regions src))
+        (set! (.sel-kind dst) (.sel-kind src))
+        (set! (.sa dst) (.sa src))
+        (set! (.sb dst) (.sb src))
+        (set! (.ra dst) (.ra src))
+        (set! (.rb dst) (.rb src))))
+    (set! (.steps sd) (- (.steps sd) 1)))
+  0)
+
+(defn begin [(h (ptr History)) (which i64) (s (ptr model/Session))] (-> i64)
+  (let [sd (side h which)
+        steps (steps-of which)]
+    (when (>= (.steps sd) MAX-STEPS) (drop-oldest which sd))
+    (let [step (index steps (.steps sd))]
+      (set! (.start step) (.entry-used sd))
+      (set! (.count step) 0)
+      (set! (.region-start step) (.region-used sd))
+      (set! (.region-count step) 0)
+      (set! (.has-regions step) false)
+      (set! (.sel-kind step) (.sel-kind s))
+      (set! (.sa step) (.sa s))
+      (set! (.sb step) (.sb s))
+      (set! (.ra step) (.ra s))
+      (set! (.rb step) (.rb s)))
+    (set! (.open sd) true))
+  0)
+
+(defn current-step [(h (ptr History)) (which i64)] (-> (ptr Step))
+  (index (steps-of which) (.steps (side h which))))
+
+;;; Record a word as it is now. Call before changing it.
+(defn record-word [(h (ptr History)) (which i64) (i i64)] (-> bool)
+  (let [sd (side h which)]
+    (if (not (.open sd))
+        false
+        (if (>= (.entry-used sd) MAX-ENTRIES)
+            (do (set! (.overflowed h) true) false)
+            (let [w (model/word i)
+                  e (index (entries-of which) (.entry-used sd))
+                  step (current-step h which)]
+              (set! (.word e) i)
+              (set! (.gap-keep e) (.gap-keep w))
+              (set! (.t0 e) (.t0 w))
+              (set! (.t1 e) (.t1 w))
+              (set! (.deleted e) (.deleted w))
+              (set! (.entry-used sd) (+ (.entry-used sd) 1))
+              (set! (.count step) (+ (.count step) 1))
+              true)))))
+
+(defn record-words [(h (ptr History)) (which i64) (lo i64) (hi i64)] (-> i64)
+  (for [i lo hi] (record-word h which i))
+  0)
+
+;;; Record the region list as it is now.
+(defn record-regions [(h (ptr History)) (which i64) (s (ptr model/Session))] (-> bool)
+  (let [sd (side h which)]
+    (if (not (.open sd))
+        false
+        (if (> (+ (.region-used sd) (.region-count s)) MAX-REGIONS)
+            (do (set! (.overflowed h) true) false)
+            (let [step (current-step h which)
+                  dst (regions-of which)]
+              (for [i 0 (.region-count s)]
+                (let [d (index dst (+ (.region-used sd) i))
+                      src (index (model/regions) i)]
+                  (set! (.from d) (.from src))
+                  (set! (.to d) (.to src))))
+              (set! (.region-count step) (.region-count s))
+              (set! (.has-regions step) true)
+              (set! (.region-used sd) (+ (.region-used sd) (.region-count s)))
+              true)))))
+
+;;; Close the step. A step that recorded nothing is discarded, so an action that
+;;; changed nothing does not consume an undo press. Returns whether it was kept.
+(defn commit [(h (ptr History)) (which i64)] (-> bool)
+  (let [sd (side h which)]
+    (if (not (.open sd))
+        false
+        (let [step (current-step h which)
+              empty (and (= (.count step) 0) (not (.has-regions step)))]
+          (set! (.open sd) false)
+          (if (or empty (.overflowed h))
+              (do
+                (set! (.entry-used sd) (.start step))
+                (set! (.region-used sd) (.region-start step))
+                (when (.overflowed h) (clear-side h which))
+                (set! (.overflowed h) false)
+                false)
+              (do (set! (.steps sd) (+ (.steps sd) 1)) true))))))
+
+;;; Restore the top step of `which`, recording what it replaces onto `other` so
+;;; the move can be reversed again.
+(defn restore [(h (ptr History)) (which i64) (s (ptr model/Session))] (-> bool)
+  (let [sd (side h which)
+        other (if (= which SIDE-UNDO) SIDE-REDO SIDE-UNDO)]
+    (if (= (.steps sd) 0)
+        false
+        (let [step (index (steps-of which) (- (.steps sd) 1))
+              entries (entries-of which)
+              regions (regions-of which)]
+          (begin h other s)
+          (for [k 0 (.count step)]
+            (record-word h other (.word (index entries (+ (.start step) k))))
+            0)
+          (when (.has-regions step) (record-regions h other s) 0)
+          (commit h other)
+          (for [k 0 (.count step)]
+            (let [e (index entries (+ (.start step) k))
+                  w (model/word (.word e))]
+              (set! (.deleted w) (.deleted e))
+              (set! (.gap-keep w) (.gap-keep e))
+              (set! (.t0 w) (.t0 e))
+              (set! (.t1 w) (.t1 e))))
+          (when (.has-regions step)
+            (for [k 0 (.region-count step)]
+              (let [src (index regions (+ (.region-start step) k))
+                    dst (index (model/regions) k)]
+                (set! (.from dst) (.from src))
+                (set! (.to dst) (.to src))))
+            (set! (.region-count s) (.region-count step)))
+          (set! (.sel-kind s) (.sel-kind step))
+          (set! (.sa s) (.sa step))
+          (set! (.sb s) (.sb step))
+          (set! (.ra s) (.ra step))
+          (set! (.rb s) (.rb step))
+          (set! (.entry-used sd) (.start step))
+          (set! (.region-used sd) (.region-start step))
+          (set! (.steps sd) (- (.steps sd) 1))
+          (model/rebuild-clips s)
+          true))))

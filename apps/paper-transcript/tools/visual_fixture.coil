@@ -1,0 +1,109 @@
+(module transcript.visual-fixture)
+(import "coil.primitive" :as primitive)
+(import "coil.slice" :use [subslice])
+(import "paper.platform" :as host)
+(import "paper.lighting" :as light)
+(import "paper.ffi" :use [snprintf sin fabs])
+(import "transcript.model" :as model)
+(import "transcript.library" :as lib)
+(import "transcript.page" :as page)
+(import "transcript.ui" :as ui)
+
+;;; Deterministic visual QA. No library reads, audio playback, or edit writes.
+;;; --app 1 selects one word (alignment toolbar); --app 2 shows empty state.
+;;; TRANSCRIPT_TEST_WIDTH controls logical width; narrow fixtures use 760 high.
+(defn paragraph [(words (slice u8)) (start f64)] (-> i64)
+  (let [s (model/session)
+        (mut from) 0
+        (mut time) start]
+    (for [i 0 (+ (len words) 1)]
+      (when (or (= i (len words)) (= (get words i) 32))
+        (lib/push-word s
+                       (subslice words (load from) i)
+                       (load time)
+                       (+ (load time) 320.0))
+        (set! time (+ (load time) 390.0))
+        (set! from (+ i 1))))
+    (set! (.para (model/word (- (.word-count s) 1))) true))
+  0)
+
+(defn event [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
+  (when (= kind 0)
+    (let [s (model/session)]
+      (model/reset-session s)
+      (set! (.take-count s) 8)
+      (set! (.take s) 4)
+      (for [i 0 8]
+        (let [take (model/take-at i)
+              off (* i 128)]
+          (set! (.off take) off)
+          (set! (.len take)
+                (cast i64
+                      (snprintf (index (model/name-arena) off)
+                                128
+                                c"Episode %lld — Studio recording.wav"
+                                (+ 37 i))))
+          (set! (.dur-ms take) 96000.0)))
+      (snprintf (model/take-name (model/take-at 4))
+                128
+                c"Episode 41 — The space between.wav")
+      (paragraph "So um I've been thinking a lot about what it means to make space in a conversation. Like, not just silence, but the space between words where something more honest can actually land."
+                 0.0)
+      (paragraph "Yeah, I think that's right. It's in those moments, you know, uh when you're not rushing to fill the air, that people tend to say the real thing."
+                 17000.0)
+      (paragraph "Totally. And maybe that's why um podcasts feel different. There's room to be human, even with the awkward pauses."
+                 35000.0)
+      (paragraph "Exactly. Those pauses aren't broken. They're part of the rhythm. They give the story room to breathe. And I think that's something we lose in a lot of other media."
+                 53000.0)
+      (set! (.dur-ms s) 72000.0)
+      (set! (.speed s) 1.25)
+      (set! (.playing s) true)
+      (set! (.cur-ms s) (.t0 (model/word 40)))
+      (set! (.crossfade s) true)
+      (set! (.deleted (model/word 35)) true)
+      (set! (.deleted (model/word 36)) true)
+      (set! (.deleted (model/word 64)) true)
+      ;; Preserve word ordering while introducing three distinct pause states.
+      (set! (.t1 (model/word 15)) (- (.t0 (model/word 16)) 320.0))
+      (set! (.gap-keep (model/word 32)) 600.0)
+      (set! (.gap-keep (model/word 60)) 0.0)
+      (set! (.sel-kind s) model/SEL-WORDS)
+      (set! (.sa s) (if (= id 1) 26 24))
+      (set! (.sb s) 26)
+      (set! (.peak-count s) 7200)
+      (for [i 0 7200]
+        (let [time (cast f64 i)]
+          (set! (index (model/peaks) i)
+                (cast f32
+                      (* (fabs (sin (/ time 137.0)))
+                         (+ 0.25 (* 0.65 (fabs (sin (/ time 41.0))))))))))
+      (page/build-sumsq s)
+      (model/rebuild-clips s)
+      (when (= id 2)
+        (model/reset-session s)
+        (set! (.take-count s) 0)
+        (set! (.take s) -1)
+        (model/set-status s c"NO RECORDING SELECTED"))
+      (when (!= id 2)
+        (model/set-status s c"VISUAL TEST FIXTURE — NO AUDIO FILES MODIFIED"))
+      (set! (ui/lighting) (light/lighting -0.35 -0.55 1400.0 0.85 1.0))
+      (let [hover (lib/getenv c"TRANSCRIPT_TEST_HOVER")
+            height (lib/getenv c"TRANSCRIPT_TEST_SUN_HEIGHT")]
+        (when (!= (cast i64 hover) 0)
+          (set! (.hover (host/host)) (cast i64 (lib/parse-float hover))))
+        (when (!= (cast i64 height) 0)
+          (set! (.height (ui/lighting)) (lib/parse-float height))))
+      (set! (.rail-take (ui/frame)) -1)
+      (set! (.prose-w (ui/frame)) -1.0)
+      (set! (.wave-w (ui/frame)) -1.0)))
+  0)
+
+(defn main [] (-> i64)
+  (let [value (lib/getenv c"TRANSCRIPT_TEST_WIDTH")
+        width (if (= (cast i64 value) 0) 1480.0 (lib/parse-float value))]
+    (host/paper_configure c"Paper Transcript — visual fixture"
+                          width
+                          (if (< width 1250.0) 760.0 940.0))
+    (host/paper_responsive 1120.0 760.0)
+    (host/paper_unified_window true)
+    (host/paper_run (primitive/fnptr-of ui/draw) (primitive/fnptr-of event))))

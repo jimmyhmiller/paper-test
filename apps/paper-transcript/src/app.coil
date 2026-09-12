@@ -1,0 +1,1183 @@
+(module transcript.app)
+(import "coil.primitive" :as primitive)
+(import "coil.alloc" :as alloc)
+(import "coil.fs" :as fs)
+(import "coil.slice" :use *)
+(import "coil.result" :use *)
+(import "paper.flow" :use *)
+(import "paper.platform" :as host)
+(import "paper.lighting" :as light)
+(import "transcript.waveform" :as waveform)
+(import "paper.ffi" :use [snprintf strlen])
+(import "transcript.model" :as model)
+(import "transcript.page" :as page)
+(import "transcript.library" :as lib)
+(import "transcript.sound" :as sound)
+(import "transcript.history" :as history)
+(import "transcript.ui" :as ui)
+(import "transcript.diagnostics" :as diag)
+
+(extern printf :cc c [(ptr i8) ...] (-> i32))
+
+(extern popen :cc c [(ptr i8) (ptr i8)] (-> (ptr i8)))
+
+(extern pclose :cc c [(ptr i8)] (-> i32))
+
+(extern fgets :cc c [(ptr i8) i32 (ptr i8)] (-> (ptr i8)))
+
+(extern atoll :cc c [(ptr i8)] (-> i64))
+
+(extern kill :cc c [i32 i32] (-> i32))
+
+(extern exit :cc c [i32] (-> void))
+
+(extern getenv :cc c [(ptr i8)] (-> (ptr i8)))
+
+;;; macOS hardware key codes, as the renderer reports them.
+(const KEY-SPACE 49)
+
+(const KEY-LEFT 123)
+
+(const KEY-RIGHT 124)
+
+(const KEY-DELETE 51)
+
+(const KEY-FORWARD-DELETE 117)
+
+(const KEY-F 3)
+
+(const KEY-X 7)
+
+(const KEY-MINUS 27)
+
+(const KEY-EQUAL 24)
+
+(const KEY-LBRACKET 33)
+
+(const KEY-RBRACKET 30)
+
+(const KEY-SLASH 44)
+
+(const KEY-ESCAPE 53)
+
+(const KEY-Z 6)
+
+(const KEY-D 2)
+
+(const KEY-T 17)
+
+;;; NSEventModifierFlags.
+(const MOD-SHIFT 131072)
+
+(const MOD-COMMAND 1048576)
+
+(defn idle-tick [] (-> f64)
+  1.0)
+
+;;; One frame at 60 Hz. At 30 Hz the playhead and the spoken-word highlight
+;;; visibly step, and the diagnostics overlay reports the tick as the frame rate.
+(defn playing-tick [] (-> f64)
+  0.016)
+
+(defn job-tick [] (-> f64)
+  0.25)
+
+(const JOB-NONE 0)
+
+(const JOB-TRANSCRIBE 1)
+
+(const JOB-PEAKS 2)
+
+(const JOB-EXPORT 3)
+
+(defstruct Job
+  [(kind i64)
+   (pid i64)
+   (take i64)
+   (running bool)])
+
+(defn job [] (-> (ptr Job))
+  (primitive/alloc-static Job))
+
+(defn command-buffer [] (-> (ptr (array i8 4096)))
+  (primitive/alloc-static (array i8 4096)))
+
+(defn json-buffer [] (-> (ptr (array i8 262144)))
+  (primitive/alloc-static (array i8 262144)))
+
+;;; ---- persistence ----------------------------------------------------------
+
+;;; Edits are written in the same shape jim's editor reads, so a take edited
+;;; here opens there with its cuts intact and the reverse.
+(defn save-edits [(s (ptr model/Session))] (-> i64)
+  (if (< (.take s) 0)
+      0
+      (let [out (index (json-buffer) 0)
+            (mut used) 0]
+        (set! used (cast i64 (snprintf out 262144 c"{\"deleted\":[")))
+        (let [(mut first) true]
+          (for [i 0 (.word-count s)]
+            (when (and (.deleted (model/word i)) (< (load used) 260000))
+              (set! used
+                    (+ (load used)
+                       (cast i64
+                             (snprintf (index out (load used))
+                                       (cast u64 (- 262144 (load used)))
+                                       (if (load first) c"%lld" c",%lld")
+                                       i))))
+              (set! first false))))
+        (set! used
+              (+ (load used)
+                 (cast i64
+                       (snprintf (index out (load used))
+                                 (cast u64 (- 262144 (load used)))
+                                 c"],\"gaps\":["))))
+        (let [(mut first) true]
+          (for [i 0 (.word-count s)]
+            (let [keep (.gap-keep (model/word i))]
+              (when (and (>= keep 0.0) (< keep 0.5) (< (load used) 260000))
+                (set! used
+                      (+ (load used)
+                         (cast i64
+                               (snprintf (index out (load used))
+                                         (cast u64 (- 262144 (load used)))
+                                         (if (load first) c"%lld" c",%lld")
+                                         i))))
+                (set! first false)))))
+        (set! used
+              (+ (load used)
+                 (cast i64
+                       (snprintf (index out (load used))
+                                 (cast u64 (- 262144 (load used)))
+                                 c"],\"gap_keep\":["))))
+        (let [(mut first) true]
+          (for [i 0 (.word-count s)]
+            (let [keep (.gap-keep (model/word i))]
+              (when (and (>= keep 0.5) (< (load used) 260000))
+                (set! used
+                      (+ (load used)
+                         (cast i64
+                               (snprintf (index out (load used))
+                                         (cast u64 (- 262144 (load used)))
+                                         (if (load first)
+                                             c"{\"i\":%lld,\"ms\":%.1f}"
+                                             c",{\"i\":%lld,\"ms\":%.1f}")
+                                         i
+                                         keep))))
+                (set! first false)))))
+        (set! used
+              (+ (load used)
+                 (cast i64
+                       (snprintf (index out (load used))
+                                 (cast u64 (- 262144 (load used)))
+                                 c"],\"regions\":["))))
+        (for [i 0 (.region-count s)]
+          (when (< (load used) 260000)
+            (set! used
+                  (+ (load used)
+                     (cast i64
+                           (snprintf (index out (load used))
+                                     (cast u64 (- 262144 (load used)))
+                                     (if (= i 0)
+                                         c"{\"from\":%.1f,\"to\":%.1f}"
+                                         c",{\"from\":%.1f,\"to\":%.1f}")
+                                     (.from (index (model/regions) i))
+                                     (.to (index (model/regions) i))))))))
+        (set! used
+              (+ (load used)
+                 (cast i64
+                       (snprintf (index out (load used))
+                                 (cast u64 (- 262144 (load used)))
+                                 c"]}"))))
+        (let [a (alloc/malloc-allocator)
+              path
+                (lib/edits-path (index (lib/path-buffer) 0)
+                                (model/take-name (model/take-at (.take s))))
+              written
+                (fs/write-file a
+                               (slice-new [u8]
+                                          (cast (ptr u8) path)
+                                          (cast i64 (strlen path)))
+                               (slice-new [u8] (cast (ptr u8) out) (load used)))]
+          (match written (Ok [n] 0) (Err [e] 0))))))
+
+;;; ---- take loading ---------------------------------------------------------
+(defn resplice [(s (ptr model/Session))] (-> i64)
+  (let [phase (diag/now)]
+    (sound/splice (sound/sound) s (.crossfade s))
+    (when (diag/overlay?)
+      (printf c"[profile] splice %.1fms\n" (diag/ms-since phase))))
+  (set! (.dirty s) false)
+  0)
+
+(defn select-take [(s (ptr model/Session)) (i i64)] (-> i64)
+  (if (or (< i 0) (>= i (.take-count s)))
+      0
+      (let [name (model/take-name (model/take-at i))
+            select-phase (diag/now)]
+        (sound/stop (sound/sound))
+        (model/reset-session s)
+        (history/clear (history/history))
+        (set! (.take s) i)
+        (set! (.prose-w (ui/frame)) -1.0)
+        (set! (.wave-w (ui/frame)) -1.0)
+        (let [p1 (diag/now)
+              have-words (lib/load-transcript s name)
+              p2 (diag/now)]
+          (lib/mark-paragraphs s)
+          (let [p3 (diag/now)]
+            (lib/load-peaks s name)
+            (let [p4 (diag/now)]
+              (lib/load-edits s name)
+              (let [p5 (diag/now)]
+                (page/build-sumsq s)
+                (when (diag/overlay?)
+                  (printf c"[profile] transcript %.1fms  paragraphs %.1fms  peaks %.1fms  edits %.1fms  sumsq %.1fms\n"
+                          (- (diag/ms-since p1) (diag/ms-since p2))
+                          (- (diag/ms-since p2) (diag/ms-since p3))
+                          (- (diag/ms-since p3) (diag/ms-since p4))
+                          (- (diag/ms-since p4) (diag/ms-since p5))
+                          (diag/ms-since p5))))))
+          ;; The probed header duration is exact; the peak envelope is measured
+          ;; in 10 ms buckets and may not have been built at all. Let the probe
+          ;; be the authority on length and the envelope only on shape.
+          (when (> (.dur-ms (model/take-at i)) 0.0)
+            (set! (.dur-ms s) (.dur-ms (model/take-at i))))
+          (model/rebuild-clips s)
+          (set! (.transcribed (model/take-at i)) have-words)
+          (if have-words
+              (cast i64
+                    (snprintf (model/status s)
+                              160
+                              c"%lld WORDS · %lld CLIPS"
+                              (.word-count s)
+                              (.clip-count s)))
+              (cast i64
+                    (snprintf (model/status s)
+                              160
+                              c"NO TRANSCRIPT YET · PRESS RE-DO STT")))
+          (set! (.dirty s) true)
+          ;; Measuring the envelope is cheap and touches nothing but a cache, so
+          ;; a take without one starts that itself. Transcription is expensive
+          ;; and stays an explicit request.
+          (waveform/request (lib/source-path (index (lib/path-buffer) 0) name)
+                            i
+                            (= (host/paper_arg_snapshot) 1))
+          (when (.running (waveform/state))
+            (host/paper_tick_interval (job-tick)))
+          (when (diag/overlay?)
+            (printf c"[profile] select-take total %.1fms\n"
+                    (diag/ms-since select-phase)))
+          0))))
+
+;;; ---- jobs -----------------------------------------------------------------
+(defn log-path [] (-> (ptr i8))
+  c"/tmp/paper-transcript/job.log")
+
+;;; Long-running work is a detached shell pipeline, not a thread: whisper and
+;;; ffmpeg are separate programs, and a failure in either must not take the
+;;; editor down with it. The shell reports the child's pid, which is how the
+;;; tick handler later learns the job has finished.
+(defn start-job [(s (ptr model/Session)) (kind i64) (command (ptr i8))] (-> bool)
+  (let [j (job)]
+    (if (.running j)
+        false
+        (let [line (index (command-buffer) 0)
+              reply (index (reply-buffer) 0)]
+          (cast i64
+                (snprintf line
+                          4096
+                          c"mkdir -p /tmp/paper-transcript; ( %s ) > %s 2>&1 & echo $!"
+                          command
+                          (log-path)))
+          (let [pipe (popen line c"r")]
+            (if (= (cast i64 pipe) 0)
+                false
+                (let [got (fgets reply 64 pipe)]
+                  (pclose pipe)
+                  (if (= (cast i64 got) 0)
+                      false
+                      (do
+                        (set! (.pid j) (atoll reply))
+                        (set! (.kind j) kind)
+                        (set! (.take j) (.take s))
+                        (set! (.running j) true)
+                        (set! (.transcribing s) (= kind JOB-TRANSCRIBE))
+                        (set! (.progress s) 0)
+                        (host/paper_tick_interval (job-tick))
+                        (host/paper_redraw)
+                        true)))))))))
+
+(defn reply-buffer [] (-> (ptr (array i8 64)))
+  (primitive/alloc-static (array i8 64)))
+
+(defn tail-buffer [] (-> (ptr (array i8 8192)))
+  (primitive/alloc-static (array i8 8192)))
+
+;;; whisper.cpp prints "progress =  42%" as it goes. Reading the tail of the
+;;; job log is enough to drive a real progress bar without a pipe to poll.
+(defn read-progress [] (-> i64)
+  (let [buffer (index (tail-buffer) 0)
+        line (index (command-buffer) 0)]
+    (cast i64
+          (snprintf line
+                    4096
+                    c"tail -c 4000 %s 2>/dev/null | grep -o 'progress = *[0-9]*' | tail -1"
+                    (log-path)))
+    (let [pipe (popen line c"r")]
+      (if (= (cast i64 pipe) 0)
+          -1
+          (let [got (fgets buffer 8192 pipe)]
+            (pclose pipe)
+            (if (= (cast i64 got) 0)
+                -1
+                (let [n (cast i64 (strlen buffer))
+                      (mut start) -1]
+                  (for [i 0 n]
+                    (let [c (cast i64 (load (index buffer i)))]
+                      (when (and (< (load start) 0) (and (>= c 48) (<= c 57)))
+                        (set! start i))))
+                  (if (< (load start) 0) -1 (atoll (index buffer (load start)))))))))))
+
+(defn job-alive? [(j (ptr Job))] (-> bool)
+  (and (> (.pid j) 0) (= (kill (cast i32 (.pid j)) 0) 0)))
+
+;;; Reload whatever the finished job produced. A job whose take is no longer
+;;; selected still writes its cache; it just does not disturb the current view.
+(defn finish-job [(s (ptr model/Session))] (-> i64)
+  (let [j (job)
+        kind (.kind j)
+        take (.take j)]
+    (set! (.running j) false)
+    (set! (.pid j) 0)
+    (set! (.kind j) JOB-NONE)
+    (set! (.transcribing s) false)
+    (set! (.progress s) 0)
+    (cond (= kind JOB-PEAKS)
+            (let [imported (lib/import-peak-text s)]
+              (if (> imported 0)
+                  (do
+                    (lib/write-peaks-cache s
+                                           (model/take-name (model/take-at take)))
+                    (when (= take (.take s))
+                      (page/build-sumsq s)
+                      (set! (.wave-w (ui/frame)) -1.0)
+                      (set! (.dur-ms (model/take-at take)) (.dur-ms s))
+                      (model/rebuild-clips s)
+                      (set! (.dirty s) true)
+                      (cast i64
+                            (snprintf (model/status s)
+                                      160
+                                      c"%lld WORDS · %lld CLIPS"
+                                      (.word-count s)
+                                      (.clip-count s))))
+                    0)
+                  (do (model/set-status s c"COULD NOT READ THE WAVEFORM") 0)))
+          (= kind JOB-TRANSCRIBE)
+            (if (= take (.take s))
+                (do (select-take s take) 0)
+                0)
+          (= kind JOB-EXPORT)
+            (do (model/set-status s c"EXPORTED NEXT TO THE RECORDING") 0)
+          :else 0)
+    (host/paper_tick_interval (if (.playing s) (playing-tick) (idle-tick)))
+    (host/paper_redraw)
+    0))
+
+(defn poll-job [(s (ptr model/Session))] (-> i64)
+  (let [j (job)]
+    (when (.running j)
+      (if (job-alive? j)
+          (when (.transcribing s)
+            (let [p (read-progress)]
+              (when (and (>= p 0) (!= p (.progress s)))
+                (set! (.progress s) p)
+                (host/paper_redraw))))
+          (finish-job s))))
+  0)
+
+;;; The whisper pipeline: decode to the 16 kHz mono wav whisper.cpp wants,
+;;; transcribe with word-level DTW timings, then refine those timings with
+;;; WhisperX forced alignment. When alignment is unavailable the whisper
+;;; timings remain, which are already good enough to edit against.
+(defn transcribe-command [(name (ptr i8))] (-> (ptr i8))
+  (let [out (index (script-buffer) 0)
+        home (lib/home)
+        (mut used) 0]
+    (set! used
+          (cast i64
+                (snprintf out
+                          8192
+                          c"set -e; mkdir -p '%s/.jim/transcripts' /tmp/paper-transcript; "
+                          home)))
+    (set! used
+          (+ (load used)
+             (cast i64
+                   (snprintf (index out (load used))
+                             (cast u64 (- 8192 (load used)))
+                             c"ffmpeg -y -i '%s/.jim/recordings/%s' -ar 16000 -ac 1 /tmp/paper-transcript/in.wav; "
+                             home
+                             name))))
+    (set! used
+          (+ (load used)
+             (cast i64
+                   (snprintf (index out (load used))
+                             (cast u64 (- 8192 (load used)))
+                             c"whisper-cli -m '%s/.jim/models/ggml-large-v3.bin' -f /tmp/paper-transcript/in.wav -dtw large.v3 -ojf -pp -of '%s/.jim/transcripts/%s' --prompt 'Here is a clear, well-punctuated transcript with proper capitalization.'; "
+                             home
+                             home
+                             name))))
+    (set! used
+          (+ (load used)
+             (cast i64
+                   (snprintf (index out (load used))
+                             (cast u64 (- 8192 (load used)))
+                             c"'%s/.local/bin/uv' run --with whisperx python '%s/.jim/whisperx_align.py' /tmp/paper-transcript/in.wav '%s/.jim/transcripts/%s.json' /tmp/paper-transcript/aligned.json en && cp /tmp/paper-transcript/aligned.json '%s/.jim/transcripts/%s.json' || true"
+                             home
+                             home
+                             home
+                             name
+                             home
+                             name))))
+    out))
+
+(defn peaks-command [(name (ptr i8))] (-> (ptr i8))
+  (let [out (index (script-buffer) 0)
+        home (lib/home)]
+    (cast i64
+          (snprintf out
+                    8192
+                    c"mkdir -p /tmp/paper-transcript; ffmpeg -y -i '%s/.jim/recordings/%s' -af \"aresample=8000,aformat=channel_layouts=mono,asetnsamples=n=80:p=0,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.Peak_level:file=/tmp/paper-transcript/peaks.txt\" -f null /dev/null"
+                    home
+                    name))
+    out))
+
+;;; Export renders the kept spans with ffmpeg rather than writing our own
+;;; encoder, and applies the same short seam ramps the preview uses so the file
+;;; and the preview have identical timing.
+(defn export-command [(s (ptr model/Session)) (name (ptr i8))] (-> (ptr i8))
+  (let [out (index (script-buffer) 0)
+        home (lib/home)
+        (mut used) 0
+        soften (.crossfade s)]
+    (set! used
+          (cast i64
+                (snprintf out
+                          8192
+                          c"ffmpeg -y -i '%s/.jim/recordings/%s' -filter_complex \""
+                          home
+                          name)))
+    (for [i 0 (.clip-count s)]
+      (when (< (load used) 7000)
+        (let [c (index (model/clips) i)
+              seconds (/ (- (.to c) (.from c)) 1000.0)]
+          (set! used
+                (+ (load used)
+                   (cast i64
+                         (snprintf (index out (load used))
+                                   (cast u64 (- 8192 (load used)))
+                                   c"[0:a]atrim=start=%.3f:end=%.3f,asetpts=PTS-STARTPTS"
+                                   (/ (.from c) 1000.0)
+                                   (/ (.to c) 1000.0)))))
+          (when soften
+            (set! used
+                  (+ (load used)
+                     (cast i64
+                           (snprintf (index out (load used))
+                                     (cast u64 (- 8192 (load used)))
+                                     c",afade=t=in:st=0:d=0.005,afade=t=out:st=%.3f:d=0.005"
+                                     (if (> seconds 0.005)
+                                         (- seconds 0.005)
+                                         0.0))))))
+          (set! used
+                (+ (load used)
+                   (cast i64
+                         (snprintf (index out (load used))
+                                   (cast u64 (- 8192 (load used)))
+                                   c"[c%lld];"
+                                   i)))))))
+    (for [i 0 (.clip-count s)]
+      (when (< (load used) 7600)
+        (set! used
+              (+ (load used)
+                 (cast i64
+                       (snprintf (index out (load used))
+                                 (cast u64 (- 8192 (load used)))
+                                 c"[c%lld]"
+                                 i))))))
+    (set! used
+          (+ (load used)
+             (cast i64
+                   (snprintf (index out (load used))
+                             (cast u64 (- 8192 (load used)))
+                             c"concat=n=%lld:v=0:a=1[out]\" -map '[out]' '%s/.jim/recordings/%s_edited.wav'"
+                             (.clip-count s)
+                             home
+                             name))))
+    out))
+
+(defn script-buffer [] (-> (ptr (array i8 8192)))
+  (primitive/alloc-static (array i8 8192)))
+
+;;; ---- transport ------------------------------------------------------------
+(defn stop-playback [(s (ptr model/Session))] (-> i64)
+  (sound/stop (sound/sound))
+  (set! (.playing s) false)
+  (host/paper_tick_interval (if (.running (job)) (job-tick) (idle-tick)))
+  (host/paper_redraw)
+  0)
+
+(defn ensure-audio [(s (ptr model/Session))] (-> bool)
+  (let [snd (sound/sound)]
+    (when (or (not (.ready snd)) (!= (.loaded-take snd) (.take s)))
+      (let [name (model/take-name (model/take-at (.take s)))
+            phase (diag/now)]
+        (if (sound/decode snd
+                          (lib/source-path (index (lib/path-buffer) 0) name))
+            (do
+              (set! (.loaded-take snd) (.take s))
+              (set! (.dirty s) true)
+              (when (diag/overlay?)
+                (printf c"[profile] decode %.1fms\n" (diag/ms-since phase)))
+              0)
+            (do (set! (.loaded-take snd) -1) 0))))
+    (when (and (.ready snd) (.dirty s)) (resplice s))
+    (.ready snd)))
+
+;;; Decode and splice on demand rather than when a take is selected. Opening a
+;;; take should cost only what is on screen; the audio work happens the first
+;;; time something is played, and is reused until the edit or the take changes.
+(defn start-playback [(s (ptr model/Session)) (source-ms f64)] (-> i64)
+  (if (not (ensure-audio s))
+      (do (model/set-status s c"COULD NOT DECODE THIS RECORDING") 0)
+      (if (<= (.clip-count s) 0)
+          (do (model/set-status s c"NOTHING KEPT") 0)
+          (let [edited (model/source-to-edited s source-ms)]
+            (if (sound/play-from (sound/sound) edited (.speed s))
+                (do
+                  (set! (.playing s) true)
+                  (set! (.cur-ms s) source-ms)
+                  (host/paper_tick_interval (playing-tick))
+                  (host/paper_redraw)
+                  1)
+                (do (model/set-status s c"COULD NOT START PLAYBACK") 0))))))
+
+(defn toggle-playback [(s (ptr model/Session))] (-> i64)
+  (if (.playing s) (stop-playback s) (start-playback s (.cur-ms s))))
+
+(defn seek [(s (ptr model/Session)) (source-ms f64)] (-> i64)
+  (let [target
+          (if (< source-ms 0.0)
+              0.0
+              (if (> source-ms (.dur-ms s)) (.dur-ms s) source-ms))]
+    (set! (.cur-ms s) target)
+    (when (.playing s) (start-playback s target))
+    (host/paper_redraw))
+  0)
+
+;;; Open an undoable step covering a word range and, optionally, the region
+;;; list. Making a new edit discards anything that had been undone.
+(defn begin-step [(s (ptr model/Session)) (lo i64) (hi i64) (with-regions bool)] (-> i64)
+  (let [h (history/history)]
+    (history/clear-side h history/SIDE-REDO)
+    (history/begin h history/SIDE-UNDO s)
+    (when (and (>= lo 0) (> hi lo))
+      (history/record-words h history/SIDE-UNDO lo hi))
+    (when with-regions (history/record-regions h history/SIDE-UNDO s) 0))
+  0)
+
+(defn end-step [] (-> i64)
+  (history/commit (history/history) history/SIDE-UNDO)
+  0)
+
+(defn commit [(s (ptr model/Session))] (-> i64)
+  (save-edits s)
+  (when (.playing s) (stop-playback s))
+  (set! (.dirty s) true)
+  (cast i64
+        (snprintf (model/status s)
+                  160
+                  c"%lld WORDS KEPT · %lld CLIPS"
+                  (model/kept-word-count s)
+                  (.clip-count s)))
+  (host/paper_redraw)
+  0)
+
+;;; ---- actions --------------------------------------------------------------
+;;; Each of these opens a step, records exactly the words it is about to touch,
+;;; performs the edit, then closes the step. A step that changed nothing is
+;;; discarded rather than consuming an undo press.
+(defn cut-selection [(s (ptr model/Session))] (-> i64)
+  (if (= (.sel-kind s) model/SEL-WORDS)
+      (let [lo (model/selection-low s)
+            hi (model/selection-high s)]
+        (if (< lo 0)
+            0
+            (do
+              (begin-step s lo (+ hi 1) false)
+              (when (> (model/toggle-selection s) 0) (commit s))
+              (end-step)
+              0)))
+      (do
+        (begin-step s -1 -1 true)
+        (when (> (model/toggle-selection s) 0) (commit s))
+        (end-step)
+        0)))
+
+(defn cut-fillers [(s (ptr model/Session))] (-> i64)
+  (begin-step s -1 -1 false)
+  (let [h (history/history)]
+    (for [i 0 (.word-count s)]
+      (let [w (model/word i)]
+        (when (and (.filler w) (not (.deleted w)))
+          (history/record-word h history/SIDE-UNDO i)
+          0))))
+  (model/remove-fillers s)
+  (commit s)
+  (end-step)
+  0)
+
+(defn nudge-edge [(s (ptr model/Session)) (start bool)] (-> i64)
+  (if (or (!= (.sel-kind s) model/SEL-WORDS) (!= (.sa s) (.sb s)))
+      0
+      (do
+        (begin-step s (.sa s) (+ (.sa s) 1) false)
+        (when (> (model/nudge-word-edge s start) 0) (commit s))
+        (end-step)
+        0)))
+
+;;; Write everything the editor knows about its own state to a file, so a report
+;;; about it behaving badly can carry the numbers with it.
+(defn write-trace [(s (ptr model/Session))] (-> i64)
+  (let [j (job)
+        path
+          (diag/write-trace s
+                            (.transcript (ui/frame))
+                            (.wave (ui/frame))
+                            (.steps (history/side (history/history)
+                                                  history/SIDE-UNDO))
+                            (.steps (history/side (history/history)
+                                                  history/SIDE-REDO))
+                            (if (.running j) (.kind j) 0)
+                            (.progress s))]
+    (cast i64 (snprintf (model/status s) 160 c"TRACE WRITTEN TO %s" path))
+    (host/paper_redraw))
+  0)
+
+(defn undo [(s (ptr model/Session))] (-> i64)
+  (if (history/restore (history/history) history/SIDE-UNDO s)
+      (do
+        (commit s)
+        (model/set-status s c"UNDID ONE EDIT")
+        (host/paper_redraw)
+        1)
+      (do (model/set-status s c"NOTHING TO UNDO") (host/paper_redraw) 1)))
+
+(defn redo [(s (ptr model/Session))] (-> i64)
+  (if (history/restore (history/history) history/SIDE-REDO s)
+      (do
+        (commit s)
+        (model/set-status s c"REDID ONE EDIT")
+        (host/paper_redraw)
+        1)
+      (do (model/set-status s c"NOTHING TO REDO") (host/paper_redraw) 1)))
+
+(defn zoom-by [(s (ptr model/Session)) (factor f64)] (-> i64)
+  (let [w (.wave (ui/frame))]
+    (when (> (.dur-ms s) 0.0)
+      (page/zoom-to s (* (.wzoom s) factor) (.cur-ms s) (.x w) (.w w))
+      (set! (.wave-zoom (ui/frame)) (.wzoom s))
+      (set! (.wave-scroll (ui/frame)) (.wscroll s))
+      (host/paper_redraw)))
+  0)
+
+(defn cycle-speed [(s (ptr model/Session))] (-> i64)
+  (let [next
+          (cond (< (.speed s) 0.9) 1.0
+                (< (.speed s) 1.1) 1.25
+                (< (.speed s) 1.3) 1.5
+                (< (.speed s) 1.6) 2.0
+                :else 0.75)]
+    (set! (.speed s) next)
+    (sound/set-rate (sound/sound) next)
+    (host/paper_redraw))
+  0)
+
+(defn toggle-crossfade [(s (ptr model/Session))] (-> i64)
+  (set! (.crossfade s) (not (.crossfade s)))
+  (set! (.dirty s) true)
+  (host/paper_redraw)
+  0)
+
+(defn request-transcribe [(s (ptr model/Session))] (-> i64)
+  (when (>= (.take s) 0)
+    (let [name (model/take-name (model/take-at (.take s)))]
+      (if (start-job s JOB-TRANSCRIBE (transcribe-command name))
+          (model/set-status s c"TRANSCRIBING…")
+          (model/set-status s c"A JOB IS ALREADY RUNNING"))))
+  0)
+
+(defn request-peaks [(s (ptr model/Session))] (-> i64)
+  (when (>= (.take s) 0)
+    (let [name (model/take-name (model/take-at (.take s)))]
+      (if (start-job s JOB-PEAKS (peaks-command name))
+          (model/set-status s c"READING THE WAVEFORM…")
+          (model/set-status s c"A JOB IS ALREADY RUNNING"))))
+  0)
+
+(defn request-export [(s (ptr model/Session))] (-> i64)
+  (when (and (>= (.take s) 0) (> (.clip-count s) 0))
+    (let [name (model/take-name (model/take-at (.take s)))]
+      (if (start-job s JOB-EXPORT (export-command s name))
+          (model/set-status s c"EXPORTING…")
+          (model/set-status s c"A JOB IS ALREADY RUNNING"))))
+  0)
+
+(defn reset-armed [] (-> (ptr bool))
+  (primitive/alloc-static bool))
+
+;;; Reset throws away every cut on the take, so the first press arms it and
+;;; says so; anything else disarms it.
+(defn request-reset [(s (ptr model/Session))] (-> i64)
+  (if (load (reset-armed))
+      (do (set! (index (reset-armed) 0) false) (reset-edits s))
+      (do
+        (set! (index (reset-armed) 0) true)
+        (model/set-status s c"PRESS RESET AGAIN TO DISCARD EVERY CUT")
+        (host/paper_redraw)
+        0)))
+
+(defn reset-edits [(s (ptr model/Session))] (-> i64)
+  (begin-step s -1 -1 true)
+  (let [h (history/history)]
+    (for [i 0 (.word-count s)]
+      (let [w (model/word i)]
+        (when (or (.deleted w) (>= (.gap-keep w) 0.0))
+          (history/record-word h history/SIDE-UNDO i)
+          0))))
+  (for [i 0 (.word-count s)]
+    (set! (.deleted (model/word i)) false)
+    (set! (.gap-keep (model/word i)) model/GAP-UNTOUCHED))
+  (set! (.region-count s) 0)
+  (model/clear-selection s)
+  (model/rebuild-clips s)
+  (commit s)
+  (end-step)
+  0)
+
+;;; ---- pointer --------------------------------------------------------------
+(defn transcript-point [(x f64) (y f64) (px (ptr f64)) (py (ptr f64))] (-> bool)
+  (let [r (.transcript (ui/frame))
+        s (model/session)]
+    (set! (index px 0) (- x (.x r)))
+    (set! (index py 0)
+          (+ (- y (.y r)) (page/shown-scroll s (host/paper_backing_scale))))
+    (and (and (>= x (.x r)) (<= x (+ (.x r) (.w r))))
+         (and (>= y (.y r)) (<= y (+ (.y r) (.h r)))))))
+
+(defn press-transcript [(s (ptr model/Session)) (x f64) (y f64) (extend bool)] (-> i64)
+  (let [(mut px) 0.0
+        (mut py) 0.0
+        (mut gap) false]
+    (transcript-point x y (mut px) (mut py))
+    (let [i (page/hit-word s (load px) (load py) (mut gap))]
+      (cond (< i 0) (do (set! (.drag-target s) 0) 0)
+            (load gap)
+              (do
+                (set! (.drag-target s) 3)
+                (set! (.gap-drag s) i)
+                (set! (.press-x s) x)
+                (set! (.press-keep s) (model/gap-kept s i))
+                (set! (.dragging s) false)
+                0)
+            :else
+              (do
+                (set! (.drag-target s) 1)
+                (set! (.dragging s) false)
+                (set! (.sel-kind s) model/SEL-WORDS)
+                (when (not (and extend (>= (.sa s) 0))) (set! (.sa s) i))
+                (set! (.sb s) i)
+                (set! (.ra s) -1.0)
+                (set! (.rb s) -1.0)
+                (when (not extend) (seek s (.t0 (model/word i))))
+                (host/paper_redraw)
+                0)))))
+
+(defn drag-transcript [(s (ptr model/Session)) (x f64) (y f64)] (-> i64)
+  (let [(mut px) 0.0
+        (mut py) 0.0
+        (mut gap) false]
+    (transcript-point x y (mut px) (mut py))
+    (let [i (page/hit-word s (load px) (load py) (mut gap))]
+      (when (and (>= i 0) (!= i (.sb s)))
+        (set! (.sb s) i)
+        (set! (.dragging s) true)
+        (host/paper_redraw))))
+  0)
+
+;;; Dragging a gap pill scrubs how much of that silence survives. Sensitivity
+;;; scales with the gap so a half-second pause and a ten-second one both take a
+;;; comfortable drag, with a floor so tiny gaps stay controllable.
+(defn drag-gap [(s (ptr model/Session)) (x f64)] (-> i64)
+  (let [i (.gap-drag s)]
+    (when (and (>= i 0) (< i (- (.word-count s) 1)))
+      (let [full (model/gap-full s i)
+            dx (- x (.press-x s))]
+        (if (and (not (.dragging s)) (< (if (< dx 0.0) (- 0.0 dx) dx) 4.0))
+            0
+            (do
+              (when (not (.dragging s))
+                (set! (.dragging s) true)
+                (when (.playing s) (stop-playback s)))
+              (let [per-point
+                      (let [scaled (/ full 200.0)]
+                        (if (< scaled 5.0) 5.0 scaled))
+                    keep (+ (.press-keep s) (* dx per-point))]
+                (model/set-gap-keep s i keep)
+                (cast i64
+                      (snprintf (model/status s)
+                                160
+                                c"SILENCE %.1fs OF %.1fs"
+                                (/ (model/gap-kept s i) 1000.0)
+                                (/ full 1000.0)))
+                (host/paper_redraw)
+                0))))))
+  0)
+
+(defn press-wave [(s (ptr model/Session)) (x f64)] (-> i64)
+  (let [w (.wave (ui/frame))
+        ms (page/x-to-ms s (.x w) x)]
+    (set! (.drag-target s) 2)
+    (set! (.dragging s) false)
+    (set! (.press-x s) x)
+    (set! (.press-ms s) ms)
+    (seek s ms))
+  0)
+
+(defn drag-wave [(s (ptr model/Session)) (x f64)] (-> i64)
+  (let [w (.wave (ui/frame))
+        ms (page/x-to-ms s (.x w) x)
+        dx (- x (.press-x s))]
+    (if (and (not (.dragging s)) (< (if (< dx 0.0) (- 0.0 dx) dx) 6.0))
+        (seek s ms)
+        (do
+          (when (not (.dragging s))
+            (set! (.dragging s) true)
+            (when (.playing s) (stop-playback s))
+            (set! (.sel-kind s) model/SEL-REGION)
+            (set! (.sa s) -1)
+            (set! (.sb s) -1)
+            (set! (.ra s) (.press-ms s)))
+          (set! (.rb s) ms)
+          (host/paper_redraw)
+          0)))
+  0)
+
+(defn release-pointer [(s (ptr model/Session))] (-> i64)
+  (when (and (= (.drag-target s) 3) (>= (.gap-drag s) 0))
+    (if (.dragging s)
+        (commit s)
+        (do (model/toggle-gap s (.gap-drag s)) (commit s)))
+    (end-step))
+  (when (and (= (.drag-target s) 1) (.dragging s)) (host/paper_redraw))
+  (set! (.drag-target s) 0)
+  (set! (.dragging s) false)
+  (set! (.gap-drag s) -1)
+  0)
+
+(defn drag-sun [(x f64) (y f64)] (-> i64)
+  (let [l (ui/lighting)
+        r (.sun (ui/frame))
+        inner (inset r 18.0)]
+    (when (> (.w inner) 0.0)
+      (set! (.x l) (- (* 3.0 (fraction x (.x inner) (.w inner))) 1.0))
+      (set! (.y l) (- (* 3.0 (fraction y (.y inner) (.h inner))) 1.0))
+      (host/paper_redraw)))
+  0)
+
+(defn drag-slider [(id i64) (x f64)] (-> i64)
+  (let [l (ui/lighting)
+        r
+          (if (= id ui/ID-HEIGHT)
+              (.sun-height (ui/frame))
+              (if (= id ui/ID-DEPTH) (.depth (ui/frame)) (.grain (ui/frame))))
+        v (fraction x (.x r) (.w r))]
+    (cond (= id ui/ID-HEIGHT) (set! (.height l) (+ 200.0 (* v 2200.0)))
+          (= id ui/ID-DEPTH) (set! (.depth l) (* v 1.5))
+          :else (set! (.grain l) (* v 2.0)))
+    (host/paper_redraw))
+  0)
+
+;;; ---- events ---------------------------------------------------------------
+(defn initialize [] (-> i64)
+  (let [s (model/session)
+        l (ui/lighting)]
+    (set! l (light/lighting -0.35 -0.55 1400.0 0.85 1.0))
+    (set! (.speed s) 1.0)
+    (set! (.wave-gain s) 1.0)
+    (set! (.crossfade s) true)
+    (set! (.wzoom s) 60.0)
+    (set! (.take s) -1)
+    (set! (.gap-drag s) -1)
+    (set! (.prose-w (ui/frame)) -1.0)
+    (set! (.rail-take (ui/frame)) -1)
+    (set! (.wave-w (ui/frame)) -1.0)
+    (model/clear-selection s)
+    (model/set-status s c"NO RECORDING SELECTED")
+    (set! (.status-notice s) false)
+    (lib/ensure-dirs)
+    (lib/refresh-takes s)
+    (when (> (.take-count s) 0)
+      ;; `--app N` opens the Nth recording, which is how a snapshot or a bug
+      ;; report names a specific take.
+      (let [requested (host/paper_arg_app)]
+        (select-take s
+                     (if (and (> requested 0) (< requested (.take-count s)))
+                         requested
+                         0))))
+    ;; Selecting a take sets the normal idle cadence. The benchmark must
+    ;; restore its per-display cadence after that initialization completes.
+    (when (bench?) (host/paper_tick_interval (playing-tick))))
+  0)
+
+(defn rail-carry [] (-> (ptr f64))
+  (primitive/alloc-static f64))
+
+;;; Which pane a scroll belongs to. The wheel reports the control under the
+;;; pointer, and in the recording list that is a row rather than the list, so
+;;; the rows count as the list too.
+;;; Exposed so the pane routing can be tested without a window.
+(defn ui-rail-id [] (-> i64)
+  ui/ID-RAIL)
+
+(defn ui-take-base [] (-> i64)
+  ui/ID-TAKE-BASE)
+
+(defn ui-transcript-id [] (-> i64)
+  ui/ID-TRANSCRIPT)
+
+(defn rail-scroll? [(id i64)] (-> bool)
+  (or (= id ui/ID-RAIL)
+      (and (>= id ui/ID-TAKE-BASE) (< id (+ ui/ID-TAKE-BASE 512)))))
+
+(defn scroll [(s (ptr model/Session)) (id i64) (dx f64) (dy f64)] (-> i64)
+  (cond (= id ui/ID-TRANSCRIPT)
+          (let [r (.transcript (ui/frame))
+                limit (page/max-scroll s (.h r))
+                next (- (.scroll s) dy)]
+            (set! (.scroll s)
+                  (if (< next 0.0) 0.0 (if (> next limit) limit next)))
+            (host/paper_redraw)
+            0)
+        (= id ui/ID-WAVE)
+          (let [w (.wave (ui/frame))
+                dominant
+                  (if (> (if (< dx 0.0) (- 0.0 dx) dx)
+                         (if (< dy 0.0) (- 0.0 dy) dy))
+                      dx
+                      dy)]
+            (page/pan-to s
+                         (- (.wscroll s) (* dominant (/ 1000.0 (.wzoom s))))
+                         (.x w)
+                         (.w w))
+            (set! (.wave-scroll (ui/frame)) (.wscroll s))
+            (host/paper_redraw)
+            0)
+        (rail-scroll? id)
+          (let [f (ui/frame)
+                limit (ui/rail-extent s)
+                next (- (.rail-scroll f) dy)]
+            (set! (.rail-scroll f)
+                  (if (< next 0.0) 0.0 (if (> next limit) limit next)))
+            (host/paper_redraw)
+            0)
+        :else 0))
+
+;;; Trackpad pinch over the waveform zooms around the pointer. The renderer
+;;; reports the position with the event and the magnification separately.
+(defn pinch [(s (ptr model/Session)) (x f64) (y f64)] (-> i64)
+  (let [w (.wave (ui/frame))]
+    (if (or (<= (.dur-ms s) 0.0)
+            (not (and (and (>= x (.x w)) (<= x (+ (.x w) (.w w))))
+                      (and (>= y (.y w)) (<= y (+ (.y w) (.h w)))))))
+        0
+        (let [amount (host/paper_magnification)
+              factor
+                (let [f (+ 1.0 (* amount 2.0))]
+                  (if (< f 0.5) 0.5 (if (> f 2.0) 2.0 f)))
+              anchor (page/x-to-ms s (.x w) x)]
+          (page/zoom-to s (* (.wzoom s) factor) anchor (.x w) (.w w))
+          (set! (.wave-zoom (ui/frame)) (.wzoom s))
+          (set! (.wave-scroll (ui/frame)) (.wscroll s))
+          (host/paper_redraw)
+          0))))
+
+;;; A scripted benchmark. With PAPER_TRANSCRIPT_BENCH set, every tick scrolls
+;;; the transcript and pans the waveform — what a trackpad does, but the same
+;;; every run — then after a fixed number of frames writes a trace and exits.
+;;; PAPER_TRANSCRIPT_BENCH_ZOOM sets the waveform zoom in points per second.
+(defn bench-frames [] (-> i64)
+  240)
+
+(defn bench? [] (-> bool)
+  (!= (cast i64 (getenv c"PAPER_TRANSCRIPT_BENCH")) 0))
+
+;;; Points scrolled per benchmark frame. A trackpad delivers fractional deltas,
+;;; so a step like 13.3 measures what a real scroll costs; the default 14 moves
+;;; the text by whole pixels.
+(defn bench-scroll-step [] (-> f64)
+  (let [text (getenv c"PAPER_TRANSCRIPT_BENCH_STEP")]
+    (if (= (cast i64 text) 0) 14.0 (lib/parse-float text))))
+
+(defn bench-step [(s (ptr model/Session))] (-> i64)
+  (let [r (.transcript (ui/frame))
+        w (.wave (ui/frame))
+        limit (page/max-scroll s (.h r))
+        next (+ (.scroll s) (bench-scroll-step))
+        ;; PAPER_TRANSCRIPT_BENCH=scroll or =pan exercises one gesture alone;
+        ;; any other value does both at once.
+        mode (cast i64 (load (index (getenv c"PAPER_TRANSCRIPT_BENCH") 0)))
+        scrolling (!= mode 112)
+        panning (!= mode 115)]
+    (when scrolling (set! (.scroll s) (if (> next limit) 0.0 next)))
+    (when (> (.w w) 0.0)
+      (let [zoom-text (getenv c"PAPER_TRANSCRIPT_BENCH_ZOOM")]
+        (when (and (!= (cast i64 zoom-text) 0) (< (diag/frame-count) 2))
+          (set! (.wzoom s) (lib/parse-float zoom-text))))
+      (when panning
+        (let [pan (+ (.wscroll s) (* 6.0 (/ 1000.0 (.wzoom s))))
+              wrap (if (> pan (page/max-pan s (.w w))) 0.0 pan)]
+          (page/pan-to s wrap (.x w) (.w w))
+          (set! (.wave-zoom (ui/frame)) (.wzoom s))
+          (set! (.wave-scroll (ui/frame)) (.wscroll s)))))
+    (host/paper_redraw)
+    (when (>= (diag/frame-count) (bench-frames))
+      (let [snap (getenv c"PAPER_TRANSCRIPT_BENCH_SNAPSHOT")]
+        (when (!= (cast i64 snap) 0) (host/paper_snapshot snap)))
+      (write-trace s)
+      (exit (cast i32 0))
+      0)
+    0))
+
+(defn tick [(s (ptr model/Session))] (-> i64)
+  (when (waveform/poll)
+    (host/paper_redraw)
+    (host/paper_tick_interval (if (.playing s)
+                                  (playing-tick)
+                                  (if (.running (job)) (job-tick) (idle-tick)))))
+  (when (bench?) (bench-step s))
+  (poll-job s)
+  (when (.playing s)
+    (if (sound/finished? (sound/sound))
+        (do
+          (stop-playback s)
+          (host/paper_tick_interval (if (.running (job)) (job-tick) (idle-tick))))
+        (let [edited (sound/position-ms (sound/sound))
+              source (model/edited-to-source s edited)
+              r (.transcript (ui/frame))]
+          (set! (.cur-ms s) source)
+          (set! (.scroll s) (page/follow s (model/word-at s source) (.h r)))
+          (host/paper_redraw))))
+  0)
+
+;;; Returns 1 when the key was used. The renderer passes anything else to
+;;; AppKit, which beeps at a key nobody wanted — right for a stray keystroke,
+;;; wrong for one this application acted on.
+(defn key-press [(s (ptr model/Session)) (code i64)] (-> i64)
+  (let [flags (host/paper_key_flags)
+        command (!= (& flags MOD-COMMAND) 0)
+        shift (!= (& flags MOD-SHIFT) 0)]
+    (cond (and command (= code KEY-Z)) (if shift (redo s) (undo s))
+          ;; Instrumentation sits behind a chord so it cannot be hit while
+          ;; typing or reaching for another key.
+          (and command (and shift (= code KEY-D)))
+            (do (diag/toggle-overlay) (host/paper_redraw) 1)
+          (and command (and shift (= code KEY-T))) (do (write-trace s) 1)
+          ;; Every other Command chord belongs to the menu — Quit, Close, Hide —
+          ;; so it has to fall through rather than being swallowed here.
+          command 0
+          (= code KEY-SPACE) (do (toggle-playback s) 1)
+          (= code KEY-LEFT) (do (seek s (- (.cur-ms s) 3000.0)) 1)
+          (= code KEY-RIGHT) (do (seek s (+ (.cur-ms s) 3000.0)) 1)
+          (or (= code KEY-DELETE) (= code KEY-FORWARD-DELETE))
+            (do (cut-selection s) 1)
+          (= code KEY-F) (do (cut-fillers s) 1)
+          (= code KEY-X) (do (toggle-crossfade s) 1)
+          (= code KEY-MINUS) (do (zoom-by s (/ 1.0 1.6)) 1)
+          (= code KEY-EQUAL) (do (zoom-by s 1.6) 1)
+          (= code KEY-LBRACKET) (do (nudge-edge s true) 1)
+          (= code KEY-RBRACKET) (do (nudge-edge s false) 1)
+          (= code KEY-SLASH)
+            (do
+              (set! (.show-help s) (not (.show-help s)))
+              (host/paper_redraw)
+              1)
+          (= code KEY-ESCAPE)
+            (do
+              (when (.show-help s)
+                (set! (.show-help s) false)
+                (host/paper_redraw)
+                0)
+              1)
+          ;; A key this application has no use for is still not the system's
+          ;; business, and silence is the right response to it.
+          :else 1)))
+
+(defn activate [(s (ptr model/Session)) (id i64)] (-> i64)
+  (when (and (load (reset-armed)) (!= id ui/ID-RESET))
+    (set! (index (reset-armed) 0) false))
+  (cond (= id ui/ID-PLAY) (toggle-playback s)
+        (= id ui/ID-DELETE)
+          (do (when (> (model/toggle-selection s) 0) (commit s)) 0)
+        (= id ui/ID-FILLERS) (cut-fillers s)
+        (= id ui/ID-EXPORT) (request-export s)
+        (= id ui/ID-EXPORT-WAV) (request-export s)
+        (= id ui/ID-RESTT) (do (request-transcribe s) (request-peaks s) 0)
+        (= id ui/ID-RESET) (request-reset s)
+        (= id ui/ID-HELP)
+          (do (set! (.show-help s) (not (.show-help s))) (host/paper_redraw) 0)
+        (= id ui/ID-ZOOM-OUT) (zoom-by s (/ 1.0 1.6))
+        (= id ui/ID-ZOOM-IN) (zoom-by s 1.6)
+        (= id ui/ID-SPEED) (cycle-speed s)
+        (= id ui/ID-WAVE-GAIN)
+          (do
+            (set! (.wave-gain s)
+                  (if (>= (.wave-gain s) 16.0) 0.5 (* (.wave-gain s) 2.0)))
+            (host/paper_redraw)
+            0)
+        (= id ui/ID-PREVIEW) (do (seek s 0.0) (start-playback s 0.0) 0)
+        (= id ui/ID-CROSSFADE) (toggle-crossfade s)
+        (= id ui/ID-WORD-START)
+          (do (when (> (model/nudge-word-edge s true) 0) (commit s)) 0)
+        (= id ui/ID-WORD-END)
+          (do (when (> (model/nudge-word-edge s false) 0) (commit s)) 0)
+        (and (>= id ui/ID-TAKE-BASE) (< id (+ ui/ID-TAKE-BASE 512)))
+          (do (select-take s (- id ui/ID-TAKE-BASE)) (host/paper_redraw) 0)
+        :else 0))
+
+(defn event [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
+  (let [s (model/session)]
+    (cond (= kind 0) (initialize)
+          (= kind 6) (do (light/advance-animation (ui/lighting) x) (tick s) 0)
+          (= kind 7) (scroll s id x y)
+          (= kind 4) (key-press s id)
+          (= kind 8) (pinch s x y)
+          (= kind 1)
+            (cond (= id ui/ID-TRANSCRIPT) (press-transcript s x y false)
+                  (= id ui/ID-WAVE) (press-wave s x)
+                  (= id ui/ID-SUN) (drag-sun x y)
+                  (or (= id ui/ID-HEIGHT) (= id ui/ID-DEPTH) (= id ui/ID-GRAIN))
+                    (drag-slider id x)
+                  :else 0)
+          (= kind 2)
+            (cond (= id ui/ID-TRANSCRIPT)
+                    (if (= (.drag-target s) 3)
+                        (drag-gap s x)
+                        (drag-transcript s x y))
+                  (= id ui/ID-WAVE) (drag-wave s x)
+                  (= id ui/ID-SUN) (drag-sun x y)
+                  (or (= id ui/ID-HEIGHT) (= id ui/ID-DEPTH) (= id ui/ID-GRAIN))
+                    (drag-slider id x)
+                  :else 0)
+          (= kind 3) (do (release-pointer s) (activate s id))
+          :else 0)))

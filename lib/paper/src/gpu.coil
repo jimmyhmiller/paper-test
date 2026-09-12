@@ -3,12 +3,14 @@
 (import "coil.slice" :as slice)
 (import "paper.objc" :use *)
 (import "paper.ffi" :use *)
+(import "paper.profile" :as profile)
 (import "paper.scene" :use *)
 (import "paper.geometry" :use [clamp])
 
 (defstruct MetalSize [(width u64) (height u64) (depth u64)])
 
-(defstruct MetalRegion [(x u64) (y u64) (z u64) (width u64) (height u64) (depth u64)])
+(defstruct MetalRegion
+  [(x u64) (y u64) (z u64) (width u64) (height u64) (depth u64)])
 
 (defstruct Params
   [(light-x f32)
@@ -63,15 +65,23 @@
 (defn checked-object [(object (ptr i8)) (error (ptr i8))] (-> (ptr i8))
   (when (= object (nil))
     (when (!= error (nil))
-      (let [description (utf8 (msg (ptr i8) error (sel c"localizedDescription") []))]
-        (println "Metal error: {}" (slice/slice-new (cast (ptr u8) description) (cast i64 (strlen description))))
+      (let [description
+              (utf8 (msg (ptr i8) error (sel c"localizedDescription") []))]
+        (println "Metal error: {}"
+                 (slice/slice-new (cast (ptr u8) description)
+                                  (cast i64 (strlen description))))
         0))
     (assert false))
   object)
 
 (defn compute-pipeline [(name (ptr i8))] (-> (ptr i8))
   (let [g (gpu)
-        function (msg (ptr i8) (.library g) (sel c"newFunctionWithName:") [(ptr i8)] (ns name))
+        function
+          (msg (ptr i8)
+               (.library g)
+               (sel c"newFunctionWithName:")
+               [(ptr i8)]
+               (ns name))
         (mut error) (nil)
         pipeline
           (msg (ptr i8)
@@ -85,7 +95,9 @@
 
 (defn initialize [] (-> bool)
   (let [mode (getenv c"PAPER_RENDERER")]
-    (if (and (!= mode (nil)) (= (strcmp mode c"cpu") 0)) false (initialize-metal))))
+    (if (and (!= mode (nil)) (= (strcmp mode c"cpu") 0))
+        false
+        (initialize-metal))))
 
 (defn initialize-metal [] (-> bool)
   (let [g (gpu)]
@@ -138,7 +150,12 @@
                false)]
     (msg i64 descriptor (sel c"setUsage:") [u64] usage)
     (msg i64 descriptor (sel c"setStorageMode:") [u64] storage)
-    (checked-object (msg (ptr i8) (.device (gpu)) (sel c"newTextureWithDescriptor:") [(ptr i8)] descriptor) (nil))))
+    (checked-object (msg (ptr i8)
+                         (.device (gpu))
+                         (sel c"newTextureWithDescriptor:")
+                         [(ptr i8)]
+                         descriptor)
+                    (nil))))
 
 (defn power-of-two [(value i64)] (-> u64)
   (let [(mut n) (cast u64 1)]
@@ -157,7 +174,12 @@
                true)]
     (msg i64 descriptor (sel c"setUsage:") [u64] 3)
     (msg i64 descriptor (sel c"setStorageMode:") [u64] 2)
-    (checked-object (msg (ptr i8) (.device (gpu)) (sel c"newTextureWithDescriptor:") [(ptr i8)] descriptor) (nil))))
+    (checked-object (msg (ptr i8)
+                         (.device (gpu))
+                         (sel c"newTextureWithDescriptor:")
+                         [(ptr i8)]
+                         descriptor)
+                    (nil))))
 
 (defn encode-maximum [(command (ptr i8))] (-> i64)
   (let [g (gpu)
@@ -167,11 +189,36 @@
     (for [i 0 (cast i64 count)]
       (let [encoder (msg (ptr i8) command (sel c"computeCommandEncoder") [])
             (mut level) (cast u32 i)]
-        (msg i64 encoder (sel c"setComputePipelineState:") [(ptr i8)] (.maximum-pipeline g))
-        (msg i64 encoder (sel c"setBytes:length:atIndex:") [(mut u32) u64 u64] (mut level) 4 1)
-        (msg i64 encoder (sel c"setTexture:atIndex:") [(ptr i8) u64] (.heights g) 1)
-        (msg i64 encoder (sel c"setTexture:atIndex:") [(ptr i8) u64] (.maximum g) 5)
-        (msg i64 encoder (sel c"setTexture:atIndex:") [(ptr i8) u64] (.maximum g) 6)
+        (msg i64
+             encoder
+             (sel c"setComputePipelineState:")
+             [(ptr i8)]
+             (.maximum-pipeline g))
+        (msg i64
+             encoder
+             (sel c"setBytes:length:atIndex:")
+             [(mut u32) u64 u64]
+             (mut level)
+             4
+             1)
+        (msg i64
+             encoder
+             (sel c"setTexture:atIndex:")
+             [(ptr i8) u64]
+             (.heights g)
+             1)
+        (msg i64
+             encoder
+             (sel c"setTexture:atIndex:")
+             [(ptr i8) u64]
+             (.maximum g)
+             5)
+        (msg i64
+             encoder
+             (sel c"setTexture:atIndex:")
+             [(ptr i8) u64]
+             (.maximum g)
+             6)
         (msg i64
              encoder
              (sel c"dispatchThreads:threadsPerThreadgroup:")
@@ -185,8 +232,14 @@
                :height 8
                :depth 1))
         (msg i64 encoder (sel c"endEncoding") [])
-        (set! width (if (> (load width) (cast u64 1)) (/ (load width) (cast u64 2)) (cast u64 1)))
-        (set! height (if (> (load height) (cast u64 1)) (/ (load height) (cast u64 2)) (cast u64 1))))))
+        (set! width
+              (if (> (load width) (cast u64 1))
+                  (/ (load width) (cast u64 2))
+                  (cast u64 1)))
+        (set! height
+              (if (> (load height) (cast u64 1))
+                  (/ (load height) (cast u64 2))
+                  (cast u64 1))))))
   0)
 
 (defn setup [] (-> bool)
@@ -217,12 +270,28 @@
 (defn pixel-region [(r CGRect) (padding f64)] (-> MetalRegion)
   (let [s (scene)
         scale (.scale s)
-        x (cast u64 (clamp (floor (- (* (.x r) scale) padding)) 0.0 (cast f64 (.width s))))
-        y (cast u64 (clamp (floor (- (* (.y r) scale) padding)) 0.0 (cast f64 (.height s))))
+        x
+          (cast u64
+                (clamp (floor (- (* (.x r) scale) padding))
+                       0.0
+                       (cast f64 (.width s))))
+        y
+          (cast u64
+                (clamp (floor (- (* (.y r) scale) padding))
+                       0.0
+                       (cast f64 (.height s))))
         right
-          (cast u64 (clamp (- 0.0 (floor (- 0.0 (+ (* (+ (.x r) (.w r)) scale) padding)))) 0.0 (cast f64 (.width s))))
+          (cast u64
+                (clamp (- 0.0
+                          (floor (- 0.0 (+ (* (+ (.x r) (.w r)) scale) padding))))
+                       0.0
+                       (cast f64 (.width s))))
         bottom
-          (cast u64 (clamp (- 0.0 (floor (- 0.0 (+ (* (+ (.y r) (.h r)) scale) padding)))) 0.0 (cast f64 (.height s))))]
+          (cast u64
+                (clamp (- 0.0
+                          (floor (- 0.0 (+ (* (+ (.y r) (.h r)) scale) padding))))
+                       0.0
+                       (cast f64 (.height s))))]
     (MetalRegion
       :x x
       :y y
@@ -236,7 +305,9 @@
     (encode-region command pipeline region))
   0)
 
-(defn encode-region [(command (ptr i8)) (pipeline (ptr i8)) (region MetalRegion)] (-> i64)
+(defn encode-region [(command (ptr i8))
+                     (pipeline (ptr i8))
+                     (region MetalRegion)] (-> i64)
   (let [g (gpu)
         s (scene)
         encoder (msg (ptr i8) command (sel c"computeCommandEncoder") [])
@@ -253,16 +324,42 @@
             :width (cast u32 (.width s))
             :height (cast u32 (.height s)))]
     (msg i64 encoder (sel c"setComputePipelineState:") [(ptr i8)] pipeline)
-    (msg i64 encoder (sel c"setBytes:length:atIndex:") [(ref Params) u64 u64] params 40 0)
+    (msg i64
+         encoder
+         (sel c"setBytes:length:atIndex:")
+         [(ref Params) u64 u64]
+         params
+         40
+         0)
     (msg i64 encoder (sel c"setTexture:atIndex:") [(ptr i8) u64] (.colors g) 0)
     (msg i64 encoder (sel c"setTexture:atIndex:") [(ptr i8) u64] (.heights g) 1)
-    (msg i64 encoder (sel c"setTexture:atIndex:") [(ptr i8) u64] (.materials g) 2)
+    (msg i64
+         encoder
+         (sel c"setTexture:atIndex:")
+         [(ptr i8) u64]
+         (.materials g)
+         2)
     (msg i64 encoder (sel c"setTexture:atIndex:") [(ptr i8) u64] (.output g) 3)
-    (msg i64 encoder (sel c"setTexture:atIndex:") [(ptr i8) u64] (.prepared g) 4)
+    (msg i64
+         encoder
+         (sel c"setTexture:atIndex:")
+         [(ptr i8) u64]
+         (.prepared g)
+         4)
     (msg i64 encoder (sel c"setTexture:atIndex:") [(ptr i8) u64] (.maximum g) 5)
     (msg i64 encoder (sel c"setTexture:atIndex:") [(ptr i8) u64] (.micro g) 7)
-    (msg i64 encoder (sel c"setTexture:atIndex:") [(ptr i8) u64] (.finish-shape g) 8)
-    (msg i64 encoder (sel c"setTexture:atIndex:") [(ptr i8) u64] (.finish-weight g) 9)
+    (msg i64
+         encoder
+         (sel c"setTexture:atIndex:")
+         [(ptr i8) u64]
+         (.finish-shape g)
+         8)
+    (msg i64
+         encoder
+         (sel c"setTexture:atIndex:")
+         [(ptr i8) u64]
+         (.finish-weight g)
+         9)
     (msg i64
          encoder
          (sel c"dispatchThreads:threadsPerThreadgroup:")
@@ -281,7 +378,8 @@
 (defn command-buffer [] (-> (ptr i8))
   (let [g (gpu)]
     (when (= (.command g) (nil))
-      (set! (.command g) (retain (msg (ptr i8) (.queue g) (sel c"commandBuffer") []))))
+      (set! (.command g)
+            (retain (msg (ptr i8) (.queue g) (sel c"commandBuffer") []))))
     (.command g)))
 
 ;;; Raster, lighting, and presentation share one ordered command buffer. Cached
@@ -304,14 +402,18 @@
       (msg i64 command (sel c"waitUntilCompleted") [])
       (assert (= (msg i64 command (sel c"status") []) 4))
       (set! (.gpu-ms g)
-            (* 1000.0 (- (msg f64 command (sel c"GPUEndTime") []) (msg f64 command (sel c"GPUStartTime") []))))))
+            (* 1000.0
+               (- (msg f64 command (sel c"GPUEndTime") [])
+                  (msg f64 command (sel c"GPUStartTime") []))))))
   0)
 
 (defn finish [(command (ptr i8))] (-> f64)
   (msg i64 command (sel c"commit") [])
   (msg i64 command (sel c"waitUntilCompleted") [])
   (assert (= (msg i64 command (sel c"status") []) 4))
-  (* 1000.0 (- (msg f64 command (sel c"GPUEndTime") []) (msg f64 command (sel c"GPUStartTime") []))))
+  (* 1000.0
+     (- (msg f64 command (sel c"GPUEndTime") [])
+        (msg f64 command (sel c"GPUStartTime") []))))
 
 ;;; Preparation reads only the current pixel and adjacent height samples. Keep
 ;;; all unprepared updates, including several rasterizations before a render;
@@ -341,16 +443,22 @@
 ;;; sample positions, penumbra, or visibility. One extra point covers its 0.6
 ;;; sample offset and floating-point rounding, plus two backing pixels for edges.
 (defn shadow-padding [] (-> f64)
-  (let [s (scene) scale (.scale s)
+  (let [s (scene)
+        scale (.scale s)
         w (/ (cast f64 (.width s)) scale)
         h (/ (cast f64 (.height s)) scale)
-        lx (.light-x s) ly (.light-y s)
+        lx (.light-x s)
+        ly (.light-y s)
         dx (if (> (fabs lx) (fabs (- w lx))) (fabs lx) (fabs (- w lx)))
         dy (if (> (fabs ly) (fabs (- h ly))) (fabs ly) (fabs (- h ly)))
-        reach (if (and (> (.elevation s) 0.0) (>= (.depth s) 0.0))
-                  (clamp (/ (* (* 64.0 (.depth s)) (sqrt (+ (+ (* dx dx) (* dy dy)) 0.001)))
-                            (.elevation s)) 1.0 180.0)
-                  180.0)]
+        reach
+          (if (and (> (.elevation s) 0.0) (>= (.depth s) 0.0))
+              (clamp (/ (* (* 64.0 (.depth s))
+                           (sqrt (+ (+ (* dx dx) (* dy dy)) 0.001)))
+                        (.elevation s))
+                     1.0
+                     180.0)
+              180.0)]
     (+ (* (+ reach 1.0) scale) 2.0)))
 
 (defn render [(bounds CGRect) (all bool) (readback bool)] (-> i64)
@@ -375,7 +483,10 @@
     (when readback (read-output)))
   0)
 
-(defn read-texture [(source (ptr i8)) (context (ptr i8)) (format u64) (channels i64)] (-> i64)
+(defn read-texture [(source (ptr i8))
+                    (context (ptr i8))
+                    (format u64)
+                    (channels i64)] (-> i64)
   (synchronize)
   (let [s (scene)
         staging (texture-storage format 1 0)
@@ -430,10 +541,25 @@
   (let [g (gpu)]
     (when (= (.display g) (nil))
       (let [descriptor (new c"MTLRenderPipelineDescriptor")
-            vertex (msg (ptr i8) (.library g) (sel c"newFunctionWithName:") [(ptr i8)] (ns c"paper_vertex"))
-            fragment (msg (ptr i8) (.library g) (sel c"newFunctionWithName:") [(ptr i8)] (ns c"paper_fragment"))
+            vertex
+              (msg (ptr i8)
+                   (.library g)
+                   (sel c"newFunctionWithName:")
+                   [(ptr i8)]
+                   (ns c"paper_vertex"))
+            fragment
+              (msg (ptr i8)
+                   (.library g)
+                   (sel c"newFunctionWithName:")
+                   [(ptr i8)]
+                   (ns c"paper_fragment"))
             attachments (msg (ptr i8) descriptor (sel c"colorAttachments") [])
-            color (msg (ptr i8) attachments (sel c"objectAtIndexedSubscript:") [u64] 0)
+            color
+              (msg (ptr i8)
+                   attachments
+                   (sel c"objectAtIndexedSubscript:")
+                   [u64]
+                   0)
             (mut error) (nil)]
         (msg i64 descriptor (sel c"setVertexFunction:") [(ptr i8)] vertex)
         (msg i64 descriptor (sel c"setFragmentFunction:") [(ptr i8)] fragment)
@@ -453,7 +579,11 @@
 
 (defn layer-size [(layer (ptr i8)) (width f64) (height f64) (scale f64)] (-> i64)
   (msg i64 layer (sel c"setContentsScale:") [f64] scale)
-  (msg i64 layer (sel c"setDrawableSize:") [CGSize] (CGSize :w (* width scale) :h (* height scale)))
+  (msg i64
+       layer
+       (sel c"setDrawableSize:")
+       [CGSize]
+       (CGSize :w (* width scale) :h (* height scale)))
   0)
 
 (defn create-layer [(view (ptr i8)) (width f64) (height f64) (scale f64)] (-> (ptr i8))
@@ -474,39 +604,114 @@
 ;;; no CPU readback or CGImage allocation in the interactive path.
 ;;; The optional Objective-C block is borrowed for this call; the drawable
 ;;; copies it for asynchronous delivery. Captured state must survive delivery.
+(defstruct PresentCost [(drawable-wait f64) (gpu f64) (incomplete i64)])
+
+(defn present-cost [] (-> (ptr PresentCost))
+  (p/alloc-static PresentCost))
+
 (defn present-with-handler [(layer (ptr i8)) (handler (ptr i8))] (-> bool)
   (let [g (gpu)
-        drawable (if (!= (.scheduled-drawable g) (nil))
-                     (.scheduled-drawable g)
-                     (msg (ptr i8) layer (sel c"nextDrawable") []))]
-    (if (= drawable (nil))
-        false
-        (let [command (command-buffer)
-              descriptor (msg (ptr i8) (class c"MTLRenderPassDescriptor") (sel c"renderPassDescriptor") [])
-              attachments (msg (ptr i8) descriptor (sel c"colorAttachments") [])
-              color (msg (ptr i8) attachments (sel c"objectAtIndexedSubscript:") [u64] 0)]
-          (msg i64 color (sel c"setTexture:") [(ptr i8)] (msg (ptr i8) drawable (sel c"texture") []))
-          (msg i64 color (sel c"setLoadAction:") [u64] 0)
-          (msg i64 color (sel c"setStoreAction:") [u64] 1)
-          (let [encoder (msg (ptr i8) command (sel c"renderCommandEncoderWithDescriptor:") [(ptr i8)] descriptor)]
-            (msg i64 encoder (sel c"setRenderPipelineState:") [(ptr i8)] (display-pipeline))
-            (msg i64 encoder (sel c"setFragmentTexture:atIndex:") [(ptr i8) u64] (.output g) 0)
-            (msg i64 encoder (sel c"drawPrimitives:vertexStart:vertexCount:") [u64 u64 u64] 3 0 3)
-            (msg i64 encoder (sel c"endEncoding") []))
-          (release (.last-drawable g))
-          (set! (.last-drawable g) (retain drawable))
-          (when (!= handler (nil))
-            (msg i64 drawable (sel c"addPresentedHandler:") [(ptr i8)] handler))
-          (cond
-            (!= (.scheduled-drawable g) (nil))
-              (msg i64 command (sel c"presentDrawable:") [(ptr i8)] drawable)
-            (> (.presentation-duration g) 0.0)
-              (msg i64 command (sel c"presentDrawable:afterMinimumDuration:") [(ptr i8) f64] drawable (.presentation-duration g))
-            (> (.presentation-time g) 0.0)
-              (msg i64 command (sel c"presentDrawable:atTime:") [(ptr i8) f64] drawable (.presentation-time g))
-            true (msg i64 command (sel c"presentDrawable:") [(ptr i8)] drawable))
-          (submit)
-          true))))
+        cost (present-cost)
+        previous (.last-command g)]
+    (when (!= previous (nil))
+      (if (= (msg i64 previous (sel c"status") []) 4)
+          (set! (.gpu cost)
+                (* 1000.0
+                   (- (msg f64 previous (sel c"GPUEndTime") [])
+                      (msg f64 previous (sel c"GPUStartTime") []))))
+          (set! (.incomplete cost) (+ (.incomplete cost) 1))))
+    (let [drawable
+            (profile/measure-ms (.drawable-wait cost)
+                                (if (!= (.scheduled-drawable g) (nil))
+                                    (.scheduled-drawable g)
+                                    (msg (ptr i8)
+                                         layer
+                                         (sel c"nextDrawable")
+                                         [])))]
+      (if (= drawable (nil))
+          false
+          (let [command (command-buffer)
+                descriptor
+                  (msg (ptr i8)
+                       (class c"MTLRenderPassDescriptor")
+                       (sel c"renderPassDescriptor")
+                       [])
+                attachments
+                  (msg (ptr i8) descriptor (sel c"colorAttachments") [])
+                color
+                  (msg (ptr i8)
+                       attachments
+                       (sel c"objectAtIndexedSubscript:")
+                       [u64]
+                       0)]
+            (msg i64
+                 color
+                 (sel c"setTexture:")
+                 [(ptr i8)]
+                 (msg (ptr i8) drawable (sel c"texture") []))
+            (msg i64 color (sel c"setLoadAction:") [u64] 0)
+            (msg i64 color (sel c"setStoreAction:") [u64] 1)
+            (let [encoder
+                    (msg (ptr i8)
+                         command
+                         (sel c"renderCommandEncoderWithDescriptor:")
+                         [(ptr i8)]
+                         descriptor)]
+              (msg i64
+                   encoder
+                   (sel c"setRenderPipelineState:")
+                   [(ptr i8)]
+                   (display-pipeline))
+              (msg i64
+                   encoder
+                   (sel c"setFragmentTexture:atIndex:")
+                   [(ptr i8) u64]
+                   (.output g)
+                   0)
+              (msg i64
+                   encoder
+                   (sel c"drawPrimitives:vertexStart:vertexCount:")
+                   [u64 u64 u64]
+                   3
+                   0
+                   3)
+              (msg i64 encoder (sel c"endEncoding") []))
+            (release (.last-drawable g))
+            (set! (.last-drawable g) (retain drawable))
+            (when (!= handler (nil))
+              (msg i64
+                   drawable
+                   (sel c"addPresentedHandler:")
+                   [(ptr i8)]
+                   handler))
+            (cond (!= (.scheduled-drawable g) (nil))
+                    (msg i64
+                         command
+                         (sel c"presentDrawable:")
+                         [(ptr i8)]
+                         drawable)
+                  (> (.presentation-duration g) 0.0)
+                    (msg i64
+                         command
+                         (sel c"presentDrawable:afterMinimumDuration:")
+                         [(ptr i8) f64]
+                         drawable
+                         (.presentation-duration g))
+                  (> (.presentation-time g) 0.0)
+                    (msg i64
+                         command
+                         (sel c"presentDrawable:atTime:")
+                         [(ptr i8) f64]
+                         drawable
+                         (.presentation-time g))
+                  true
+                    (msg i64
+                         command
+                         (sel c"presentDrawable:")
+                         [(ptr i8)]
+                         drawable))
+            (submit)
+            true)))))
 
 (defn present [(layer (ptr i8))] (-> bool)
   (present-with-handler layer (nil)))

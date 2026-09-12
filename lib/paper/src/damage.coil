@@ -30,11 +30,18 @@
 (defn cache [] (-> (ptr Cache))
   (p/alloc-static Cache))
 
+;;; The region the renderer last redrew, kept for instrumentation. `bounds` is
+;;; cleared as soon as a frame is rendered, so reading it afterwards always
+;;; reports an empty region; this keeps the value from the moment it was known.
+(defn last-damage [] (-> (ptr CGRect))
+  (p/alloc-static CGRect))
+
 (defn discard [] (-> i64)
   (let [c (cache)]
     (when (.ready c)
       (for [i 0 (al/al-len [Sheet] (.sheets c))]
         (CGPathRelease (.path (al/al-elem [Sheet] (field c sheets) i)))
+        (CGPathRelease (.edges (al/al-elem [Sheet] (field c sheets) i)))
         (relief/release (.relief (al/al-elem [Sheet] (field c sheets) i))))
       (for [i 0 (al/al-len [Ink] (.inks c))]
         (let [ink (al/al-elem [Ink] (field c inks) i)]
@@ -139,7 +146,10 @@
        (material/pattern-equal (.pattern a) (.pattern b))
        (material/finish-equal (.finish a) (.finish b))
        (relief/equal (.relief a) (.relief b))
-       (CGPathEqualToPath (.path a) (.path b))))
+       (CGPathEqualToPath (.path a) (.path b))
+       (if (or (= (.edges a) (o/nil)) (= (.edges b) (o/nil)))
+           (= (.edges a) (.edges b))
+           (CGPathEqualToPath (.edges a) (.edges b)))))
 
 (defn ink-equal [(a Ink) (b Ink)] (-> bool)
   (and (p/fcmp-eq (.x a) (.x b))
@@ -361,6 +371,8 @@
     (for [i 0 (al/al-len [Sheet] (.sheets s))]
       (let [(mut sheet) (al/al-get [Sheet] (.sheets s) i)]
         (set! (.path sheet) (CGPathCreateCopy (.path sheet)))
+        (when (!= (.edges sheet) (o/nil))
+          (set! (.edges sheet) (CGPathCreateCopy (.edges sheet))))
         (relief/retain (.relief sheet))
         (al/al-push! [Sheet] (mut (.sheets c)) (load sheet))))
     (for [i 0 (al/al-len [Ink] (.inks s))]

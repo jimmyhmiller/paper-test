@@ -178,3 +178,5 @@
         c
         [(ptr i8) (ptr i8) bool]
         (-> (ptr i8)))
+
+(extern CGPathCreateMutableCopy :cc c [(ptr i8)] (-> (ptr i8)))

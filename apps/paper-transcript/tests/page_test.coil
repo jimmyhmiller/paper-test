@@ -1,0 +1,311 @@
+(module transcript.tests.page)
+(import "coil.primitive" :as primitive)
+(import "coil.assert" :use *)
+(import "transcript.model" :as model)
+(import "transcript.library" :as lib)
+(import "transcript.page" :as page)
+(import "paper.ffi" :use [sin fabs floor])
+
+;;; Words are measured with the same native fonts the renderer draws with, so
+;;; these tests exercise real text metrics rather than a stand-in.
+(defn fixture [(count i64) (gap f64)] (-> (ptr model/Session))
+  (let [s (model/session)]
+    (model/reset-session s)
+    (for [i 0 count]
+      (let [start (* (cast f64 i) (+ 200.0 gap))]
+        (lib/push-word s "word" start (+ start 200.0))))
+    (lib/mark-paragraphs s)
+    (set! (.dur-ms s) (* (cast f64 count) (+ 200.0 gap)))
+    (model/rebuild-clips s)
+    s))
+
+(deftest words_wrap_within_the_offered_width
+         (let [s (fixture 40 100.0)]
+           (page/reflow s 200.0)
+           (assert (> (.content-h s) (page/line-height)))
+           (for [i 0 (.word-count s)]
+             (let [w (model/word i)]
+               (assert (>= (.x w) 0.0))
+               (assert (<= (+ (.x w) (.width w)) 210.0))))))
+
+(deftest a_wider_page_needs_fewer_lines
+         (let [s (fixture 40 100.0)]
+           (page/reflow s 200.0)
+           (let [narrow (.content-h s)]
+             (page/reflow s 800.0)
+             (assert (< (.content-h s) narrow)))))
+
+;;; A silence long enough to notice gets a pill; ordinary speech rhythm does not.
+(deftest only_long_silences_get_a_pill
+         (let [quiet (fixture 6 60.0)]
+           (page/reflow quiet 900.0)
+           (for [i 0 5]
+             (assert (primitive/fcmp-eq (.gap-w (model/word i)) 0.0))))
+         (let [spaced (fixture 6 700.0)]
+           (page/reflow spaced 900.0)
+           (for [i 0 5] (assert (> (.gap-w (model/word i)) 0.0)))))
+
+(deftest a_point_on_a_word_finds_that_word
+         (let [s (fixture 20 100.0)
+               (mut gap) false]
+           (page/reflow s 900.0)
+           (for [i 0 (.word-count s)]
+             (let [w (model/word i)
+                   x (+ (.x w) (* 0.5 (.width w)))
+                   y (+ (.y w) 4.0)]
+               (assert-eq (page/hit-word s x y (mut gap)) i)
+               (assert (not (load gap)))))))
+
+(deftest a_point_on_a_pill_reports_the_pill
+         (let [s (fixture 6 700.0)
+               (mut gap) false]
+           (page/reflow s 900.0)
+           (let [w (model/word 2)
+                 x (+ (.gap-x w) (* 0.5 (.gap-w w)))
+                 y (+ (.y w) 4.0)]
+             (assert-eq (page/hit-word s x y (mut gap)) 2)
+             (assert (load gap)))))
+
+(deftest a_point_in_the_margin_finds_nothing
+         (let [s (fixture 6 100.0)
+               (mut gap) false]
+           (page/reflow s 900.0)
+           (assert-eq (page/hit-word s
+                                     880.0
+                                     (+ (page/line-height) 4.0)
+                                     (mut gap))
+                      -1)))
+
+(deftest scrolling_is_clamped_to_the_content
+         (let [s (fixture 200 100.0)]
+           (page/reflow s 300.0)
+           (assert (> (page/max-scroll s 100.0) 0.0))
+           (assert (primitive/fcmp-eq (page/max-scroll s 100000.0) 0.0))))
+
+;;; The view follows the spoken word only once it has left the comfortable band,
+;;; so an ordinary sentence does not scroll the page under the reader.
+(deftest following_only_moves_when_the_word_leaves_the_view
+         (let [s (fixture 200 100.0)]
+           (page/reflow s 300.0)
+           (set! (.scroll s) 0.0)
+           (assert (primitive/fcmp-eq (page/follow s 0 400.0) 0.0))
+           (assert (> (page/follow s 199 400.0) 0.0))))
+
+(deftest zooming_the_waveform_keeps_the_anchor_under_the_cursor
+         (let [s (fixture 100 100.0)]
+           (set! (.peak-count s) 0)
+           (set! (.wzoom s) 60.0)
+           (set! (.wscroll s) 0.0)
+           (let [anchor 8000.0
+                 before (page/ms-to-x s 0.0 anchor)]
+             (page/zoom-to s 240.0 anchor 0.0 600.0)
+             (let [after (page/ms-to-x s 0.0 anchor)
+                   drift (- after before)]
+               (assert (< (if (< drift 0.0) (- 0.0 drift) drift) 1.0))))))
+
+(defn peak-fixture [] (-> (ptr model/Session))
+  (let [s (fixture 4 100.0)]
+    ;; A loud passage at the start, a quiet one at the end. Panning between them
+    ;; must not rescale either.
+    (for [i 0 6000]
+      (set! (index (model/peaks) i) (cast f32 (if (< i 3000) 0.9 0.05))))
+    (set! (.peak-count s) 6000)
+    (set! (.dur-ms s) (* 6000.0 (model/bucket-ms)))
+    (page/build-sumsq s)
+    (set! (.wzoom s) 60.0)
+    (set! (.wscroll s) 0.0)
+    s))
+
+(defn column-at [(i i64)] (-> f64)
+  (cast f64 (load (index (page/columns) i))))
+
+;;; Scaling the envelope to the loudest column on screen makes the waveform
+;;; change shape as it is panned: the quiet half stretches to full height the
+;;; moment the loud half scrolls away. The reference must come from the whole
+;;; take, so the same audio draws the same height wherever it sits.
+(deftest panning_does_not_rescale_the_waveform
+         (let [s (peak-fixture)]
+           (page/build-columns s 0.0 600.0)
+           (let [loud-at-start (column-at 5)]
+             (page/pan-to s 40000.0 0.0 600.0)
+             (let [quiet (column-at 5)]
+               ;; The quiet passage stays quiet.
+               (assert (< quiet 0.05))
+               ;; And returning to the loud passage reproduces the same height.
+               (page/pan-to s 0.0 0.0 600.0)
+               (let [again (column-at 5)
+                     drift (- again loud-at-start)]
+                 (assert (< (if (< drift 0.0) (- 0.0 drift) drift) 0.0001)))))))
+
+(deftest the_loudest_passage_uses_the_full_height
+         (let [s (peak-fixture)]
+           (page/build-columns s 0.0 600.0)
+           (let [(mut peak) 0.0]
+             (for [i 0 (load (index (page/column-count) 0))]
+               (when (> (column-at i) (load peak)) (set! peak (column-at i))))
+             (assert (> (load peak) 0.9)))))
+
+(defn varied-fixture [] (-> (ptr model/Session))
+  (let [s (fixture 4 100.0)]
+    ;; A shape with real structure, so a change in any bar is detectable.
+    (for [i 0 6000]
+      (let [t (cast f64 i)]
+        (set! (index (model/peaks) i)
+              (cast f32 (+ 0.05 (* 0.9 (fabs (sin (/ t 37.0)))))))))
+    (set! (.peak-count s) 6000)
+    (set! (.dur-ms s) (* 6000.0 (model/bucket-ms)))
+    (page/build-sumsq s)
+    (set! (.wzoom s) 60.0)
+    (set! (.wscroll s) 0.0)
+    s))
+
+(defn snapshot [] (-> (ptr (array f32 2048)))
+  (primitive/alloc-static (array f32 2048)))
+
+(defn take-snapshot [] (-> i64)
+  (for [i 0 (load (index (page/column-count) 0))]
+    (set! (index (snapshot) i) (load (index (page/columns) i))))
+  0)
+
+;;; Panning by less than one column must not change a single bar. The windows
+;;; are aligned to fixed bucket boundaries, so the same audio always draws at
+;;; the same height instead of being re-averaged over a slightly shifted span.
+(deftest a_small_pan_does_not_change_any_bar
+         (let [s (varied-fixture)]
+           (page/build-columns s 0.0 600.0)
+           (take-snapshot)
+           (let [column-ms
+                   (* (cast f64 (page/buckets-per-column s)) (model/bucket-ms))]
+             (page/pan-to s (* column-ms 0.4) 0.0 600.0)
+             (for [i 0 (load (index (page/column-count) 0))]
+               (assert (primitive/fcmp-eq (cast f64
+                                                (load (index (page/columns) i)))
+                                          (cast f64 (load (index (snapshot) i)))))))))
+
+;;; Panning by exactly one column shifts the picture along by one bar and
+;;; changes nothing else: the waveform slides rather than being recomputed.
+(deftest a_full_column_pan_shifts_the_bars_by_one
+         (let [s (varied-fixture)]
+           (page/build-columns s 0.0 600.0)
+           (take-snapshot)
+           (let [column-ms
+                   (* (cast f64 (page/buckets-per-column s)) (model/bucket-ms))
+                 count (load (index (page/column-count) 0))]
+             (page/pan-to s column-ms 0.0 600.0)
+             (for [i 0 (- count 1)]
+               (assert (primitive/fcmp-eq (cast f64
+                                                (load (index (page/columns) i)))
+                                          (cast f64
+                                                (load (index (snapshot) (+ i 1))))))))))
+
+;;; And the amplitude of a given moment does not depend on where it sits on
+;;; screen — pan away and back and the bar is identical.
+(deftest panning_away_and_back_reproduces_the_bars
+         (let [s (varied-fixture)]
+           (page/build-columns s 0.0 600.0)
+           (take-snapshot)
+           (page/pan-to s 20000.0 0.0 600.0)
+           (page/pan-to s 0.0 0.0 600.0)
+           (for [i 0 (load (index (page/column-count) 0))]
+             (assert (primitive/fcmp-eq (cast f64
+                                              (load (index (page/columns) i)))
+                                        (cast f64 (load (index (snapshot) i))))))))
+
+;;; Fractional bucket ratios must retain both amplitude and source-time
+;;; placement; checking only 60 points/second concealed the old two-grid bug.
+(deftest waveform_windows_and_drawn_positions_share_one_time_grid
+         (for [step 0 5]
+           (let [s (varied-fixture)
+                 origin 123.0]
+             (set! (.wzoom s) (+ 37.0 (* (cast f64 step) 13.7)))
+             (page/build-columns s origin 600.0)
+             (take-snapshot)
+             (let [span
+                     (* (cast f64 (page/buckets-per-column s))
+                        (model/bucket-ms))
+                   stride (page/column-step s)]
+               (page/pan-to s (* span 0.4) origin 600.0)
+               (for [i 0 (load (index (page/column-count) 0))]
+                 (assert (primitive/fcmp-eq (column-at i)
+                                            (cast f64
+                                                  (load (index (snapshot) i)))))
+                 (let [x
+                         (+ (load (index (page/column-origin) 0))
+                            (* (cast f64 i) stride))]
+                   (assert (< (fabs (- (page/x-to-ms s origin x)
+                                       (* (cast f64 i) span)))
+                              0.000001))))
+               (page/pan-to s (* span 1.4) origin 600.0)
+               (for [i 0 (- (load (index (page/column-count) 0)) 1)]
+                 (assert (primitive/fcmp-eq (column-at i)
+                                            (cast f64
+                                                  (load (index (snapshot)
+                                                               (+ i 1)))))))))))
+
+;;; A silence pill that does not fit after its word wraps to the start of the
+;;; next line. It has to be placed there — on its own line — not on its word's
+;;; line, where it sat over the first words of that line.
+(defn force-pill-wrap-width [] (-> f64)
+  ;; Fit either item alone, never both together. This remains a real wrap test
+  ;; when the app's native font or type size changes.
+  (let [word (.width (model/word 0))
+        pill (page/pill-width 700.0)]
+    (+ (if (> word pill) word pill) 1.0)))
+
+(deftest a_wrapped_pill_sits_on_its_own_line_clear_of_every_word
+         (let [s (fixture 60 700.0)
+               (mut wrapped) 0]
+           (page/reflow s (force-pill-wrap-width))
+           (for [k 0 (.word-count s)]
+             (let [p (model/word k)]
+               (when (> (.gap-w p) 0.0)
+                 (when (primitive/fcmp-ne (.gap-y p) (.y p))
+                   (set! wrapped (+ (load wrapped) 1)))
+                 (for [j 0 (.word-count s)]
+                   (let [w (model/word j)
+                         same-line (primitive/fcmp-eq (.y w) (.gap-y p))
+                         apart
+                           (or (<= (+ (.x w) (.width w)) (.gap-x p))
+                               (>= (.x w) (+ (.gap-x p) (.gap-w p))))]
+                     (assert (or (not same-line) apart)))))))
+           ;; The layout must actually wrap a pill, or this proves nothing.
+           (assert (> (load wrapped) 0))))
+
+(deftest a_click_on_a_wrapped_pill_finds_the_pill
+         (let [s (fixture 60 700.0)
+               (mut gap) false
+               (mut checked) 0]
+           (page/reflow s (force-pill-wrap-width))
+           (for [k 0 (.word-count s)]
+             (let [p (model/word k)]
+               (when (and (> (.gap-w p) 0.0)
+                          (primitive/fcmp-ne (.gap-y p) (.y p)))
+                 (assert-eq (page/hit-word s
+                                           (+ (.gap-x p) (* 0.5 (.gap-w p)))
+                                           (+ (.gap-y p) 4.0)
+                                           (mut gap))
+                            k)
+                 (assert (load gap))
+                 (set! checked (+ (load checked) 1)))))
+           (assert (> (load checked) 0))))
+
+;;; The transcript is drawn at its scroll offset rounded to a whole backing
+;;; pixel, so a word moved by a scroll keeps its sub-pixel phase and its cached
+;;; mask. The stored offset stays exact: rounding it on every event would
+;;; swallow the small deltas of a slow trackpad scroll.
+(deftest the_drawn_scroll_offset_is_a_whole_backing_pixel
+         (assert (primitive/fcmp-eq (page/snap-to-pixel 13.3 2.0) 13.5))
+         (assert (primitive/fcmp-eq (page/snap-to-pixel 13.2 2.0) 13.0))
+         (assert (primitive/fcmp-eq (page/snap-to-pixel 13.3 1.0) 13.0))
+         (assert (primitive/fcmp-eq (page/snap-to-pixel 0.2 2.0) 0.0))
+         (let [s (fixture 400 100.0)]
+           (page/reflow s 200.0)
+           (set! (.scroll s) 0.0)
+           (for [i 0 5] (set! (.scroll s) (+ (.scroll s) 0.2)))
+           (assert (primitive/fcmp-eq (page/shown-scroll s 2.0) 1.0))
+           (for [k 0 200]
+             (set! (.scroll s) (* (cast f64 k) 1.37))
+             (let [shown (page/shown-scroll s 2.0)
+                   pixels (* shown 2.0)]
+               (assert (primitive/fcmp-eq pixels (floor pixels)))
+               (assert (<= (fabs (- shown (.scroll s))) 0.25))))))

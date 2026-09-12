@@ -17,6 +17,7 @@
 
 (defstruct Key
   [(path (ptr i8))
+   (edges (ptr i8))
    (text (ptr i8))
    (x f64)
    (y f64)
@@ -41,7 +42,11 @@
    (newer i64)])
 
 (defstruct FrameMask
-  [(texture (ptr i8)) (bounds CGRect) (logical-bounds CGRect) (tiled bool) (valid bool)])
+  [(texture (ptr i8))
+   (bounds CGRect)
+   (logical-bounds CGRect)
+   (tiled bool)
+   (valid bool)])
 
 (defstruct Masks
   [(entries (al/ArrayList Entry))
@@ -387,6 +392,9 @@
 
 (defn release-entry [(entry Entry)] (-> i64)
   (CGPathRelease (.path (.key entry)))
+  (when (!= (.edges (.key entry)) (nil))
+    (CGPathRelease (.edges (.key entry)))
+    0)
   (release (.text (.key entry)))
   (release (.texture entry))
   0)
@@ -410,7 +418,8 @@
           (set! (.buckets c) (al/al-new [i64] (alloc/malloc-allocator)))
           (set! (.pending c) (al/al-new [i64] (alloc/malloc-allocator)))
           (set! (.records c) (al/al-new [i64] (alloc/malloc-allocator)))
-          (set! (.frame-masks c) (al/al-new [FrameMask] (alloc/malloc-allocator)))
+          (set! (.frame-masks c)
+                (al/al-new [FrameMask] (alloc/malloc-allocator)))
           (set! (.ready c) true)
           0))
     (set! (.bytes c) 0)
@@ -433,8 +442,15 @@
 
 (defn reserve-frame-bounds [(order i64) (bounds CGRect) (logical CGRect)] (-> i64)
   (when (.preparing (cache))
-    (al/al-set! [FrameMask] (mut (.frame-masks (cache))) order
-      (FrameMask :texture (nil) :bounds bounds :logical-bounds logical :tiled false :valid true)))
+    (al/al-set! [FrameMask]
+                (mut (.frame-masks (cache)))
+                order
+                (FrameMask
+                  :texture (nil)
+                  :bounds bounds
+                  :logical-bounds logical
+                  :tiled false
+                  :valid true)))
   0)
 
 (defn capture-frame [] (-> i64)
@@ -452,7 +468,9 @@
   0)
 
 (defn frame-encoding [] (-> bool)
-  (and (.frame-ready (cache)) (not (.frame-reference (cache))) (not (.preparing (cache)))))
+  (and (.frame-ready (cache))
+       (not (.frame-reference (cache)))
+       (not (.preparing (cache)))))
 
 (defn equal [(a Key) (b Key)] (-> bool)
   (and (= (.kind a) (.kind b))
@@ -464,7 +482,10 @@
        (p/fcmp-eq (.size a) (.size b))
        (or (= (.text a) (.text b))
            (msg bool (.text a) (sel c"isEqualToString:") [(ptr i8)] (.text b)))
-       (CGPathEqualToPath (.path a) (.path b))))
+       (CGPathEqualToPath (.path a) (.path b))
+       (if (or (= (.edges a) (nil)) (= (.edges b) (nil)))
+           (= (.edges a) (.edges b))
+           (CGPathEqualToPath (.edges a) (.edges b)))))
 
 ; CGPath equality compares the sequence of elements, not allocation identity.
 ; Hash the same sequence; still verify full equality on every hash match.
@@ -520,6 +541,12 @@
     (set! hash (hash-part (load hash) (msg i64 (.text key) (sel c"hash") [])))
     (when (!= (.path key) (nil))
       (CGPathApply (.path key)
+                   (cast (ptr i8) hash)
+                   (fnptr-of hash-path-element))
+      0)
+    (when (!= (.edges key) (nil))
+      (set! hash (hash-part (load hash) 1))
+      (CGPathApply (.edges key)
                    (cast (ptr i8) hash)
                    (fnptr-of hash-path-element))
       0)
@@ -647,7 +674,10 @@
               (CGContextSetBlendMode ctx 27)
               (CGContextSetRGBStrokeColor ctx 0.0 1.0 0.0 1.0)
               (CGContextSetLineWidth ctx 1.2)
-              (CGContextAddPath ctx (.path key))
+              (CGContextAddPath ctx
+                                (if (= (.edges key) (nil))
+                                    (.path key)
+                                    (.edges key)))
               (CGContextStrokePath ctx)
               0)
             0)
@@ -757,7 +787,24 @@
 ;;; reuses masks without resampling; fractional movement retains its exact phase.
 ;;; The LRU owns paths/text and has a 256 MiB budget. Submitted command buffers
 ;;; retain their textures until completion even when a cache entry is evicted.
+(defstruct LookupCost [(time f64) (calls i64) (misses i64) (entries i64)])
+
+(defn lookup-cost [] (-> (ptr LookupCost))
+  (p/alloc-static LookupCost))
+
 (defn lookup [(key Key) (width i64) (height i64)] (-> (ptr i8))
+  (let [cost (lookup-cost)
+        before (len (.entries (cache)))
+        result
+          (profile/accumulate-ms (.time cost)
+                                 (lookup-inner key width height))]
+    (set! (.calls cost) (+ (.calls cost) 1))
+    (when (> (len (.entries (cache))) before)
+      (set! (.misses cost) (+ (.misses cost) 1)))
+    (set! (.entries cost) (len (.entries (cache))))
+    result))
+
+(defn lookup-inner [(key Key) (width i64) (height i64)] (-> (ptr i8))
   (let [c (cache)
         fingerprint (key-hash key width height)
         (mut found) -1]
@@ -782,6 +829,7 @@
             (link-newest (load found)))
           (queue-mask (load found))
           (CGPathRelease (.path key))
+          (when (!= (.edges key) (nil)) (CGPathRelease (.edges key)) 0)
           (when (and (= (.texture entry) (nil)) (not (.preparing c)))
             (build-mask-texture entry)
             (set! (.bytes c) (+ (.bytes c) (.bytes entry))))
@@ -852,6 +900,7 @@
              (!= (.texture (al/al-elem [Entry] (field c entries) slot)) (nil)))
         (let [entry (al/al-elem [Entry] (field c entries) slot)]
           (CGPathRelease (.path key))
+          (when (!= (.edges key) (nil)) (CGPathRelease (.edges key)) 0)
           (set! (.last-tiled c) (.tiled entry))
           (.texture entry))
         (let [texture (lookup key width height)]
@@ -1106,15 +1155,26 @@
 (defn sheet [(encoder (ptr i8)) (item Sheet)] (-> i64)
   (if (and (frame-encoding) (= (.relief item) (cast (ptr relief/Panel) 0)))
       (let [frame (get (.frame-masks (cache)) (.order item))]
-        (when (and (.valid frame) (intersects (.logical-bounds frame) (load (composition-region))))
-          (draw-mask encoder (.texture frame) (.bounds frame) (.color item) (.z item)
-                     (.rough item) (.fiber item) (.seed item) (if (.continuous item) -1.0 0.0)
-                     (.pattern item) (.finish item) (.tiled frame))))
+        (when (and (.valid frame)
+                   (intersects (.logical-bounds frame)
+                               (load (composition-region))))
+          (draw-mask encoder
+                     (.texture frame)
+                     (.bounds frame)
+                     (.color item)
+                     (.z item)
+                     (.rough item)
+                     (.fiber item)
+                     (.seed item)
+                     (if (.continuous item) -1.0 0.0)
+                     (.pattern item)
+                     (.finish item)
+                     (.tiled frame))))
       (when (and (not (CGPathIsEmpty (.path item)))
-             (intersects (CGPathGetPathBoundingBox (.path item))
-                         (canvas-bounds))
-             (intersects (CGPathGetPathBoundingBox (.path item))
-                         (load (composition-region))))
+                 (intersects (CGPathGetPathBoundingBox (.path item))
+                             (canvas-bounds))
+                 (intersects (CGPathGetPathBoundingBox (.path item))
+                             (load (composition-region))))
         (visible-sheet encoder item)))
   0)
 
@@ -1124,6 +1184,7 @@
         key
           (Key
             :path (translated (.path item) (/ (.x b) scale) (/ (.y b) scale))
+            :edges (translated (.edges item) (/ (.x b) scale) (/ (.y b) scale))
             :text (nil)
             :x 0.0
             :y 0.0
@@ -1139,7 +1200,9 @@
                            (.order item))
         tiled (.last-tiled (cache))]
     (when (= (.relief item) (cast (ptr relief/Panel) 0))
-      (reserve-frame-bounds (.order item) b (CGPathGetPathBoundingBox (.path item))))
+      (reserve-frame-bounds (.order item)
+                            b
+                            (CGPathGetPathBoundingBox (.path item))))
     (when (and (.preparing (cache))
                (= (.relief item) (cast (ptr relief/Panel) 0)))
       (micro-region-lookup (draw-params b
@@ -1235,6 +1298,7 @@
         key
           (Key
             :path (translated (.glyph v) (/ (.x gb) scale) (/ (.y gb) scale))
+            :edges (nil)
             :text (nil)
             :x 0.0
             :y 0.0
@@ -1345,13 +1409,24 @@
 (defn ink [(encoder (ptr i8)) (item Ink)] (-> i64)
   (if (frame-encoding)
       (let [frame (get (.frame-masks (cache)) (.order item))]
-        (when (and (.valid frame) (intersects (.logical-bounds frame) (load (composition-region))))
-          (draw-mask encoder (.texture frame) (.bounds frame) (.color item)
-                     0.0 0.0 0.0 0.0 1.0 (material/plain-pattern)
-                     (material/matte-finish) (.tiled frame))))
+        (when (and (.valid frame)
+                   (intersects (.logical-bounds frame)
+                               (load (composition-region))))
+          (draw-mask encoder
+                     (.texture frame)
+                     (.bounds frame)
+                     (.color item)
+                     0.0
+                     0.0
+                     0.0
+                     0.0
+                     1.0
+                     (material/plain-pattern)
+                     (material/matte-finish)
+                     (.tiled frame))))
       (when (and (intersects (.bounds item) (canvas-bounds))
-             (intersects (.bounds item) (load (composition-region)))
-             (or (= (.clip item) (nil)) (not (CGPathIsEmpty (.clip item)))))
+                 (intersects (.bounds item) (load (composition-region)))
+                 (or (= (.clip item) (nil)) (not (CGPathIsEmpty (.clip item)))))
         (visible-ink encoder item)))
   0)
 
@@ -1363,6 +1438,7 @@
         key
           (Key
             :path (translated (.clip item) x y)
+            :edges (nil)
             :text (.text item)
             :x (- (.x item) x)
             :y (- (.y item) y)
@@ -1427,7 +1503,8 @@
     (for [i 0 (al/al-len [Ink] (.inks s))]
       (ink (nil) (al/al-get [Ink] (.inks s) i)))
     (set! (.mask-reservation (profile/counters))
-          (+ (.mask-reservation (profile/counters)) (profile/elapsed reservation-start)))
+          (+ (.mask-reservation (profile/counters))
+             (profile/elapsed reservation-start)))
     (let [start (profile/start)]
       (workers/apply (cast u64 (len (.pending c)))
                      (nil)
@@ -1456,14 +1533,23 @@
   0)
 
 (defn prepare-region [(region CGRect)] (-> i64)
-  (set-composition-region region)
-  (prepare-masks)
-  (let [start (profile/start)]
-    (prepare-micro)
-    (set! (.micro-preparation (profile/counters))
-          (+ (.micro-preparation (profile/counters)) (profile/elapsed start))))
-  (visibility-setup)
+  (let [cost (mask-cost)]
+    (profile/measure-ms (.prepare cost)
+                        (set-composition-region region)
+                        (prepare-masks))
+    (profile/measure-ms (.micro cost)
+                        (let [start (profile/start)]
+                          (prepare-micro)
+                          (set! (.micro-preparation (profile/counters))
+                                (+ (.micro-preparation (profile/counters))
+                                   (profile/elapsed start)))))
+    (profile/measure-ms (.visibility cost) (visibility-setup)))
   0)
+
+(defstruct MaskCost [(prepare f64) (micro f64) (visibility f64)])
+
+(defn mask-cost [] (-> (ptr MaskCost))
+  (p/alloc-static MaskCost))
 
 (defn render-region [(region CGRect)] (-> i64)
   (store! (last-composed-area) 0.0)
@@ -1491,7 +1577,8 @@
             (compose-region encoder region full))))
       (msg i64 encoder (sel c"endEncoding") [])
       (set! (.composition-encoding (profile/counters))
-            (+ (.composition-encoding (profile/counters)) (profile/elapsed start)))))
+            (+ (.composition-encoding (profile/counters))
+               (profile/elapsed start)))))
   (let [pixels (gpu/pixel-region bounds 0.0)]
     (store! (last-damage)
             (cgrect (cast f64 (.x pixels))

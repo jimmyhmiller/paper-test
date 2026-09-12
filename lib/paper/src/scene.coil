@@ -18,7 +18,9 @@
    (continuous bool)
    (pattern Pattern)
    (finish Finish)
-   (relief (ptr relief/Panel))])
+   (relief (ptr relief/Panel))
+   ;; The part of the outline drawn with a paper edge, or nil for all of it.
+   (edges (ptr i8))])
 
 (defstruct Ink
   [(x f64)
@@ -54,6 +56,8 @@
    (hits (al/ArrayList Hit))
    (focus-targets (al/ArrayList FocusTarget))
    (path (ptr i8))
+   ;; The edge outline of the sheet being built, once `seamless-outline` marks it.
+   (edges (ptr i8))
    (background u32)
    (light-x f64)
    (light-y f64)
@@ -100,6 +104,7 @@
   (let [s (scene)]
     (for [i 0 (al/al-len [Sheet] (.sheets s))]
       (CGPathRelease (.path (al/al-elem [Sheet] (field s sheets) i)))
+      (CGPathRelease (.edges (al/al-elem [Sheet] (field s sheets) i)))
       (relief/release (.relief (al/al-elem [Sheet] (field s sheets) i))))
     (for [i 0 (al/al-len [Ink] (.inks s))]
       (let [ink (al/al-elem [Ink] (field s inks) i)]
@@ -207,6 +212,11 @@
            (fnptr-of compare-ink)))
   0)
 
+;;; The outline a sheet's paper edge follows: all of it, unless part of it was
+;;; marked seamless.
+(defn edge-outline [(sheet Sheet)] (-> (ptr i8))
+  (if (= (.edges sheet) (objc/nil)) (.path sheet) (.edges sheet)))
+
 (defn add-sheet [(sheet Sheet)] (-> i64)
   (al/al-push! [Sheet] (mut (.sheets (scene))) sheet))
 
@@ -247,6 +257,7 @@
         (set! (.path item) path)
         (set! (.order item) (+ (.order original) (- i count)))))
     (CGPathRelease (.path original))
+    (CGPathRelease (.edges original))
     (relief/release (.relief original))
     (for [i (+ index 1) (al/al-len [Sheet] (.sheets s))]
       (al/al-set! [Sheet]

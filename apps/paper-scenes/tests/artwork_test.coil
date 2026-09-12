@@ -2,8 +2,71 @@
 (import "paper-scenes.ukiyo" :as ukiyo)
 (import "paper.scene" :as scene)
 (import "paper.ffi" :use *)
+(import "coil.alloc" :as alloc)
+(import "coil.primitive" :as p)
 (extern printf :cc c [(ptr i8) ...] (-> i32))
 (extern fflush :cc c [(ptr i8)] (-> i32))
+
+(defn stock-components [(path (ptr i8))] (-> i64)
+  (let [context (coverage path 1.0 0.0) pixels (CGBitmapContextGetData context)
+        queue (cast (ptr i64) (alloc/malloc (* (* 768 512) 8)))
+        (mut components) 0]
+    (for [start 0 (* 768 512)]
+      (when (> (load (index pixels (* start 4))) (cast u8 127))
+        (set! components (+ (load components) 1))
+        (store! (index pixels (* start 4)) (cast u8 0))
+        (store! queue start)
+        (let [(mut head) 0 (mut tail) 1]
+          (while (< (load head) (load tail))
+            (let [pixel (load (index queue (load head))) x (% pixel 768) y (/ pixel 768)]
+              (set! head (+ (load head) 1))
+              (for [side 0 4]
+                (let [valid (case side 0 (> x 0) 1 (< x 767) 2 (> y 0) (< y 511))
+                      next (case side 0 (- pixel 1) 1 (+ pixel 1) 2 (- pixel 768) (+ pixel 768))]
+                  (when (and valid (> (load (index pixels (* next 4))) (cast u8 127)))
+                    (store! (index pixels (* next 4)) (cast u8 0))
+                    (store! (index queue (load tail)) next)
+                    (set! tail (+ (load tail) 1))))))))))
+    (CGContextRelease context) (p/free (cast (ptr i8) queue))
+    (load components)))
+
+(deftest foreground-ribbon-is-connected-and-overlaps-the-title-paper
+  (scene/init)
+  (let [points [(CGPoint :x 200.0 :y 42.0) (CGPoint :x 250.0 :y 50.0)
+                (CGPoint :x 285.0 :y 66.0) (CGPoint :x 320.0 :y 92.0)
+                (CGPoint :x 360.0 :y 111.0) (CGPoint :x 400.0 :y 133.0)
+                (CGPoint :x 450.0 :y 146.0) (CGPoint :x 500.0 :y 150.0)
+                (CGPoint :x 550.0 :y 152.0) (CGPoint :x 600.0 :y 172.0)
+                (CGPoint :x 650.0 :y 173.0) (CGPoint :x 700.0 :y 200.0)]]
+    (for [layer 0 2]
+      (let [path (ukiyo/foreground-path (+ layer 2))]
+        (assert (= (stock-components path) 1))
+        (for [i 0 12]
+          (assert (CGPathContainsPoint path (cast (ptr CGAffine) 0) (get points i) true)))))
+    (for [piece 0 2]
+      (assert-supported-stock (+ 33 piece) (ukiyo/foreground-path (* piece 2))
+                                             (ukiyo/foreground-path (+ (* piece 2) 1))))
+    (let [overlap (CGPathCreateCopyByIntersectingPath (ukiyo/foreground-path 0)
+                     (ukiyo/foreground-path 2) true)]
+      (assert (not (CGPathIsEmpty overlap))) (CGPathRelease overlap)))
+  (scene/clear 0xffffff)
+  (set! (.sx (ukiyo/canvas)) 1.0) (set! (.sy (ukiyo/canvas)) 1.0)
+  (ukiyo/clouds)
+  (let [header (get (.sheets (scene/scene)) 3) ribbon (get (.sheets (scene/scene)) 11)]
+    (assert (> (.z ribbon) (.z header))))
+  (for [level 1 8]
+    (assert-supported-stock (+ 35 level)
+      (ukiyo/foreground-path (if (= level 1) 2 (+ level 2)))
+      (ukiyo/foreground-path (+ level 3))))
+  (let [origin (CGPathGetPathBoundingBox (ukiyo/cloud-path 5))]
+    (for [level 0 8]
+      (let [sheet (get (.sheets (scene/scene)) (+ level 4))
+            dx (- (.x (.pattern sheet)) (.x origin))
+            dy (- (.y (.pattern sheet)) (.y origin))]
+        (assert (.continuous sheet))
+        (assert (< (+ (* dx dx) (* dy dy)) 0.000000001))
+        (assert (>= (.z sheet) 17.0)) (assert (<= (.z sheet) 23.0)))))
+  (scene/clear 0xffffff))
 
 (deftest sun-creases-have-nested-support-and-continuous-grain
   (scene/init) (scene/clear 0xffffff)
@@ -74,6 +137,7 @@
                                 :y (+ (* (cast f64 y) 2.0) 0.37))]
             (when (CGPathContainsPoint grain (cast (ptr CGAffine) 0) point true)
               (assert (not (CGPathContainsPoint (ukiyo/cloud-path 5) (cast (ptr CGAffine) 0) point true)))
+              (assert (not (CGPathContainsPoint (ukiyo/cloud-path 3) (cast (ptr CGAffine) 0) point true)))
               (assert (not (CGPathContainsPoint (ukiyo/branch-accent-path 0) (cast (ptr CGAffine) 0) point true))))))))))
 
 (deftest vermilion-branch-accent-keeps-the-lower-margin-navy

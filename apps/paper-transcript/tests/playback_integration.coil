@@ -1,0 +1,123 @@
+(module transcript.tests.playback)
+(import "coil.primitive" :as primitive)
+(import "coil.assert" :use *)
+(import "paper.ffi" :use [snprintf])
+(import "transcript.model" :as model)
+(import "transcript.library" :as lib)
+(import "transcript.sound" :as sound)
+
+(extern usleep :cc c [u32] (-> i32))
+
+;;; Opt-in: this suite decodes and plays a real recording from the library on
+;;; this machine and needs a working audio device, so it is excluded from
+;;; `coil test` and run with `coil test --suite integration`.
+(defn take-name [] (-> (ptr i8))
+  c"demo_fillers.wav")
+
+(defn path-buffer [] (-> (ptr (array i8 1024)))
+  (primitive/alloc-static (array i8 1024)))
+
+(deftest a_real_take_decodes_and_reports_its_own_length
+         (let [s (sound/sound)
+               session (model/session)
+               path (lib/source-path (index (path-buffer) 0) (take-name))]
+           (model/reset-session session)
+           (assert (sound/decode s path))
+           (assert (> (.source-frames s) 0))
+           (assert (> (.rate s) 0.0))
+           (assert (and (>= (.channels s) 1) (<= (.channels s) 8)))))
+
+(deftest the_transcript_and_the_decoded_audio_agree_on_duration
+         (let [s (sound/sound)
+               session (model/session)
+               path (lib/source-path (index (path-buffer) 0) (take-name))]
+           (model/reset-session session)
+           (assert (lib/load-transcript session (take-name)))
+           (assert (lib/load-peaks session (take-name)))
+           (assert (sound/decode s path))
+           ;; The peak envelope is measured in 10 ms buckets and the decode in frames;
+           ;; they describe the same recording, so they must agree to within a bucket.
+           (let [decoded (sound/frames-to-ms s (.source-frames s))
+                 measured (.dur-ms session)
+                 drift (- decoded measured)]
+             (assert (< (if (< drift 0.0) (- 0.0 drift) drift) 60.0)))))
+
+(deftest playback_advances_the_reported_position
+         (let [s (sound/sound)
+               session (model/session)
+               path (lib/source-path (index (path-buffer) 0) (take-name))]
+           (model/reset-session session)
+           (assert (lib/load-transcript session (take-name)))
+           (assert (lib/load-peaks session (take-name)))
+           (model/rebuild-clips session)
+           (assert (sound/decode s path))
+           (assert (> (sound/splice s session true) 0))
+           (assert (sound/play-from s 0.0 1.0))
+           (usleep (cast u32 400000))
+           (let [position (sound/position-ms s)]
+             (sound/stop s)
+             ;; 400 ms of wall time should put the playhead somewhere in that
+             ;; neighbourhood: past the start, and not past the end of the edit.
+             (assert (> position 150.0))
+             (assert (< position 900.0)))))
+
+(deftest seeking_starts_from_where_it_was_asked_to
+         (let [s (sound/sound)
+               session (model/session)
+               path (lib/source-path (index (path-buffer) 0) (take-name))]
+           (model/reset-session session)
+           (assert (lib/load-transcript session (take-name)))
+           (assert (lib/load-peaks session (take-name)))
+           (model/rebuild-clips session)
+           (assert (sound/decode s path))
+           (sound/splice s session true)
+           (assert (sound/play-from s 3000.0 1.0))
+           (usleep (cast u32 200000))
+           (let [position (sound/position-ms s)]
+             (sound/stop s)
+             (assert (> position 3000.0))
+             (assert (< position 3600.0)))))
+
+;;; The crash this reproduces: opening a stereo take after a mono one reused the
+;;; edit buffers because the new edit was no shorter, and the second channel had
+;;; never been allocated. Both takes are real files from the library.
+(deftest switching_between_a_mono_and_a_stereo_take
+         (let [s (sound/sound)
+               session (model/session)]
+           (model/reset-session session)
+           (assert (sound/decode s
+                                 (lib/source-path (index (path-buffer) 0)
+                                                  c"demo_fillers.wav")))
+           (assert-eq (.channels s) 1)
+           (lib/load-transcript session c"demo_fillers.wav")
+           (lib/load-peaks session c"demo_fillers.wav")
+           (model/rebuild-clips session)
+           (assert (> (sound/splice s session true) 0))
+
+           (model/reset-session session)
+           (assert (sound/decode s
+                                 (lib/source-path (index (path-buffer) 0)
+                                                  c"slop_stereo.m4a")))
+           (assert-eq (.channels s) 2)
+           (lib/load-transcript session c"slop_stereo.m4a")
+           (lib/load-peaks session c"slop_stereo.m4a")
+           (lib/load-edits session c"slop_stereo.m4a")
+           (model/rebuild-clips session)
+           (assert (> (sound/splice s session true) 0))
+           (assert-eq (.edit-channels s) 2)
+           (assert (sound/play-from s 0.0 1.0))
+           (usleep (cast u32 200000))
+           (let [position (sound/position-ms s)]
+             (sound/stop s)
+             (assert (> position 80.0)))
+
+           ;; And back to the mono take.
+           (model/reset-session session)
+           (assert (sound/decode s
+                                 (lib/source-path (index (path-buffer) 0)
+                                                  c"demo_fillers.wav")))
+           (assert-eq (.channels s) 1)
+           (lib/load-transcript session c"demo_fillers.wav")
+           (model/rebuild-clips session)
+           (assert (> (sound/splice s session true) 0))
+           (assert-eq (.edit-channels s) 1)))

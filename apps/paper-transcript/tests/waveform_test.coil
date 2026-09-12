@@ -1,0 +1,156 @@
+(module transcript.tests.waveform)
+(import "coil.primitive" :as p)
+(import "coil.assert" :use *)
+(import "paper.ffi" :use [fabs])
+(import "transcript.waveform" :as wave)
+
+(defn left [] (-> (ptr (array f32 8192)))
+  (p/alloc-static (array f32 8192)))
+
+(defn right [] (-> (ptr (array f32 8192)))
+  (p/alloc-static (array f32 8192)))
+
+(defn channels [] (-> (ptr (array (ptr f32) 2)))
+  (p/alloc-static (array (ptr f32) 2)))
+
+(defn fixture [] (-> (ptr wave/Waveform))
+  (let [w (wave/state)]
+    (wave/stop w)
+    (for [i 0 8192]
+      (set! (index (left) i) 0.0)
+      (set! (index (right) i) 0.0))
+    ;; Single-sample, opposite-polarity transients disappear under averaging
+    ;; or mono downmix. Neither operation belongs in the display path.
+    (set! (index (left) 17) 1.0)
+    (set! (index (left) 55) 0.7)
+    (set! (index (right) 17) -1.0)
+    (set! (index (left) 1025) -0.003)
+    (set! (index (right) 8191) 0.65)
+    (assert (wave/allocate-index w 8192 2 48000.0))
+    (wave/index-samples w 0 0 (index (left) 0) 8192)
+    (wave/index-samples w 1 0 (index (right) 0) 8192)
+    (wave/finish-index w)
+    (set! (index (channels) 0) (index (left) 0))
+    (set! (index (channels) 1) (index (right) 0))
+    (set! (.samples w) (index (channels) 0))
+    (set! (.cache-start w) 0)
+    (set! (.cache-count w) 8192)
+    (set! (.ready w) true)
+    w))
+
+(deftest overview_preserves_single_sample_impulses_and_channel_polarity
+         (let [w (fixture)
+               l (wave/overview-range w 0 0 8192)
+               r (wave/overview-range w 1 0 8192)]
+           (assert (p/fcmp-eq (.high l) 1.0))
+           (assert (p/fcmp-eq (.low r) -1.0))
+           (assert (< (fabs (- (cast f64 (.high r)) 0.65)) 0.000001))
+           (wave/stop w)))
+
+(deftest quiet_detail_keeps_its_native_amplitude_without_local_normalization
+         (let [w (fixture)
+               quiet (wave/detail-range w 0 1000 1100)]
+           (assert (< (fabs (- (cast f64 (.low quiet)) -0.003)) 0.000001))
+           (assert (p/fcmp-eq (.high quiet) 0.0))
+           (wave/stop w)))
+
+(deftest zoom_reveals_individual_samples_and_true_zero_crossings
+         (let [w (fixture)]
+           (assert (wave/prepare w
+                                 (/ (* 16.0 1000.0) 48000.0)
+                                 192000.0
+                                 256.0
+                                 2.0))
+           (assert (.sample-mode w))
+           (let [before (wave/column w 0 0)
+                 peak (wave/column w 0 1)
+                 after (wave/column w 0 2)
+                 opposite (wave/column w 1 1)]
+             (assert (p/fcmp-eq (.high before) 0.0))
+             (assert (p/fcmp-eq (.high peak) 1.0))
+             (assert (p/fcmp-eq (.low peak) 1.0))
+             (assert (p/fcmp-eq (.high after) 0.0))
+             (assert (p/fcmp-eq (.low opposite) -1.0)))
+           (wave/stop w)))
+
+(deftest sub_sample_panning_translates_geometry_without_changing_amplitude
+         (let [w (fixture)]
+           (assert (wave/prepare w
+                                 (/ (* 16.25 1000.0) 48000.0)
+                                 192000.0
+                                 256.0
+                                 2.0))
+           (assert (< (fabs (+ (.offset w) 1.0)) 0.000001))
+           (assert (p/fcmp-eq (.step w) 4.0))
+           (let [peak (wave/column w 0 1)]
+             (assert (p/fcmp-eq (.high peak) 1.0)))
+           (wave/stop w)))
+
+(deftest overview_leaf_boundaries_never_discard_a_transient
+         (let [w (fixture)]
+           (for [i 0 31]
+             (let [a (* i 251)
+                   b (+ a 451)
+                   summary (wave/overview-range w 0 a b)
+                   exact (wave/detail-range w 0 a b)]
+               (assert (<= (.low summary) (.low exact)))
+               (assert (>= (.high summary) (.high exact)))))
+           (wave/stop w)))
+
+(deftest ranges_beyond_the_recording_are_zero_and_last_sample_survives
+         (let [w (fixture)
+               last (wave/detail-range w 1 8191 10000)
+               past (wave/overview-range w 1 10000 20000)]
+           (assert (> (.high last) 0.64))
+           (assert (p/fcmp-eq (.high past) 0.0))
+           (assert (p/fcmp-eq (.low past) 0.0))
+           (wave/stop w)))
+
+(deftest strip_input_retains_every_backing_pixel_and_every_sample
+         (let [w (fixture)]
+           ;; Eight native frames per backing pixel, before strip aggregation.
+           (assert (wave/prepare w 0.0 3000.0 128.0 2.0))
+           (assert (not (.sample-mode w)))
+           (assert (p/fcmp-eq (.step w) 0.5))
+           (assert-eq (.columns w) 268)
+           (for [i 0 259]
+             (let [a (* i 8)
+                   b (+ a 8)
+                   actual (wave/column w 0 i)
+                   exact (wave/detail-range w 0 a b)]
+               (assert (p/fcmp-eq (.low actual) (.low exact)))
+               (assert (p/fcmp-eq (.high actual) (.high exact)))))
+           ;; Fine source ranges remain available before grouping for display.
+           (let [transient (wave/column w 0 6)]
+             (assert (> (.high transient) 0.69)))
+           (wave/stop w)))
+
+(deftest paper_strip_phase_and_extrema_stay_anchored_when_panning
+         (let [w (fixture)]
+           (assert (wave/prepare w 1.25 3000.0 128.0 2.0))
+           (assert-eq (.first-column w) 0)
+           (assert (< (fabs (+ (.offset w) 3.75)) 0.000001))
+           (let [a (wave/strip-range w 0 0 10)]
+             (assert (wave/prepare w 1.5 3000.0 128.0 2.0))
+             (let [b (wave/strip-range w 0 0 10)]
+               (assert (p/fcmp-eq (.high a) (.high b)))
+               (assert (p/fcmp-eq (.low a) (.low b)))))
+           (wave/stop w)))
+
+(deftest strips_preserve_all_extrema_including_samples_under_visual_gaps
+         (let [w (fixture)]
+           ;; At this zoom a strip covers 80 frames. Its final frames lie
+           ;; beneath the visual gap, but must still affect the paper height.
+           (set! (index (left) 79) -0.875)
+           (assert (wave/prepare w 0.0 3000.0 128.0 2.0))
+           (assert-eq (wave/strip-columns 2.0) 10)
+           (for [i 0 25]
+             (let [a (* i 10)
+                   actual (wave/strip-range w 0 a (+ a 10))
+                   exact (wave/detail-range w 0 (* a 8) (* (+ a 10) 8))]
+               (assert (p/fcmp-eq (.high actual) (.high exact)))
+               (assert (p/fcmp-eq (.low actual) (.low exact)))))
+           (let [first (wave/strip-range w 0 0 10)]
+             (assert (p/fcmp-eq (.high first) 1.0))
+             (assert (p/fcmp-eq (.low first) -0.875)))
+           (wave/stop w)))

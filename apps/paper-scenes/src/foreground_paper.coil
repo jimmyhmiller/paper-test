@@ -1,0 +1,92 @@
+(module paper-scenes.foreground-paper)
+(import "paper.surface" :use [move-to curve-to line-to close-path])
+
+;;; Title paper sits behind the long folded ribbon. Its boundary continues
+;;; beneath the blossoms and ribbon rather than treating their shadows as cuts.
+(defn header-outline [] (-> i64)
+  (move-to 58.0 82.0)
+  (curve-to 54.0 69.0 63.0 56.0 84.0 50.0)
+  (curve-to 108.0 47.0 138.0 50.0 174.0 45.0)
+  (curve-to 204.0 42.0 235.0 45.0 252.0 48.0)
+  (curve-to 266.0 53.0 281.0 60.0 300.0 66.0)
+  (curve-to 311.0 75.0 318.0 91.0 340.0 99.0)
+  (curve-to 348.0 101.0 353.0 105.0 357.0 111.0)
+  (curve-to 329.0 121.0 287.0 121.0 263.0 126.0)
+  (curve-to 237.0 131.0 216.0 129.0 192.0 131.0)
+  (curve-to 170.0 133.0 144.0 130.0 121.0 132.0)
+  (curve-to 94.0 132.0 74.0 135.0 66.0 141.0)
+  (line-to 58.0 135.0)
+  (curve-to 53.0 134.0 52.0 125.0 53.0 117.0)
+  (curve-to 49.0 110.0 51.0 102.0 54.0 97.0)
+  (curve-to 50.0 92.0 56.0 88.0 58.0 82.0)
+  (close-path))
+
+;;; Measured lower-edge positions and separately authored widths. Smooth cubic
+;;; interpolation keeps the shaded paper connected; no source pixels ship.
+(defstruct Knot [(x f64) (y f64) (width f64)])
+(defn knot [(i i64)] (-> Knot)
+  (let [knots [
+    (Knot :x 170.0 :y 42.0 :width 3.0)
+    (Knot :x 200.0 :y 44.0 :width 3.0)
+    (Knot :x 225.0 :y 49.0 :width 5.0)
+    (Knot :x 250.0 :y 52.0 :width 8.0)
+    (Knot :x 270.0 :y 62.0 :width 12.0)
+    (Knot :x 285.0 :y 68.0 :width 16.0)
+    (Knot :x 300.0 :y 73.0 :width 17.0)
+    (Knot :x 315.0 :y 86.0 :width 16.0)
+    (Knot :x 320.0 :y 94.0 :width 13.0)
+    (Knot :x 330.0 :y 101.0 :width 12.0)
+    (Knot :x 340.0 :y 105.0 :width 12.0)
+    (Knot :x 350.0 :y 108.0 :width 12.0)
+    (Knot :x 360.0 :y 113.0 :width 13.0)
+    (Knot :x 370.0 :y 124.0 :width 17.0)
+    (Knot :x 380.0 :y 131.0 :width 17.0)
+    (Knot :x 400.0 :y 135.0 :width 13.0)
+    (Knot :x 410.0 :y 138.0 :width 14.0)
+    (Knot :x 425.0 :y 145.0 :width 12.0)
+    (Knot :x 450.0 :y 148.0 :width 12.0)
+    (Knot :x 475.0 :y 147.0 :width 13.0)
+    (Knot :x 500.0 :y 152.0 :width 13.0)
+    (Knot :x 525.0 :y 153.0 :width 14.0)
+    (Knot :x 550.0 :y 154.0 :width 15.0)
+    (Knot :x 565.0 :y 169.0 :width 15.0)
+    (Knot :x 575.0 :y 172.0 :width 15.0)
+    (Knot :x 600.0 :y 174.0 :width 14.0)
+    (Knot :x 625.0 :y 174.0 :width 15.0)
+    (Knot :x 650.0 :y 175.0 :width 15.0)
+    (Knot :x 675.0 :y 177.0 :width 17.0)
+    (Knot :x 685.0 :y 184.0 :width 17.0)
+    (Knot :x 700.0 :y 202.0 :width 16.0)
+    (Knot :x 715.0 :y 213.0 :width 14.0)
+    (Knot :x 740.0 :y 219.0 :width 14.0)]]
+    (get knots i)))
+
+(defstruct Point [(x f64) (y f64)])
+(defn edge-point [(i i64) (fraction f64)] (-> Point)
+  (let [k (knot (if (< i 0) 0 (if (> i 32) 32 i)))]
+    (Point :x (.x k) :y (- (.y k) (* (.width k) (- 1.0 fraction))))))
+
+(defn edge [(fraction f64) (backwards bool)] (-> i64)
+  (for [step 0 32]
+    (let [i (if backwards (- 32 step) step) direction (if backwards -1 1)
+          previous (edge-point (- i direction) fraction)
+          a (edge-point i fraction) b (edge-point (+ i direction) fraction)
+          following (edge-point (+ i (* 2 direction)) fraction)]
+      (curve-to (+ (.x a) (/ (- (.x b) (.x previous)) 6.0))
+                (+ (.y a) (/ (- (.y b) (.y previous)) 6.0))
+                (- (.x b) (/ (- (.x following) (.x a)) 6.0))
+                (- (.y b) (/ (- (.y following) (.y a)) 6.0))
+                (.x b) (.y b))))
+  0)
+
+;;; Each successive contour moves its upper edge toward the fixed lower edge.
+;;; Together they describe paper rising from the sky into a foreground fold.
+(defn ribbon-outline-at [(fraction f64)] (-> i64)
+  (let [start (edge-point 0 fraction) end (edge-point 32 1.0)]
+    (move-to (.x start) (.y start))
+    (edge fraction false)
+    (line-to (.x end) (.y end))
+    (edge 1.0 true)
+    (close-path)))
+
+(defn ribbon-outline [] (-> i64) (ribbon-outline-at 0.0))

@@ -9,6 +9,7 @@
 (import "paper-scenes.mountain-paths" :as fuji)
 (import "paper-scenes.pane-paths" :as panes)
 (import "paper-scenes.cloud-paths" :as clouds)
+(import "paper-scenes.foreground-paper" :as foreground)
 (import "paper-scenes.navy-paths" :as navy)
 (import "paper-scenes.bark-paths" :as bark)
 (import "paper-scenes.art-clipping" :as clipping)
@@ -205,10 +206,33 @@
 ;;; Reference-derived connected cloud stock, cached in design coordinates.
 (defstruct CloudArt [(paths (array (ptr i8) 8))])
 (defn cloud-art [] (-> (ptr CloudArt)) (p/alloc-static CloudArt))
+(defstruct ForegroundArt [(paths (array (ptr i8) 11))])
+(defn foreground-art [] (-> (ptr ForegroundArt)) (p/alloc-static ForegroundArt))
+(defn foreground-path [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (foreground-art) paths) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (if (>= which 4)
+          (do (begin-sheet)
+              (foreground/ribbon-outline-at (/ (cast f64 (- which 3)) 8.0))
+              (store! slot (CGPathCreateCopy (.path (scene/scene)))))
+          (if (= (% which 2) 0)
+          (do (begin-sheet)
+              (if (= which 0) (foreground/header-outline) (foreground/ribbon-outline))
+              (store! slot (CGPathCreateCopy (.path (scene/scene)))))
+          (let [outer (foreground-path (- which 1))
+                edge (CGPathCreateCopyByStrokingPath outer (cast (ptr CGAffine) 0) 1.5 1 1 10.0)]
+            (store! slot (CGPathCreateCopyBySubtractingPath outer edge true))
+            (CGPathRelease edge) 0))))
+    (load slot)))
+
 (defn cloud-path [(which i64)] (-> (ptr i8))
   (let [slot (index (field (cloud-art) paths) which)]
     (when (= (load slot) (cast (ptr i8) 0))
-      (if (= which 5)
+      (if (or (= which 3) (= which 7))
+          (let [face (if (= which 3) 0 1)]
+            (store! slot (CGPathCreateCopyByUnioningPath (foreground-path face)
+                           (foreground-path (+ face 2)) true)))
+          (if (= which 5)
           (let [banks (CGPathCreateCopyByUnioningPath (cloud-path 1) (cloud-path 2) true)]
             (store! slot (CGPathCreateCopyByUnioningPath banks (cloud-path 4) true))
             (CGPathRelease banks) 0)
@@ -218,24 +242,31 @@
                 (store! slot (CGPathCreateCopyByIntersectingPath (.path (scene/scene)) outer true)))
               (do
                 (begin-sheet) (clouds/stock-path which 1.0 1.0)
-                (store! slot (CGPathCreateCopy (.path (scene/scene))))))))
+                (store! slot (CGPathCreateCopy (.path (scene/scene)))))))))
     (load slot)))
 
 (defn clouds [] (-> i64)
-  (for [i 0 2]
-    (let [which (if (= i 0) 0 3)
-          source (cloud-path which)
-          path (CGPathCreateCopyByTransformingPath source
-                 (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
-      (begin-sheet)
-      (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) path)
-      (finish (if (= which 0) 18.8 22.4)
-              (if (= which 0) 0xcabb9d 0xcfba95)
-              (case which 0 0.17 3 0.47 0.43))
-      (CGPathRelease path)
-      (path-stock (cloud-path (+ i 6)) (if (= which 0) 19.4 23.0)
-                  (if (= which 0) 0xe5d4b3 0xe7d5b2)
-                  (if (= which 0) 0.17 0.47))))
+  (path-stock (cloud-path 0) 18.8 0xcabb9d 0.17)
+  (path-stock (cloud-path 6) 19.4 0xe5d4b3 0.17)
+  (path-stock (foreground-path 0) 18.0 0xcfba95 0.47)
+  (path-stock (foreground-path 1) 18.6 0xe1cead 0.47)
+  (ribbon-surface)
+  0)
+
+(defn ribbon-surface [] (-> i64)
+  (let [origin (CGPathGetPathBoundingBox (cloud-path 5))]
+    (for [level 0 8]
+      (let [source (foreground-path (if (= level 0) 2 (+ level 3)))
+            path (CGPathCreateCopyByTransformingPath source
+                   (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))
+            bounds (CGPathGetPathBoundingBox path)
+            t (/ (cast f64 level) 7.0)]
+        (begin-sheet) (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) path)
+        (finish-contour (+ 17.0 (* 6.0 (- (* 2.0 t) (* t t))))
+          (texture-offset (paper 0xe1cead 0.43)
+            (- (* (.x origin) (.sx (canvas))) (.x bounds))
+            (- (* (.y origin) (.sy (canvas))) (.y bounds))))
+        (CGPathRelease path))))
   0)
 
 (defstruct PaneArt [(paths (array (ptr i8) 16))])
@@ -299,11 +330,12 @@
 (defn navy-grain [(which i64)] (-> (ptr i8))
   (let [slot (index (field (navy-art) paths) which)]
     (when (= (load slot) (cast (ptr i8) 0))
-      (let [cloud (cloud-path 5) accent (branch-accent-path 0)]
+      (let [cloud (cloud-path 5) foreground (cloud-path 3) accent (branch-accent-path 0)]
         (begin-sheet) (navy/grain-path which 1.0 1.0)
-        (let [clear-sky (clipping/subtract-contours (.path (scene/scene)) cloud)]
-          (store! slot (clipping/subtract-contours clear-sky accent))
-          (CGPathRelease clear-sky) 0)))
+        (let [clear-sky (clipping/subtract-contours (.path (scene/scene)) cloud)
+              clear-paper (clipping/subtract-contours clear-sky foreground)]
+          (store! slot (clipping/subtract-contours clear-paper accent))
+          (CGPathRelease clear-paper) (CGPathRelease clear-sky) 0)))
     (load slot)))
 
 (defn panels [] (-> i64)

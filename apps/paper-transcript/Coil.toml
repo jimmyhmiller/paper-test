@@ -1,0 +1,23 @@
+[package]
+name = "paper-transcript"
+entry = "src/main.coil"
+source-roots = ["src", "tests"]
+
+[dependencies]
+paper = { path = "../../lib/paper" }
+layout = { path = "../../lib/layout" }
+
+[link]
+frameworks = ["AppKit", "QuartzCore", "CoreGraphics", "CoreText", "ImageIO", "CoreFoundation", "AVFoundation", "Metal"]
+libs = ["objc"]
+
+[test.suites.unit]
+roots = ["tests"]
+suffixes = ["_test.coil"]
+
+# Decodes and plays a real recording from ~/.jim/recordings and needs an audio
+# device, so it stays out of the everyday `coil test`.
+[test.suites.integration]
+roots = ["tests"]
+suffixes = ["_integration.coil"]
+default = false

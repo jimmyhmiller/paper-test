@@ -1,0 +1,183 @@
+(module transcript.details)
+(import "coil.primitive" :as primitive)
+(import "paper.flow" :use *)
+(import "paper.platform" :as host)
+(import "paper.ffi" :use [sqrt])
+(import "transcript.theme" :as t)
+
+;;; Small physical details shared by the editor, all in the existing height
+;;; field. The stock's exposed shoulder catches the same light as its face.
+(defn card [(r Rect) (radius f64) (z f64) (stock Material)] (-> i64)
+  (edged-panel r radius z 1.0 0.65 (tint stock 0xfff1d5 0.18) stock))
+
+;;; Hover lifts the stock; it does not bleach a dyed sheet into a pastel.
+(defn interactive-stock [(id i64) (stock Material)] (-> Material)
+  (cond (not (host/paper_enabled)) (tint stock 0xb5a68d 0.16)
+        (host/paper_pressed id) (tint stock 0x332a20 0.06)
+        (host/paper_hovered id) (tint stock 0xffedcf 0.045)
+        :else stock))
+
+;;; Section headings contain ASCII capitals. Tracking is explicit in points,
+;;; rather than depending on a monospace font's advance to suggest spacing.
+(defn tracked [(r Rect) (value (ptr i8)) (size f64) (spacing f64) (color u32)] (-> i64)
+  (let [buffer (primitive/alloc-static (array i8 2))
+        (mut i) 0
+        (mut x) (.x r)]
+    (set! (index buffer 1) 0)
+    (while (!= (load (index value (load i))) 0)
+      (set! (index buffer 0) (load (index value (load i))))
+      (let [glyph (index buffer 0)
+            advance (text-width glyph size (t/serif))]
+        (when (<= (+ (load x) advance) (+ (.x r) (.w r)))
+          (label (load x) (.y r) size color (t/serif) glyph))
+        (set! x (+ (load x) (+ advance spacing))))
+      (set! i (+ (load i) 1)))
+    0))
+
+;;; A thin vector stroke, used as pigment geometry on the control face.
+(defn stroke [(x f64)
+              (y f64)
+              (xx f64)
+              (yy f64)
+              (width f64)
+              (z f64)
+              (stock Material)] (-> i64)
+  (let [dx (- xx x)
+        dy (- yy y)
+        scale (/ (* width 0.5) (sqrt (+ (* dx dx) (* dy dy))))
+        nx (* (- 0.0 dy) scale)
+        ny (* dx scale)]
+    (begin-sheet)
+    (move-to (+ x nx) (+ y ny))
+    (line-to (+ xx nx) (+ yy ny))
+    (line-to (- xx nx) (- yy ny))
+    (line-to (- x nx) (- y ny))
+    (close-path)
+    (finish-sheet z stock)))
+
+(defn icon [(kind i64) (x f64) (y f64) (z f64) (color u32)] (-> i64)
+  (let [stock (smooth color)]
+    (case kind 1
+          (do
+            (stroke (+ x 3.0) (+ y 5.0) (+ x 17.0) (+ y 5.0) 1.5 z stock)
+            (stroke (+ x 7.0) (+ y 2.0) (+ x 13.0) (+ y 2.0) 1.5 z stock)
+            (stroke (+ x 5.0) (+ y 7.0) (+ x 5.0) (+ y 21.0) 1.5 z stock)
+            (stroke (+ x 15.0) (+ y 7.0) (+ x 15.0) (+ y 21.0) 1.5 z stock)
+            (stroke (+ x 5.0) (+ y 21.0) (+ x 15.0) (+ y 21.0) 1.5 z stock)
+            (stroke (+ x 8.5) (+ y 9.0) (+ x 8.5) (+ y 18.0) 1.0 z stock)
+            (stroke (+ x 11.5) (+ y 9.0) (+ x 11.5) (+ y 18.0) 1.0 z stock))
+            2
+          (do
+            (for [i 0 5]
+              (let [h (if (= i 2) 20.0 (if (or (= i 1) (= i 3)) 11.0 5.0))
+                    xx (+ x (+ 2.0 (* (cast f64 i) 4.0)))]
+                (stroke xx
+                        (+ y (- 12.0 (* h 0.5)))
+                        xx
+                        (+ y (+ 12.0 (* h 0.5)))
+                        1.4
+                        z
+                        stock)))
+            0)
+            3
+          (do
+            (stroke (+ x 2.0) (+ y 10.0) (+ x 2.0) (+ y 21.0) 1.4 z stock)
+            (stroke (+ x 2.0) (+ y 21.0) (+ x 18.0) (+ y 21.0) 1.4 z stock)
+            (stroke (+ x 18.0) (+ y 21.0) (+ x 18.0) (+ y 10.0) 1.4 z stock)
+            (stroke (+ x 10.0) (+ y 15.0) (+ x 10.0) (+ y 1.0) 1.4 z stock)
+            (stroke (+ x 5.0) (+ y 6.0) (+ x 10.0) (+ y 1.0) 1.4 z stock)
+            (stroke (+ x 15.0) (+ y 6.0) (+ x 10.0) (+ y 1.0) 1.4 z stock))
+            4
+          (do
+            (begin-sheet)
+            (move-to (+ x 16.0) (+ y 6.0))
+            (curve-to (+ x 3.0)
+                      (- y 2.0)
+                      (- x 4.0)
+                      (+ y 18.0)
+                      (+ x 9.0)
+                      (+ y 21.0))
+            (curve-to (+ x 14.0)
+                      (+ y 22.0)
+                      (+ x 19.0)
+                      (+ y 17.0)
+                      (+ x 18.0)
+                      (+ y 12.0))
+            (line-to (+ x 16.5) (+ y 12.0))
+            (curve-to (+ x 17.0)
+                      (+ y 17.0)
+                      (+ x 13.0)
+                      (+ y 20.0)
+                      (+ x 9.0)
+                      (+ y 19.5))
+            (curve-to (- x 1.0)
+                      (+ y 17.0)
+                      (+ x 4.0)
+                      (+ y 1.0)
+                      (+ x 15.0)
+                      (+ y 7.5))
+            (close-path)
+            (finish-sheet z stock)
+            (stroke (+ x 16.0) (+ y 2.0) (+ x 16.0) (+ y 8.0) 1.5 z stock)
+            (stroke (+ x 10.0) (+ y 8.0) (+ x 16.0) (+ y 8.0) 1.5 z stock))
+            5
+          (do
+            (begin-sheet)
+            (move-to (+ x 2.0) (+ y 1.0))
+            (line-to (+ x 20.0) (+ y 12.0))
+            (line-to (+ x 2.0) (+ y 23.0))
+            (close-path)
+            (finish-sheet (+ z 0.5) (t/paper-stock)))
+            6
+          (do
+            (panel (rect (+ x 3.0) (+ y 3.0) 5.0 18.0) 0.5 z stock)
+            (panel (rect (+ x 12.0) (+ y 3.0) 5.0 18.0) 0.5 z stock))
+            0))
+  0)
+
+(defn named-button [(id i64)
+                    (r Rect)
+                    (name (ptr i8))
+                    (kind i64)
+                    (stock Material)
+                    (parent f64)
+                    (pale bool)
+                    (accessible (ptr i8))] (-> i64)
+  (let [pressed (and (host/paper_enabled) (host/paper_pressed id))
+        z (+ parent (if pressed 1.3 (if (host/paper_hovered id) 4.8 3.4)))
+        face (interactive-stock id stock)
+        color (if pale 0xfff3df (if (host/paper_enabled) (t/ink) (t/ink-soft)))
+        base-size (if (> (.h r) 36.0) 18.0 14.0)
+        icon-space (if (and (> kind 0) (< kind 7)) 29.0 0.0)
+        available (maximum 1.0 (- (.w r) (+ 14.0 icon-space)))
+        natural-width (text-width name base-size (t/serif))
+        size
+          (if (> natural-width available)
+              (maximum 14.0 (* base-size (/ available natural-width)))
+              base-size)
+        tw (minimum available (text-width name size (t/serif)))
+        x (+ (.x r) (* 0.5 (- (.w r) (+ tw icon-space))))
+        (mut measure) (text-measure name size (t/serif))
+        metrics (measure-text (text-data measure) 1.0e15)]
+    (card r (if (= kind 7) (* (.h r) 0.5) 6.0) z face)
+    (when (and (> kind 0) (< kind 7))
+      (icon kind x (+ (.y r) (* 0.5 (- (.h r) 24.0))) (+ z 0.1) color))
+    (ink-height z)
+    (text-box (rect (+ x icon-space)
+                    (+ (.y r) (* 0.5 (- (.h r) (.height metrics))))
+                    tw
+                    (.height metrics))
+              size
+              color
+              (t/serif)
+              name)
+    (hit id r accessible)))
+
+(defn paper-button [(id i64)
+                    (r Rect)
+                    (name (ptr i8))
+                    (kind i64)
+                    (stock Material)
+                    (parent f64)
+                    (pale bool)] (-> i64)
+  (named-button id r name kind stock parent pale name))

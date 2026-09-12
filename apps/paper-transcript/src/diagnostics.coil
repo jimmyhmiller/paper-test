@@ -1,0 +1,570 @@
+(module transcript.diagnostics)
+(import "coil.primitive" :as primitive)
+(import "paper.ffi" :use [snprintf CACurrentMediaTime strlen])
+(import "paper.platform" :as host)
+(import "paper.geometry" :use [Rect])
+(import "paper.scene" :as scene)
+(import "paper.damage" :as damage)
+(import "paper.render" :as render)
+(import "paper.gpu" :as gpu)
+(import "paper.masks" :as masks)
+(import "paper.profile" :as profile)
+(import "transcript.model" :as model)
+(import "transcript.page" :as page)
+(import "transcript.sound" :as sound)
+(import "transcript.waveform" :as waveform)
+
+(extern printf :cc c [(ptr i8) ...] (-> i32))
+
+(extern fflush :cc c [(ptr i8)] (-> i32))
+
+(extern fopen :cc c [(ptr i8) (ptr i8)] (-> (ptr i8)))
+
+(extern fputs :cc c [(ptr i8) (ptr i8)] (-> i32))
+
+(extern fclose :cc c [(ptr i8)] (-> i32))
+
+(extern getenv :cc c [(ptr i8)] (-> (ptr i8)))
+
+;;; Runtime instrumentation, so a report about the editor feeling slow can be
+;;; answered with numbers rather than a guess.
+;;;
+;;; Timing is always collected — a dozen reads of the monotonic clock per frame
+;;; costs nothing next to a frame — and only the overlay is switched on and off.
+;;; The frame *period* is measured as well as the time spent building the scene,
+;;; because those are different things: the draw callback only submits geometry,
+;;; and everything after it is the renderer's.
+(const SAMPLES 120)
+
+(const PHASE-RAIL 0)
+
+(const PHASE-SHEET 1)
+
+(const PHASE-TRANSCRIPT 2)
+
+(const PHASE-WAVEFORM 3)
+
+(const PHASE-LEDGER 4)
+
+(const PHASE-OTHER 5)
+
+(const PHASE-RASTER 6)
+
+(const PHASE-ENCODE 7)
+
+(const PHASE-READBACK 8)
+
+(const PHASE-MASKS 9)
+
+(const PHASE-CUTS 10)
+
+(const PHASE-RELIEFS 11)
+
+(const PHASE-SORT 12)
+
+(const PHASE-MEASURE 13)
+
+(const PHASE-MASKPASS 14)
+
+(const PHASE-REMEMBER 15)
+
+(const PHASE-DRAWABLE 16)
+
+(const PHASE-GPU 17)
+
+(const PHASE-PREP 18)
+
+(const PHASE-MICRO 19)
+
+(const PHASE-VISIBILITY 20)
+
+(const PHASE-LOOKUP 21)
+
+(const PHASE-LOOKUP-CALLS 22)
+
+(const PHASE-LOOKUP-MISSES 23)
+
+(const PHASE-COUNT 24)
+
+(defstruct Diagnostics
+  [(checked bool)
+   (overlay bool)
+   (frames i64)
+   (cursor i64)
+   (last-start f64)
+   (frame-start f64)
+   (construction f64)
+   (phase (array f64 24))
+   (period-samples (array f64 120))
+   (construction-samples (array f64 120))
+   (phase-samples (array f64 2880))
+   (sheets i64)
+   (inks i64)
+   (hits i64)
+   (time-samples (array f64 120))
+   (display-samples (array i64 120))
+   (tick-samples (array i64 120))
+   (line (array i8 256))
+   (trace (array i8 8192))])
+
+(defn diagnostics [] (-> (ptr Diagnostics))
+  (primitive/alloc-static Diagnostics))
+
+(defn now [] (-> f64)
+  (CACurrentMediaTime))
+
+(defn ms-since [(start f64)] (-> f64)
+  (* 1000.0 (- (CACurrentMediaTime) start)))
+
+(defn overlay? [] (-> bool)
+  (let [d (diagnostics)]
+    (when (not (.checked d))
+      (set! (.checked d) true)
+      (set! (.overlay d)
+            (!= (cast i64 (getenv c"PAPER_TRANSCRIPT_DIAGNOSTICS")) 0)))
+    (.overlay d)))
+
+(defn toggle-overlay [] (-> bool)
+  (let [d (diagnostics)]
+    (overlay?)
+    (set! (.overlay d) (not (.overlay d)))
+    (.overlay d)))
+
+;;; ---- collection -----------------------------------------------------------
+(defn begin-frame [] (-> i64)
+  (let [d (diagnostics)
+        t (now)]
+    (when (> (.last-start d) 0.0)
+      (set! (index (field d period-samples) (.cursor d))
+            (* 1000.0 (- t (.last-start d)))))
+    (set! (.last-start d) t)
+    (set! (.frame-start d) t)
+    (for [i 0 PHASE-COUNT] (set! (index (field d phase) i) 0.0)))
+  0)
+
+(defn add-phase [(which i64) (start f64)] (-> i64)
+  (let [d (diagnostics)]
+    (set! (index (field d phase) which)
+          (+ (load (index (field d phase) which)) (ms-since start))))
+  0)
+
+(defn end-frame [] (-> i64)
+  (let [d (diagnostics)]
+    (set! (.construction d) (ms-since (.frame-start d)))
+    (set! (index (field d construction-samples) (.cursor d)) (.construction d))
+    ;; `text` and `wave` are inside `sheet`, so time outside rail, sheet and
+    ;; ledger is everything the named phases do not account for.
+    (set! (index (field d phase) PHASE-OTHER)
+          (- (.construction d)
+             (+ (+ (load (index (field d phase) PHASE-RAIL))
+                   (load (index (field d phase) PHASE-SHEET)))
+                (load (index (field d phase) PHASE-LEDGER)))))
+    ;; The renderer runs after this callback returns, so these are the costs
+    ;; of the previous frame's render — a frame behind, which does not matter
+    ;; for a mean over the window. Mask and cut counters restart every frame.
+    (let [cost (render/frame-cost)
+          counters (profile/counters)]
+      (set! (.enabled counters) true)
+      (set! (index (field d phase) PHASE-RASTER) (.raster cost))
+      (set! (index (field d phase) PHASE-ENCODE) (.encode cost))
+      (set! (index (field d phase) PHASE-READBACK) (.readback cost))
+      (set! (index (field d phase) PHASE-MASKS) (* 1000.0 (.masks counters)))
+      (set! (index (field d phase) PHASE-CUTS) (* 1000.0 (.cuts counters)))
+      (set! (index (field d phase) PHASE-RELIEFS) (.reliefs cost))
+      (set! (index (field d phase) PHASE-SORT) (.sort cost))
+      (set! (index (field d phase) PHASE-MEASURE) (.measure cost))
+      (set! (index (field d phase) PHASE-MASKPASS) (.masks cost))
+      (set! (index (field d phase) PHASE-REMEMBER) (.remember cost))
+      (set! (index (field d phase) PHASE-DRAWABLE)
+            (.drawable-wait (gpu/present-cost)))
+      (set! (index (field d phase) PHASE-GPU) (.gpu (gpu/present-cost)))
+      (set! (index (field d phase) PHASE-PREP) (.prepare (masks/mask-cost)))
+      (set! (index (field d phase) PHASE-MICRO) (.micro (masks/mask-cost)))
+      (set! (index (field d phase) PHASE-VISIBILITY)
+            (.visibility (masks/mask-cost)))
+      (let [lc (masks/lookup-cost)]
+        (set! (index (field d phase) PHASE-LOOKUP) (.time lc))
+        (set! (index (field d phase) PHASE-LOOKUP-CALLS) (cast f64 (.calls lc)))
+        (set! (index (field d phase) PHASE-LOOKUP-MISSES)
+              (cast f64 (.misses lc)))
+        (set! (.time lc) 0.0)
+        (set! (.calls lc) 0)
+        (set! (.misses lc) 0))
+      (set! (.masks counters) 0.0)
+      (set! (.cuts counters) 0.0)
+      (set! (.bevel counters) 0.0))
+    (for [p 0 PHASE-COUNT]
+      (set! (index (field d phase-samples) (+ (* p SAMPLES) (.cursor d)))
+            (load (index (field d phase) p))))
+    (set! (.sheets d) (len (.sheets (scene/scene))))
+    (set! (.inks d) (len (.inks (scene/scene))))
+    (set! (.hits d) (len (.hits (scene/scene))))
+    ;; Counters are sampled as the frame ends, so every slot between frames
+    ;; holds a completed frame and the slot at the cursor is the oldest.
+    (set! (index (field d time-samples) (.cursor d)) (now))
+    (set! (index (field d display-samples) (.cursor d))
+          (host/paper_display_frames))
+    (set! (index (field d tick-samples) (.cursor d)) (host/paper_tick_count))
+    (set! (.cursor d) (% (+ (.cursor d) 1) SAMPLES))
+    (set! (.frames d) (+ (.frames d) 1)))
+  0)
+
+(defn frame-count [] (-> i64)
+  (.frames (diagnostics)))
+
+(defn sample-count [(d (ptr Diagnostics))] (-> i64)
+  (if (> (.frames d) SAMPLES) SAMPLES (.frames d)))
+
+;;; A frame that follows a long idle is not a slow frame, it is the first frame
+;;; after nothing was happening. Periods longer than a quarter second are left
+;;; out of the average so an idle app does not report a fictional 4 fps.
+(defn mean-period [(d (ptr Diagnostics))] (-> f64)
+  (let [n (sample-count d)
+        (mut total) 0.0
+        (mut used) 0]
+    (for [i 0 n]
+      (let [v (load (index (field d period-samples) i))]
+        (when (and (> v 0.0) (< v 250.0))
+          (set! total (+ (load total) v))
+          (set! used (+ (load used) 1)))))
+    (if (> (load used) 0) (/ (load total) (cast f64 (load used))) 0.0)))
+
+(defn mean-construction [(d (ptr Diagnostics))] (-> f64)
+  (let [n (sample-count d)
+        (mut total) 0.0]
+    (for [i 0 n]
+      (set! total
+            (+ (load total) (load (index (field d construction-samples) i)))))
+    (if (> n 0) (/ (load total) (cast f64 n)) 0.0)))
+
+(defn worst-construction [(d (ptr Diagnostics))] (-> f64)
+  (let [n (sample-count d)
+        (mut worst) 0.0]
+    (for [i 0 n]
+      (let [v (load (index (field d construction-samples) i))]
+        (when (> v (load worst)) (set! worst v))))
+    (load worst)))
+
+(defn fps [(d (ptr Diagnostics))] (-> f64)
+  (let [period (mean-period d)]
+    (if (> period 0.0) (/ 1000.0 period) 0.0)))
+
+;;; ---- report ---------------------------------------------------------------
+(defn text [(d (ptr Diagnostics))] (-> (ptr i8))
+  (index (field d line) 0))
+
+;;; The newest and oldest sample slots in the rolling window.
+(defn newest-slot [(d (ptr Diagnostics))] (-> i64)
+  (% (+ (.cursor d) (- SAMPLES 1)) SAMPLES))
+
+(defn oldest-slot [(d (ptr Diagnostics))] (-> i64)
+  (if (>= (.frames d) SAMPLES) (.cursor d) 0))
+
+(defn window-seconds [(d (ptr Diagnostics))] (-> f64)
+  (- (load (index (field d time-samples) (newest-slot d)))
+     (load (index (field d time-samples) (oldest-slot d)))))
+
+;;; Events per second over the window, from a counter sampled once per frame.
+;;; A window shorter than two frames has no rate yet.
+(defn counter-rate [(d (ptr Diagnostics)) (samples (ptr (array i64 120)))] (-> f64)
+  (let [span (window-seconds d)]
+    (assert (> span 0.0))
+    (/ (cast f64
+             (- (load (index samples (newest-slot d)))
+                (load (index samples (oldest-slot d)))))
+       span)))
+
+;;; Who is setting the pace. At 60 Hz a smooth scroll needs a link callback, a
+;;; change and a draw on every frame; a draw rate below the callback rate means
+;;; frames were offered with nothing new to show, and a callback rate below the
+;;; display's means macOS slowed the link — which it does for covered windows.
+(defn line-display [(d (ptr Diagnostics))] (-> (ptr i8))
+  (if (or (< (sample-count d) 2) (<= (window-seconds d) 0.0))
+      (do (snprintf (text d) 256 c"display  measuring") 0)
+      (let [draws (/ (cast f64 (- (sample-count d) 1)) (window-seconds d))]
+        (if (.headless (host/host))
+            (snprintf (text d)
+                      256
+                      c"display  headless, no display link   ticks %.0f/s   draws %.0f/s"
+                      (counter-rate d (field d tick-samples))
+                      draws)
+            (snprintf (text d)
+                      256
+                      c"display  link %.0f Hz   callbacks %.0f/s   ticks %.0f/s   draws %.0f/s   window %s"
+                      (if (> (host/paper_display_period) 0.0)
+                          (/ 1.0 (host/paper_display_period))
+                          0.0)
+                      (counter-rate d (field d display-samples))
+                      (counter-rate d (field d tick-samples))
+                      draws
+                      (if (host/paper_window_visible) c"visible" c"covered")))
+        0))
+  (text d))
+
+(defn line-frames [(d (ptr Diagnostics))] (-> (ptr i8))
+  (snprintf (text d)
+            256
+            c"%.0f fps   frame %.1fms   build %.1fms  worst %.1fms"
+            (fps d)
+            (mean-period d)
+            (mean-construction d)
+            (worst-construction d))
+  (text d))
+
+;;; Mean and worst of one phase over the sample window. The last frame alone
+;;; hides exactly the frames worth looking at.
+(defn phase-mean [(d (ptr Diagnostics)) (p i64)] (-> f64)
+  (let [n (sample-count d)
+        (mut total) 0.0]
+    (for [i 0 n]
+      (set! total
+            (+ (load total)
+               (load (index (field d phase-samples) (+ (* p SAMPLES) i))))))
+    (if (> n 0) (/ (load total) (cast f64 n)) 0.0)))
+
+(defn phase-worst [(d (ptr Diagnostics)) (p i64)] (-> f64)
+  (let [n (sample-count d)
+        (mut worst) 0.0]
+    (for [i 0 n]
+      (let [v (load (index (field d phase-samples) (+ (* p SAMPLES) i)))]
+        (when (> v (load worst)) (set! worst v))))
+    (load worst)))
+
+(defn line-phases [(d (ptr Diagnostics))] (-> (ptr i8))
+  (snprintf (text d)
+            256
+            c"mean/worst  rail %.1f/%.0f  sheet %.1f/%.0f  text %.1f/%.0f  wave %.1f/%.0f  other %.1f/%.0f"
+            (phase-mean d PHASE-RAIL)
+            (phase-worst d PHASE-RAIL)
+            (phase-mean d PHASE-SHEET)
+            (phase-worst d PHASE-SHEET)
+            (phase-mean d PHASE-TRANSCRIPT)
+            (phase-worst d PHASE-TRANSCRIPT)
+            (phase-mean d PHASE-WAVEFORM)
+            (phase-worst d PHASE-WAVEFORM)
+            (phase-mean d PHASE-OTHER)
+            (phase-worst d PHASE-OTHER))
+  (text d))
+
+(defn line-renderer [(d (ptr Diagnostics))] (-> (ptr i8))
+  (snprintf (text d)
+            256
+            c"renderer  raster %.1f/%.0f  encode %.1f/%.0f  readback %.1f/%.0f  masks %.1f  cuts %.1f"
+            (phase-mean d PHASE-RASTER)
+            (phase-worst d PHASE-RASTER)
+            (phase-mean d PHASE-ENCODE)
+            (phase-worst d PHASE-ENCODE)
+            (phase-mean d PHASE-READBACK)
+            (phase-worst d PHASE-READBACK)
+            (phase-mean d PHASE-MASKS)
+            (phase-mean d PHASE-CUTS))
+  (text d))
+
+(defn line-raster [(d (ptr Diagnostics))] (-> (ptr i8))
+  (snprintf (text d)
+            256
+            c"raster parts  reliefs %.1f  sort %.1f  measure %.1f  masks %.1f  remember %.1f"
+            (phase-mean d PHASE-RELIEFS)
+            (phase-mean d PHASE-SORT)
+            (phase-mean d PHASE-MEASURE)
+            (phase-mean d PHASE-MASKPASS)
+            (phase-mean d PHASE-REMEMBER))
+  (text d))
+
+(defn line-gpu [(d (ptr Diagnostics))] (-> (ptr i8))
+  (snprintf (text d)
+            256
+            c"gpu  execute %.1f/%.0f  drawable-wait %.1f/%.0f  unfinished %lld   mask pass: prepare %.1f micro %.1f visibility %.1f encode %.1f"
+            (phase-mean d PHASE-GPU)
+            (phase-worst d PHASE-GPU)
+            (phase-mean d PHASE-DRAWABLE)
+            (phase-worst d PHASE-DRAWABLE)
+            (.incomplete (gpu/present-cost))
+            (phase-mean d PHASE-PREP)
+            (phase-mean d PHASE-MICRO)
+            (phase-mean d PHASE-VISIBILITY)
+            (- (phase-mean d PHASE-MASKPASS)
+               (+ (+ (phase-mean d PHASE-PREP) (phase-mean d PHASE-MICRO))
+                  (phase-mean d PHASE-VISIBILITY))))
+  (text d))
+
+(defn line-lookup [(d (ptr Diagnostics))] (-> (ptr i8))
+  (snprintf (text d)
+            256
+            c"mask lookup %.1fms/frame  calls %.0f  misses %.0f  cache entries %lld"
+            (phase-mean d PHASE-LOOKUP)
+            (phase-mean d PHASE-LOOKUP-CALLS)
+            (phase-mean d PHASE-LOOKUP-MISSES)
+            (.entries (masks/lookup-cost)))
+  (text d))
+
+(defn line-scene [(d (ptr Diagnostics))] (-> (ptr i8))
+  (let [r (damage/last-damage)]
+    (snprintf (text d)
+              256
+              c"sheets %lld   ink %lld   hits %lld   damage %.0fx%.0f"
+              (.sheets d)
+              (.inks d)
+              (.hits d)
+              (.w r)
+              (.h r)))
+  (text d))
+
+(defn line-take [(d (ptr Diagnostics)) (s (ptr model/Session))] (-> (ptr i8))
+  (if (< (.take s) 0)
+      (do
+        (snprintf (text d) 256 c"take  none of %lld" (.take-count s))
+        (text d))
+      (do
+        (snprintf (text d)
+                  256
+                  c"take  %lld/%lld  %.60s"
+                  (.take s)
+                  (.take-count s)
+                  (model/take-name (model/take-at (.take s))))
+        (text d))))
+
+(defn line-counts [(d (ptr Diagnostics)) (s (ptr model/Session))] (-> (ptr i8))
+  (snprintf (text d)
+            256
+            c"      %lld words  %lld clips  %lld regions  %lld buckets  %.1fs"
+            (.word-count s)
+            (.clip-count s)
+            (.region-count s)
+            (.peak-count s)
+            (/ (.dur-ms s) 1000.0))
+  (text d))
+
+(defn line-audio [(d (ptr Diagnostics)) (s (ptr model/Session))] (-> (ptr i8))
+  (let [snd (sound/sound)]
+    (if (not (.ready snd))
+        (do (snprintf (text d) 256 c"audio not decoded yet") (text d))
+        (do
+          (snprintf (text d)
+                    256
+                    c"audio %lldch %.0fHz  src %lldk  edit %lldk  %s %.1fs"
+                    (.channels snd)
+                    (.rate snd)
+                    (/ (.source-frames snd) 1000)
+                    (/ (.edit-frames snd) 1000)
+                    (if (.playing s) c"playing" c"stopped")
+                    (/ (.cur-ms s) 1000.0))
+          (text d)))))
+
+(defn line-wave [(d (ptr Diagnostics)) (s (ptr model/Session))] (-> (ptr i8))
+  (let [w (waveform/state)]
+    (snprintf (text d)
+              256
+              c"wave  %.1fpt/s  %.0fms  %lld cols  %lldch %.0fHz  %s  %.1fx"
+              (.wzoom s)
+              (.wscroll s)
+              (if (.ready w) (.columns w) 0)
+              (if (.ready w) (.channels w) 0)
+              (if (.ready w) (.rate w) 0.0)
+              (if (.ready w)
+                  (if (.sample-mode w) c"samples" c"extrema")
+                  c"loading")
+              (.wave-gain s)))
+  (text d))
+
+(defn line-text [(d (ptr Diagnostics)) (s (ptr model/Session))] (-> (ptr i8))
+  (snprintf (text d)
+            256
+            c"text  scroll %.0f of %.0f   first visible %lld   sel %lld..%lld"
+            (.scroll s)
+            (.content-h s)
+            (page/first-visible s (.scroll s))
+            (model/selection-low s)
+            (model/selection-high s))
+  (text d))
+
+;;; ---- trace ----------------------------------------------------------------
+(defn trace-path [] (-> (ptr i8))
+  c"/tmp/paper-transcript-trace.txt")
+
+(defn append-line [(d (ptr Diagnostics)) (used (ptr i64)) (value (ptr i8))] (-> i64)
+  (let [buffer (index (field d trace) 0)
+        room (- 8192 (load used))]
+    (when (> room 2)
+      (set! (index used 0)
+            (+ (load used)
+               (cast i64
+                     (snprintf (index buffer (load used))
+                               (cast u64 room)
+                               c"%s\n"
+                               value)))))
+    0))
+
+;;; A full snapshot of what the editor is doing, written where it can be copied
+;;; out of. Everything the overlay shows plus the parts that do not fit on it.
+(defn write-trace [(s (ptr model/Session))
+                   (transcript-view Rect)
+                   (wave-view Rect)
+                   (undo-depth i64)
+                   (redo-depth i64)
+                   (job-kind i64)
+                   (job-progress i64)] (-> (ptr i8))
+  (let [d (diagnostics)
+        (mut used) 0
+        snd (sound/sound)]
+    (set! (index (field d trace) 0) (cast i8 0))
+    (append-line d (mut used) c"paper transcript — trace")
+    (append-line d (mut used) (line-frames d))
+    (append-line d (mut used) (line-display d))
+    (append-line d (mut used) (line-phases d))
+    (append-line d (mut used) (line-renderer d))
+    (append-line d (mut used) (line-raster d))
+    (append-line d (mut used) (line-gpu d))
+    (append-line d (mut used) (line-lookup d))
+    (append-line d (mut used) (line-scene d))
+    (append-line d (mut used) (line-take d s))
+    (append-line d (mut used) (line-counts d s))
+    (append-line d (mut used) (line-audio d s))
+    (append-line d (mut used) (line-wave d s))
+    (append-line d (mut used) (line-text d s))
+    (snprintf (text d)
+              256
+              c"view  %.0fx%.0f logical   transcript %.0fx%.0f   wave %.0fx%.0f"
+              (host/logical-width)
+              (host/logical-height)
+              (.w transcript-view)
+              (.h transcript-view)
+              (.w wave-view)
+              (.h wave-view))
+    (append-line d (mut used) (text d))
+    (snprintf (text d)
+              256
+              c"edit  %lld kept of %lld words   %lld regions   %.1fs of %.1fs   crossfade %s"
+              (model/kept-word-count s)
+              (.word-count s)
+              (.region-count s)
+              (/ (model/edited-ms s) 1000.0)
+              (/ (.dur-ms s) 1000.0)
+              (if (.crossfade s) c"on" c"off"))
+    (append-line d (mut used) (text d))
+    (snprintf (text d)
+              256
+              c"undo  %lld steps   redo %lld steps"
+              undo-depth
+              redo-depth)
+    (append-line d (mut used) (text d))
+    (snprintf (text d)
+              256
+              c"job   %s   progress %lld%%"
+              (case job-kind 1
+                    c"transcribing" 2
+                    c"reading waveform" 3
+                    c"exporting" c"none")
+              job-progress)
+    (append-line d (mut used) (text d))
+    (snprintf (text d) 256 c"status %s" (model/status s))
+    (append-line d (mut used) (text d))
+    (let [buffer (index (field d trace) 0)
+          f (fopen (trace-path) c"w")]
+      (printf c"%s" buffer)
+      (fflush (cast (ptr i8) 0))
+      (when (!= (cast i64 f) 0)
+        (fputs buffer f)
+        (fclose f)
+        0))
+    (trace-path)))

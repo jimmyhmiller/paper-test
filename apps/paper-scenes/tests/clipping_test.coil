@@ -94,15 +94,17 @@
 
 (deftest detailed-navy-contour-clipping-matches-whole-path-subtraction
   (scene/init)
-  (let [cloud (ukiyo/cloud-path 5) accent (ukiyo/branch-accent-path 0)]
+  (let [cloud (ukiyo/cloud-path 5) foreground (ukiyo/cloud-path 3) accent (ukiyo/branch-accent-path 0)]
     (for [tone 0 2]
       (begin-sheet) (navy/grain-path tone 1.0 1.0)
       (let [source (CGPathCreateCopy (.path (scene/scene)))
             clear-sky (CGPathCreateCopyBySubtractingPath source cloud true)
-            reference (CGPathCreateCopyBySubtractingPath clear-sky accent true)
+            clear-paper (CGPathCreateCopyBySubtractingPath clear-sky foreground true)
+            reference (CGPathCreateCopyBySubtractingPath clear-paper accent true)
             actual (ukiyo/navy-grain tone)]
         (for [scale 1 4] (assert-same-fill actual reference scale))
-        (CGPathRelease reference) (CGPathRelease clear-sky) (CGPathRelease source)))))
+        (CGPathRelease reference) (CGPathRelease clear-paper)
+        (CGPathRelease clear-sky) (CGPathRelease source)))))
 
 (deftest ridge-grain-bounded-intersection-matches-original-operand-order
   (scene/init)

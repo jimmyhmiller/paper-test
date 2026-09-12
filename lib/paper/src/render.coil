@@ -5,6 +5,7 @@
 (import "coil.arraylist" :as al)
 (import "coil.alloc" :as alloc)
 (import "paper.damage" :as damage)
+(import "paper.profile" :as profile)
 (import "paper.vector" :as v)
 (import "paper.workers" :as workers)
 (import "paper.gpu" :as gpu)
@@ -216,44 +217,65 @@
 (defn rasterize [] (-> i64)
   (rasterize-frame true))
 
+(defstruct FrameCost
+  [(raster f64)
+   (encode f64)
+   (readback f64)
+   (reliefs f64)
+   (sort f64)
+   (measure f64)
+   (masks f64)
+   (remember f64)])
+
+(defn frame-cost [] (-> (ptr FrameCost))
+  (primitive/alloc-static FrameCost))
+
 (defn rasterize-frame [(readback bool)] (-> i64)
-  (resolve-reliefs (.available (gpu/gpu)))
-  (sort-commands)
-  (let [pending (.bounds (damage/cache))
-        bounds (damage/measure)]
-    (set! (.bounds (damage/cache)) bounds)
-    (when (> (.w bounds) 0.0)
-      (if (.available (gpu/gpu))
-          (do
-            (let [c (damage/cache)]
-              (for [i 0 (.region-count c)]
-                (let [r (index (field c regions) i)
-                      pixels (masks/pixel-bounds (load r))
-                      scale (.scale (scene))]
-                  (store! r
-                          (cgrect (/ (.x pixels) scale)
-                                  (/ (.y pixels) scale)
-                                  (/ (.w pixels) scale)
-                                  (/ (.h pixels) scale)))))
-              (masks/render-regions (index (field c regions) 0)
-                                    (.region-count c)
-                                    bounds))
-            0)
-          (do
-            (workers/apply (cast u64
-                                 (al/al-len [RasterBand]
-                                            (.items (raster-bands))))
-                           (nil)
-                           (fnptr-of raster-worker))
-            (build-height-tiles)
-            (workers/apply (cast u64 (.height (height-tiles)))
-                           (nil)
-                           (fnptr-of prepare-worker))
-            0)))
-    (when (and readback (.available (gpu/gpu))) (masks/read-inputs))
-    (damage/include pending)
-    (damage/remember)
-    (set! (.geometry-dirty (scene)) false))
+  (let [cost (frame-cost)]
+    (profile/measure-ms (.reliefs cost)
+                        (resolve-reliefs (.available (gpu/gpu))))
+    (profile/measure-ms (.sort cost) (sort-commands))
+    (let [pending (.bounds (damage/cache))
+          bounds (profile/measure-ms (.measure cost) (damage/measure))]
+      (set! (.bounds (damage/cache)) bounds)
+      (profile/measure-ms (.masks cost)
+                          (when (> (.w bounds) 0.0)
+                            (if (.available (gpu/gpu))
+                                (do
+                                  (let [c (damage/cache)]
+                                    (for [i 0 (.region-count c)]
+                                      (let [r (index (field c regions) i)
+                                            pixels (masks/pixel-bounds (load r))
+                                            scale (.scale (scene))]
+                                        (store! r
+                                                (cgrect (/ (.x pixels) scale)
+                                                        (/ (.y pixels) scale)
+                                                        (/ (.w pixels) scale)
+                                                        (/ (.h pixels) scale)))))
+                                    (masks/render-regions (index (field c
+                                                                        regions)
+                                                                 0)
+                                                          (.region-count c)
+                                                          bounds))
+                                  0)
+                                (do
+                                  (workers/apply (cast u64
+                                                       (al/al-len [RasterBand]
+                                                                  (.items (raster-bands))))
+                                                 (nil)
+                                                 (fnptr-of raster-worker))
+                                  (build-height-tiles)
+                                  (workers/apply (cast u64
+                                                       (.height (height-tiles)))
+                                                 (nil)
+                                                 (fnptr-of prepare-worker))
+                                  0))))
+      (when (and readback (.available (gpu/gpu))) (masks/read-inputs))
+      (profile/measure-ms (.remember cost)
+                          (damage/include pending)
+                          (set! (damage/last-damage) (.bounds (damage/cache)))
+                          (damage/remember)
+                          (set! (.geometry-dirty (scene)) false))))
   0)
 
 (defn rasterize-region [(region CGRect)] (-> i64)
@@ -330,9 +352,10 @@
                                             64.0)
                                          1.0)
             (CGContextSetLineWidth h 1.2)
-            (CGContextAddPath h (.path sheet))
+            (CGContextAddPath h (edge-outline sheet))
             (CGContextStrokePath h)
-            (CGContextRestoreGState h) 0)
+            (CGContextRestoreGState h)
+            0)
           (CGContextSetRGBFillColor m
                                     (.rough sheet)
                                     (.fiber sheet)
@@ -695,16 +718,26 @@
   (render-frame true))
 
 (defn render-frame [(readback bool)] (-> i64)
-  (when (.geometry-dirty (scene)) (rasterize-frame readback))
-  (when (or (damage/light-changed) (> (.w (.bounds (damage/cache))) 0.0))
-    (if (.available (gpu/gpu))
-        (gpu/render (.bounds (damage/cache)) (damage/light-changed) false)
-        (workers/apply (cast u64 (.height (height-tiles)))
-                       (nil)
-                       (fnptr-of shade-worker)))
-    (damage/remember-light)
-    (set! (.bounds (damage/cache)) (cgrect 0.0 0.0 0.0 0.0)))
-  (when (and readback (.available (gpu/gpu))) (gpu/read-output))
+  (let [cost (frame-cost)]
+    (profile/measure-ms (.raster cost)
+                        (when (.geometry-dirty (scene))
+                          (rasterize-frame readback)))
+    (profile/measure-ms (.encode cost)
+                        (when (or (damage/light-changed)
+                                  (> (.w (.bounds (damage/cache))) 0.0))
+                          (if (.available (gpu/gpu))
+                              (gpu/render (.bounds (damage/cache))
+                                          (damage/light-changed)
+                                          false)
+                              (workers/apply (cast u64 (.height (height-tiles)))
+                                             (nil)
+                                             (fnptr-of shade-worker)))
+                          (damage/remember-light)
+                          (set! (.bounds (damage/cache))
+                                (cgrect 0.0 0.0 0.0 0.0))))
+    (profile/measure-ms (.readback cost)
+                        (when (and readback (.available (gpu/gpu)))
+                          (gpu/read-output))))
   (set! (.dirty (scene)) false)
   0)
 

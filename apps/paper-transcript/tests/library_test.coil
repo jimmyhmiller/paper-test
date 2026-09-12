@@ -1,0 +1,123 @@
+(module transcript.tests.library)
+(import "coil.primitive" :as primitive)
+(import "coil.alloc" :as alloc)
+(import "coil.fs" :as fs)
+(import "coil.slice" :use *)
+(import "coil.result" :use *)
+(import "coil.assert" :use *)
+(import "paper.ffi" :use [strlen strcmp])
+(import "transcript.model" :as model)
+(import "transcript.library" :as lib)
+
+(defn same? [(a (ptr i8)) (b (ptr i8))] (-> bool)
+  (= (strcmp a b) 0))
+
+(deftest fillers_are_matched_past_punctuation_and_case
+         (assert (lib/filler-word? c"um"))
+         (assert (lib/filler-word? c"Um,"))
+         (assert (lib/filler-word? c"UH."))
+         (assert (lib/filler-word? c"hmm"))
+         (assert (not (lib/filler-word? c"umbrella")))
+         (assert (not (lib/filler-word? c"the"))))
+
+(deftest sentence_ends_are_recognised
+         (assert (lib/sentence-end? c"done."))
+         (assert (lib/sentence-end? c"really?"))
+         (assert (lib/sentence-end? c"stop!"))
+         (assert (not (lib/sentence-end? c"and"))))
+
+(deftest audio_files_are_recognised_by_extension
+         (assert (lib/audio-name? c"take.wav"))
+         (assert (lib/audio-name? c"take.M4A"))
+         (assert (lib/audio-name? c"a.b.mp3"))
+         (assert (not (lib/audio-name? c"notes.txt")))
+         (assert (not (lib/audio-name? c"README"))))
+
+(deftest display_names_drop_the_extension_and_capture_prefix
+         (assert (same? (lib/display-name c"rec_2026-06-18.wav") c"2026-06-18"))
+         (assert (same? (lib/display-name c"note_morning.m4a") c"morning"))
+         (assert (same? (lib/display-name c"episode41.wav") c"episode41")))
+
+(defn write-temp [(path (ptr i8)) (body (slice u8))] (-> i64)
+  (let [a (alloc/malloc-allocator)]
+    (match (fs/write-file a
+                          (slice-new [u8]
+                                     (cast (ptr u8) path)
+                                     (cast i64 (strlen path)))
+                          body)
+      (Ok [n] n)
+      (Err [e] -1))))
+
+;;; WhisperX rewrites the cache as one word per segment. This is the shape most
+;;; of the cached transcripts on disk are in.
+(deftest an_aligned_transcript_reads_one_word_per_segment
+         (let [s (model/session)
+               path c"/tmp/paper-transcript-test-aligned.json"]
+           (model/reset-session s)
+           (write-temp path
+                       "{\"transcription\":[{\"offsets\":{\"from\":0,\"to\":300},\"text\":\" So,\"},{\"offsets\":{\"from\":800,\"to\":900},\"text\":\" um,\"},{\"offsets\":{\"from\":1500,\"to\":1900},\"text\":\" hello.\"}]}")
+           (assert (lib/read-json s path 0))
+           (assert-eq (.word-count s) 3)
+           (assert (same? (model/word-text (model/word 0)) c"So,"))
+           (assert (same? (model/word-text (model/word 1)) c"um,"))
+           (assert (.filler (model/word 1)))
+           (assert (not (.filler (model/word 0))))
+           (assert (primitive/fcmp-eq (.t0 (model/word 2)) 1500.0))
+           (assert (primitive/fcmp-eq (.t1 (model/word 2)) 1900.0))))
+
+;;; whisper.cpp's own `-ojf` output is per token: a leading space opens a new
+;;; word and the tokens after it extend that word, and `[_TT_…]` specials are
+;;; not words at all.
+(deftest a_token_transcript_joins_sub_word_tokens
+         (let [s (model/session)
+               path c"/tmp/paper-transcript-test-tokens.json"]
+           (model/reset-session s)
+           (write-temp path
+                       "{\"transcription\":[{\"tokens\":[{\"text\":\"[_BEG_]\",\"offsets\":{\"from\":0,\"to\":0}},{\"text\":\" edit\",\"offsets\":{\"from\":100,\"to\":300}},{\"text\":\"ing\",\"offsets\":{\"from\":300,\"to\":420}},{\"text\":\" is\",\"offsets\":{\"from\":500,\"to\":600}}]}]}")
+           (assert (lib/read-json s path 0))
+           (assert-eq (.word-count s) 2)
+           (assert (same? (model/word-text (model/word 0)) c"editing"))
+           (assert (primitive/fcmp-eq (.t0 (model/word 0)) 100.0))
+           (assert (primitive/fcmp-eq (.t1 (model/word 0)) 420.0))
+           (assert (same? (model/word-text (model/word 1)) c"is"))))
+
+(deftest a_missing_transcript_is_reported_not_invented
+         (let [s (model/session)]
+           (model/reset-session s)
+           (assert (not (lib/read-json s
+                                       c"/tmp/paper-transcript-test-absent.json"
+                                       0)))
+           (assert-eq (.word-count s) 0)))
+
+(deftest paragraphs_break_on_long_pauses
+         (let [s (model/session)
+               path c"/tmp/paper-transcript-test-paras.json"]
+           (model/reset-session s)
+           (write-temp path
+                       "{\"transcription\":[{\"offsets\":{\"from\":0,\"to\":300},\"text\":\" One\"},{\"offsets\":{\"from\":400,\"to\":600},\"text\":\" two\"},{\"offsets\":{\"from\":4000,\"to\":4200},\"text\":\" three\"}]}")
+           (assert (lib/read-json s path 0))
+           (lib/mark-paragraphs s)
+           (assert (not (.para (model/word 0))))
+           (assert (.para (model/word 1)))))
+
+(deftest an_edit_list_restores_cuts_gaps_and_regions
+         (let [s (model/session)
+               transcript c"/tmp/paper-transcript-test-edl.json"
+               edits c"/tmp/paper-transcript-test-edl.edits.json"]
+           (model/reset-session s)
+           (write-temp transcript
+                       "{\"transcription\":[{\"offsets\":{\"from\":0,\"to\":200},\"text\":\" a\"},{\"offsets\":{\"from\":1000,\"to\":1200},\"text\":\" b\"},{\"offsets\":{\"from\":2000,\"to\":2200},\"text\":\" c\"}]}")
+           (write-temp edits
+                       "{\"deleted\":[2],\"gaps\":[0],\"gap_keep\":[],\"regions\":[{\"from\":50.0,\"to\":80.0}]}")
+           (assert (lib/read-json s transcript 0))
+           (assert (lib/read-json s edits 2))
+           (assert (.deleted (model/word 2)))
+           (assert (primitive/fcmp-eq (.gap-keep (model/word 0)) 0.0))
+           (assert-eq (.region-count s) 1)
+           (model/rebuild-clips s)
+           ;; The region splits the first word, the cut gap closes the silence after
+           ;; it, and the deleted third word drops off the end.
+           (assert-eq (.clip-count s) 3)
+           (assert (primitive/fcmp-eq (.to (index (model/clips) 0)) 50.0))
+           (assert (primitive/fcmp-eq (.from (index (model/clips) 1)) 80.0))
+           (assert (primitive/fcmp-eq (.to (index (model/clips) 2)) 1200.0))))

@@ -1,0 +1,506 @@
+(module transcript.model)
+(import "coil.primitive" :as primitive)
+(import "paper.ffi" :use [snprintf fabs floor])
+
+;;; The editor is non-destructive. A take's source audio is never rewritten;
+;;; every edit is a change to this model, and the model resolves to an EDL — a
+;;; list of kept source spans — that both playback and export consume.
+;;;
+;;; Three edit surfaces feed one EDL:
+;;;   words     a word marked deleted drops out of the kept runs
+;;;   gaps      the silence between word i and i+1, kept whole, trimmed, or cut
+;;;   regions   an arbitrary time span cut out, selected on the waveform
+;;;
+;;; Capacities are fixed and checked. A take that exceeds one is reported, not
+;;; silently truncated.
+(const MAX-WORDS 40000)
+
+(const MAX-PEAKS 720000)
+
+(const MAX-CLIPS 16384)
+
+(const MAX-REGIONS 512)
+
+(const MAX-TAKES 512)
+
+(const TEXT-ARENA 1048576)
+
+(const NAME-ARENA 65536)
+
+(const SEL-NONE 0)
+
+(const SEL-WORDS 1)
+
+(const SEL-REGION 2)
+
+;;; -1 in gap-keep means the silence after this word is untouched: the whole
+;;; original gap survives. Any other value is the number of milliseconds kept,
+;;; with 0 meaning the gap is cut out completely.
+(const GAP-UNTOUCHED -1.0)
+
+(defstruct Word
+  [(t0 f64)
+   (t1 f64)
+   (off i64)
+   (len i64)
+   (width f64)
+   (x f64)
+   (y f64)
+   (gap-x f64)
+   (gap-w f64)
+   (gap-y f64)
+   (gap-keep f64)
+   (speaker i64)
+   (deleted bool)
+   (filler bool)
+   (para bool)])
+
+(defstruct Clip [(from f64) (to f64)])
+
+(defstruct Take
+  [(off i64)
+   (len i64)
+   (dur-ms f64)
+   (transcribed bool)])
+
+(defstruct Session
+  [(take i64)
+   (take-count i64)
+   (word-count i64)
+   (arena-used i64)
+   (name-used i64)
+   (peak-count i64)
+   (region-count i64)
+   (clip-count i64)
+   (speaker-count i64)
+   (dur-ms f64)
+   (cur-ms f64)
+   (speed f64)
+   (wave-gain f64)
+   (playing bool)
+   (pending-play f64)
+   (crossfade bool)
+   (sel-kind i64)
+   (sa i64)
+   (sb i64)
+   (ra f64)
+   (rb f64)
+   (scroll f64)
+   (content-h f64)
+   (wzoom f64)
+   (wscroll f64)
+   (drag-target i64)
+   (dragging bool)
+   (gap-drag i64)
+   (press-x f64)
+   (press-ms f64)
+   (press-keep f64)
+   (transcribing bool)
+   (progress i64)
+   (dirty bool)
+   (show-help bool)
+   (status (array i8 160))
+   (status-notice bool)])
+
+(defn session [] (-> (ptr Session))
+  (primitive/alloc-static Session))
+
+(defn words [] (-> (ptr (array Word 40000)))
+  (primitive/alloc-static (array Word 40000)))
+
+(defn word [(i i64)] (-> (ptr Word))
+  (index (words) i))
+
+(defn text-arena [] (-> (ptr (array i8 1048576)))
+  (primitive/alloc-static (array i8 1048576)))
+
+(defn name-arena [] (-> (ptr (array i8 65536)))
+  (primitive/alloc-static (array i8 65536)))
+
+(defn takes [] (-> (ptr (array Take 512)))
+  (primitive/alloc-static (array Take 512)))
+
+(defn take-at [(i i64)] (-> (ptr Take))
+  (index (takes) i))
+
+(defn peaks [] (-> (ptr (array f32 720000)))
+  (primitive/alloc-static (array f32 720000)))
+
+;;; Prefix sum of squared peaks, so the energy of any bucket range is one
+;;; subtraction. The waveform envelope stays exact at every zoom without
+;;; rescanning the file, and building it is O(visible pixels) rather than
+;;; O(buckets).
+(defn sumsq [] (-> (ptr (array f64 720000)))
+  (primitive/alloc-static (array f64 720000)))
+
+(defn regions [] (-> (ptr (array Clip 512)))
+  (primitive/alloc-static (array Clip 512)))
+
+(defn clips [] (-> (ptr (array Clip 16384)))
+  (primitive/alloc-static (array Clip 16384)))
+
+;;; Each bucket of the peak envelope covers this many milliseconds of source.
+(defn bucket-ms [] (-> f64)
+  10.0)
+
+(defn word-text [(w (ptr Word))] (-> (ptr i8))
+  (index (text-arena) (.off w)))
+
+(defn take-name [(t (ptr Take))] (-> (ptr i8))
+  (index (name-arena) (.off t)))
+
+(defn status [(s (ptr Session))] (-> (ptr i8))
+  (index (field s status) 0))
+
+(defn set-status [(s (ptr Session)) (text (ptr i8))] (-> i64)
+  (snprintf (status s) 160 c"%s" text)
+  (set! (.status-notice s) true)
+  0)
+
+;;; The full silence between word i and the word after it. The last word has no
+;;; following gap.
+(defn gap-full [(s (ptr Session)) (i i64)] (-> f64)
+  (if (or (< i 0) (>= i (- (.word-count s) 1)))
+      0.0
+      (let [a (.t1 (word i))
+            b (.t0 (word (+ i 1)))]
+        (if (> b a) (- b a) 0.0))))
+
+;;; How much of gap i survives the edit: an explicit trim wins, otherwise the
+;;; whole gap is kept.
+(defn gap-kept [(s (ptr Session)) (i i64)] (-> f64)
+  (let [full (gap-full s i)
+        keep (.gap-keep (word i))]
+    (if (< keep 0.0)
+        full
+        (if (> keep full) full (if (< keep 0.0) 0.0 keep)))))
+
+(defn selection-low [(s (ptr Session))] (-> i64)
+  (if (< (.sa s) 0) -1 (if (< (.sa s) (.sb s)) (.sa s) (.sb s))))
+
+(defn selection-high [(s (ptr Session))] (-> i64)
+  (if (< (.sa s) 0) -1 (if (> (.sa s) (.sb s)) (.sa s) (.sb s))))
+
+(defn region-low [(s (ptr Session))] (-> f64)
+  (if (< (.ra s) (.rb s)) (.ra s) (.rb s)))
+
+(defn region-high [(s (ptr Session))] (-> f64)
+  (if (> (.ra s) (.rb s)) (.ra s) (.rb s)))
+
+(defn kept-word-count [(s (ptr Session))] (-> i64)
+  (let [(mut n) 0]
+    (for [i 0 (.word-count s)]
+      (when (not (.deleted (word i))) (set! n (+ (load n) 1))))
+    (load n)))
+
+;;; Kept word runs, before regions are subtracted. A run breaks at a deleted
+;;; word and at any gap that is not kept whole, because a trimmed gap removes
+;;; audio in the middle of otherwise-contiguous speech.
+(defn word-runs [(s (ptr Session)) (out (ptr (array Clip 16384)))] (-> i64)
+  (let [(mut count) 0
+        (mut open) false
+        (mut from) 0.0
+        (mut to) 0.0]
+    (for [i 0 (.word-count s)]
+      (let [w (word i)]
+        (if (.deleted w)
+            (do
+              (when (and (load open) (< (load count) MAX-CLIPS))
+                (set! (.from (index out (load count))) (load from))
+                (set! (.to (index out (load count))) (load to))
+                (set! count (+ (load count) 1)))
+              (set! open false)
+              0)
+            (do
+              (when (not (load open))
+                (set! from (.t0 w))
+                (set! open true))
+              (set! to (.t1 w))
+              0))))
+    (when (and (load open) (< (load count) MAX-CLIPS))
+      (set! (.from (index out (load count))) (load from))
+      (set! (.to (index out (load count))) (load to))
+      (set! count (+ (load count) 1)))
+    (load count)))
+
+;;; A trimmed gap becomes a cut across the middle of its silence, so the kept
+;;; milliseconds straddle the word boundary evenly and neither word loses its
+;;; own breath.
+(defn gap-cuts [(s (ptr Session)) (out (ptr (array Clip 512))) (start i64)] (-> i64)
+  (let [(mut count) start]
+    (for [i 0 (- (.word-count s) 1)]
+      (let [keep (.gap-keep (word i))]
+        (when (>= keep 0.0)
+          (let [g0 (.t1 (word i))
+                g1 (.t0 (word (+ i 1)))
+                full (if (> g1 g0) (- g1 g0) 0.0)
+                kept (if (> keep full) full keep)]
+            (when (and (> (- full kept) 1.0) (< (load count) MAX-REGIONS))
+              (set! (.from (index out (load count))) (+ g0 (/ kept 2.0)))
+              (set! (.to (index out (load count))) (- g1 (/ kept 2.0)))
+              (set! count (+ (load count) 1)))))))
+    (load count)))
+
+;;; Subtract one cut span from a clip list in place, splitting any clip it
+;;; lands inside. Returns the new clip count.
+(defn subtract-span [(list (ptr (array Clip 16384)))
+                     (count i64)
+                     (scratch (ptr (array Clip 16384)))
+                     (a f64)
+                     (b f64)] (-> i64)
+  (let [(mut n) 0]
+    (for [i 0 count]
+      (let [c (index list i)
+            from (.from c)
+            to (.to c)]
+        (if (or (<= b from) (>= a to))
+            (when (< (load n) MAX-CLIPS)
+              (set! (.from (index scratch (load n))) from)
+              (set! (.to (index scratch (load n))) to)
+              (set! n (+ (load n) 1)))
+            (do
+              (when (and (< from a) (< (load n) MAX-CLIPS))
+                (set! (.from (index scratch (load n))) from)
+                (set! (.to (index scratch (load n))) a)
+                (set! n (+ (load n) 1)))
+              (when (and (< b to) (< (load n) MAX-CLIPS))
+                (set! (.from (index scratch (load n))) b)
+                (set! (.to (index scratch (load n))) to)
+                (set! n (+ (load n) 1)))
+              0))))
+    (for [i 0 (load n)]
+      (set! (.from (index list i)) (.from (index scratch i)))
+      (set! (.to (index list i)) (.to (index scratch i))))
+    (load n)))
+
+(defn clip-scratch [] (-> (ptr (array Clip 16384)))
+  (primitive/alloc-static (array Clip 16384)))
+
+(defn cut-scratch [] (-> (ptr (array Clip 512)))
+  (primitive/alloc-static (array Clip 512)))
+
+;;; Rebuild the EDL: kept word runs, minus every region cut and every trimmed
+;;; gap. With no transcript yet the whole take is one clip, so a fresh
+;;; recording still plays and exports.
+(defn rebuild-clips [(s (ptr Session))] (-> i64)
+  (let [out (clips)
+        scratch (clip-scratch)
+        cuts (cut-scratch)
+        (mut count) 0]
+    (if (> (.word-count s) 0)
+        (set! count (word-runs s out))
+        (when (> (.dur-ms s) 0.0)
+          (set! (.from (index out 0)) 0.0)
+          (set! (.to (index out 0)) (.dur-ms s))
+          (set! count 1)))
+    (let [(mut cut-count) 0]
+      (for [i 0 (.region-count s)]
+        (when (< (load cut-count) MAX-REGIONS)
+          (set! (.from (index cuts (load cut-count)))
+                (.from (index (regions) i)))
+          (set! (.to (index cuts (load cut-count))) (.to (index (regions) i)))
+          (set! cut-count (+ (load cut-count) 1))))
+      (set! cut-count (gap-cuts s cuts (load cut-count)))
+      (for [i 0 (load cut-count)]
+        (set! count
+              (subtract-span out
+                             (load count)
+                             scratch
+                             (.from (index cuts i))
+                             (.to (index cuts i))))))
+    (set! (.clip-count s) (load count))
+    (set! (.dirty s) true)
+    (load count)))
+
+;;; Total kept duration, in milliseconds.
+(defn edited-ms [(s (ptr Session))] (-> f64)
+  (let [(mut total) 0.0]
+    (for [i 0 (.clip-count s)]
+      (set! total
+            (+ (load total)
+               (- (.to (index (clips) i)) (.from (index (clips) i))))))
+    (load total)))
+
+;;; Map a position on the edited timeline back to its source millisecond, and
+;;; the reverse. Playback reports edited time; the transcript and waveform live
+;;; in source time.
+(defn edited-to-source [(s (ptr Session)) (edited f64)] (-> f64)
+  (let [(mut remaining) edited
+        (mut result) 0.0
+        (mut found) false]
+    (for [i 0 (.clip-count s)]
+      (when (not (load found))
+        (let [c (index (clips) i)
+              span (- (.to c) (.from c))]
+          (if (<= (load remaining) span)
+              (do
+                (set! result (+ (.from c) (load remaining)))
+                (set! found true)
+                0)
+              (do (set! remaining (- (load remaining) span)) 0)))))
+    (if (load found)
+        (load result)
+        (if (> (.clip-count s) 0)
+            (.to (index (clips) (- (.clip-count s) 1)))
+            0.0))))
+
+(defn source-to-edited [(s (ptr Session)) (source f64)] (-> f64)
+  (let [(mut elapsed) 0.0
+        (mut result) 0.0
+        (mut found) false]
+    (for [i 0 (.clip-count s)]
+      (when (not (load found))
+        (let [c (index (clips) i)]
+          (cond (< source (.from c))
+                  (do (set! result (load elapsed)) (set! found true) 0)
+                (<= source (.to c))
+                  (do
+                    (set! result (+ (load elapsed) (- source (.from c))))
+                    (set! found true)
+                    0)
+                :else
+                  (do (set! elapsed (+ (load elapsed) (- (.to c) (.from c)))) 0)))))
+    (if (load found) (load result) (load elapsed))))
+
+;;; The word being spoken at a source millisecond, by binary search over the
+;;; t0-ordered word list.
+(defn word-at [(s (ptr Session)) (ms f64)] (-> i64)
+  (let [(mut lo) 0
+        (mut hi) (- (.word-count s) 1)
+        (mut best) -1]
+    (while (<= (load lo) (load hi))
+      (let [mid (/ (+ (load lo) (load hi)) 2)]
+        (if (<= (.t0 (word mid)) ms)
+            (do (set! best mid) (set! lo (+ mid 1)) 0)
+            (do (set! hi (- mid 1)) 0))))
+    (load best)))
+
+(defn clear-selection [(s (ptr Session))] (-> i64)
+  (set! (.sel-kind s) SEL-NONE)
+  (set! (.sa s) -1)
+  (set! (.sb s) -1)
+  (set! (.ra s) -1.0)
+  (set! (.rb s) -1.0)
+  0)
+
+(defn selection-all-deleted? [(s (ptr Session))] (-> bool)
+  (let [lo (selection-low s)
+        hi (selection-high s)
+        (mut all) true]
+    (if (< lo 0)
+        false
+        (do
+          (for [i lo (+ hi 1)]
+            (when (not (.deleted (word i))) (set! all false)))
+          (load all)))))
+
+;;; Toggle the current selection between cut and restored. Words toggle as one
+;;; run so a second Delete puts back exactly what the first took out; a region
+;;; that overlaps an existing cut restores instead of stacking another cut.
+(defn toggle-selection [(s (ptr Session))] (-> i64)
+  (cond (= (.sel-kind s) SEL-WORDS)
+          (let [lo (selection-low s)
+                hi (selection-high s)]
+            (if (< lo 0)
+                0
+                (let [value (not (selection-all-deleted? s))]
+                  (for [i lo (+ hi 1)] (set! (.deleted (word i)) value))
+                  (rebuild-clips s)
+                  1)))
+        (= (.sel-kind s) SEL-REGION)
+          (let [a (region-low s)
+                b (region-high s)]
+            (if (or (< a 0.0) (< (- b a) 1.0))
+                0
+                (let [(mut overlap) false]
+                  (for [i 0 (.region-count s)]
+                    (let [r (index (regions) i)]
+                      (when (not (or (<= (.to r) a) (>= (.from r) b)))
+                        (set! overlap true))))
+                  (if (load overlap)
+                      (let [(mut n) 0]
+                        (for [i 0 (.region-count s)]
+                          (let [r (index (regions) i)]
+                            (when (or (<= (.to r) a) (>= (.from r) b))
+                              (set! (.from (index (regions) (load n)))
+                                    (.from r))
+                              (set! (.to (index (regions) (load n))) (.to r))
+                              (set! n (+ (load n) 1)))))
+                        (set! (.region-count s) (load n))
+                        (rebuild-clips s)
+                        1)
+                      (if (>= (.region-count s) MAX-REGIONS)
+                          0
+                          (do
+                            (set! (.from (index (regions) (.region-count s))) a)
+                            (set! (.to (index (regions) (.region-count s))) b)
+                            (set! (.region-count s) (+ (.region-count s) 1))
+                            (rebuild-clips s)
+                            1))))))
+        :else 0))
+
+;;; Mark every filler word cut in one pass.
+(defn remove-fillers [(s (ptr Session))] (-> i64)
+  (let [(mut n) 0]
+    (for [i 0 (.word-count s)]
+      (let [w (word i)]
+        (when (and (.filler w) (not (.deleted w)))
+          (set! (.deleted w) true)
+          (set! n (+ (load n) 1)))))
+    (rebuild-clips s)
+    (load n)))
+
+;;; Tap a gap: cut it whole, or restore it if it is already trimmed at all.
+(defn toggle-gap [(s (ptr Session)) (i i64)] (-> i64)
+  (when (and (>= i 0) (< i (- (.word-count s) 1)))
+    (let [w (word i)]
+      (if (< (.gap-keep w) 0.0)
+          (set! (.gap-keep w) 0.0)
+          (set! (.gap-keep w) GAP-UNTOUCHED))
+      (rebuild-clips s)))
+  0)
+
+(defn set-gap-keep [(s (ptr Session)) (i i64) (ms f64)] (-> i64)
+  (when (and (>= i 0) (< i (- (.word-count s) 1)))
+    (let [full (gap-full s i)
+          clamped (if (< ms 0.0) 0.0 (if (> ms full) full ms))]
+      (set! (.gap-keep (word i)) clamped)
+      (rebuild-clips s)))
+  0)
+
+;;; Snap the selected word's start or end to the playhead. Whisper's alignment
+;;; is good but not perfect, and a word clipped one frame early is audible.
+(defn nudge-word-edge [(s (ptr Session)) (start bool)] (-> i64)
+  (if (or (!= (.sel-kind s) SEL-WORDS) (< (.sa s) 0) (!= (.sa s) (.sb s)))
+      0
+      (let [w (word (.sa s))]
+        (if start
+            (let [limit (- (.t1 w) 10.0)]
+              (set! (.t0 w)
+                    (if (> (.cur-ms s) limit)
+                        limit
+                        (if (< (.cur-ms s) 0.0) 0.0 (.cur-ms s)))))
+            (let [limit (+ (.t0 w) 10.0)]
+              (set! (.t1 w) (if (< (.cur-ms s) limit) limit (.cur-ms s)))))
+        (rebuild-clips s)
+        1)))
+
+(defn reset-session [(s (ptr Session))] (-> i64)
+  (set! (.status-notice s) false)
+  (set! (.word-count s) 0)
+  (set! (.arena-used s) 0)
+  (set! (.peak-count s) 0)
+  (set! (.region-count s) 0)
+  (set! (.clip-count s) 0)
+  (set! (.speaker-count s) 0)
+  (set! (.dur-ms s) 0.0)
+  (set! (.cur-ms s) 0.0)
+  (set! (.scroll s) 0.0)
+  (set! (.content-h s) 0.0)
+  (set! (.wscroll s) 0.0)
+  (set! (.playing s) false)
+  (set! (.pending-play s) -1.0)
+  (set! (.transcribing s) false)
+  (set! (.progress s) 0)
+  (clear-selection s)
+  0)

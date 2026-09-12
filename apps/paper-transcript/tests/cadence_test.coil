@@ -1,0 +1,16 @@
+(module transcript.tests.cadence)
+(import "coil.assert" :use *)
+(import "transcript.app" :as app)
+
+;;; `paper_tick_interval` asserts its argument is at least 0.01 — there is no
+;;; "stop ticking", and the library's idle cadence is one second. Passing 0.0
+;;; aborted the process the moment a background job finished, so the three
+;;; cadences the app switches between are pinned here.
+(deftest every_tick_cadence_is_one_the_renderer_accepts
+         (assert (>= (app/idle-tick) 0.01))
+         (assert (>= (app/playing-tick) 0.01))
+         (assert (>= (app/job-tick) 0.01)))
+
+(deftest the_cadences_are_ordered_by_how_much_they_need_to_do
+         (assert (< (app/playing-tick) (app/job-tick)))
+         (assert (< (app/job-tick) (app/idle-tick))))

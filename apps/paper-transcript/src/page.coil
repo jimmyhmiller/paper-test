@@ -1,0 +1,369 @@
+(module transcript.page)
+(import "coil.primitive" :as primitive)
+(import "paper.flow" :use *)
+(import "paper.ffi" :use [floor snprintf])
+(import "transcript.model" :as model)
+(import "transcript.theme" :as t)
+
+;;; Layout for the two views that cannot be expressed as an arrange tree: the
+;;; transcript, which is a wrapped flow of a few thousand independently
+;;; positioned words, and the waveform, which is a per-pixel-column envelope
+;;; over the peak buckets. Both write into caches that the draw pass reads, so
+;;; scrolling never re-measures and panning never rescans the file.
+(defn text-size [] (-> f64)
+  22.0)
+
+(defn line-height [] (-> f64)
+  (* (text-size) 1.55))
+
+(defn paragraph-lead [] (-> f64)
+  (* (text-size) 1.1))
+
+(defn transcript-font [] (-> i64)
+  (t/serif))
+
+;;; A silence shorter than this is ordinary speech rhythm and gets no pill;
+;;; longer than the paragraph threshold and the transcript breaks to a new
+;;; paragraph, the way a pause reads on the page.
+(defn pill-threshold [] (-> f64)
+  300.0)
+
+(defn paragraph-threshold [] (-> f64)
+  900.0)
+
+(defn column-cap [] (-> i64)
+  2048)
+
+;;; Bars are drawn on a fixed point stride rather than one per pixel: it reads
+;;; as a waveform rather than a solid block, and it bounds the sheet count.
+(defn column-stride [] (-> f64)
+  4.0)
+
+(defn columns [] (-> (ptr (array f32 2048)))
+  (primitive/alloc-static (array f32 2048)))
+
+(defn column-count [] (-> (ptr i64))
+  (primitive/alloc-static i64))
+
+(defn column-origin [] (-> (ptr f64))
+  (primitive/alloc-static f64))
+
+(defn scratch-label [] (-> (ptr (array i8 32)))
+  (primitive/alloc-static (array i8 32)))
+
+;;; "1.4s" — the pill reports the silence that survives, not the silence that
+;;; was there, so dragging one shorter is legible without arithmetic.
+(defn gap-label [(ms f64)] (-> (ptr i8))
+  (let [buffer (index (scratch-label) 0)]
+    (snprintf buffer 32 c"·· %.1fs" (/ ms 1000.0))
+    buffer))
+
+(defn timecode [(buffer (ptr i8)) (cap i64) (ms f64)] (-> (ptr i8))
+  (let [total (cast i64 (/ ms 1000.0))
+        minutes (/ total 60)
+        seconds (- total (* minutes 60))]
+    (snprintf buffer (cast u64 cap) c"%lld:%02lld" minutes seconds)
+    buffer))
+
+(defn pill-width [(ms f64)] (-> f64)
+  (+ (text-width (gap-label ms) (- (text-size) 4.0) (t/serif)) 18.0))
+
+;;; Re-flow every word into `width` points. Positions are stored on the words
+;;; themselves, relative to the transcript's content origin, and the total
+;;; height is left on the session for the scroll clamp.
+(defn reflow [(s (ptr model/Session)) (width f64)] (-> i64)
+  (let [space (maximum 8.0 (text-width c" " (text-size) (transcript-font)))
+        lh (line-height)
+        (mut x) 0.0
+        (mut y) 0.0]
+    (for [i 0 (.word-count s)]
+      (let [w (model/word i)
+            advance (.width w)]
+        (when (and (> (+ (load x) advance) width) (> (load x) 0.0))
+          (set! x 0.0)
+          (set! y (+ (load y) lh)))
+        (set! (.x w) (load x))
+        (set! (.y w) (load y))
+        (set! x (+ (load x) advance))
+        (set! (.gap-w w) 0.0)
+        (when (< i (- (.word-count s) 1))
+          (let [full (model/gap-full s i)
+                kept (model/gap-kept s i)]
+            (when (>= full (pill-threshold))
+              (let [pw (pill-width kept)]
+                (if (> (+ (+ (load x) space) pw) width)
+                    (do (set! x 0.0) (set! y (+ (load y) lh)) 0)
+                    (do (set! x (+ (load x) space)) 0))
+                (set! (.gap-x w) (load x))
+                (set! (.gap-y w) (load y))
+                (set! (.gap-w w) pw)
+                (set! x (+ (load x) pw))))
+            (if (.para w)
+                (do
+                  (set! x 0.0)
+                  (set! y (+ (+ (load y) lh) (paragraph-lead)))
+                  0)
+                (do (set! x (+ (load x) space)) 0))))))
+    (set! (.content-h s)
+          (if (= (.word-count s) 0) 0.0 (+ (load y) lh)))
+    0))
+
+;;; Words are y-ordered, so the draw pass binary-searches the first one that
+;;; reaches the top of the viewport and stops at the bottom. A two-hour
+;;; transcript costs the same to scroll as a two-minute one.
+(defn first-visible [(s (ptr model/Session)) (top f64)] (-> i64)
+  (let [(mut lo) 0
+        (mut hi) (.word-count s)]
+    (while (< (load lo) (load hi))
+      (let [mid (/ (+ (load lo) (load hi)) 2)]
+        (if (< (+ (.y (model/word mid)) (line-height)) top)
+            (set! lo (+ mid 1))
+            (set! hi mid))))
+    (load lo)))
+
+;;; `v` rounded to the nearest whole backing pixel.
+(defn snap-to-pixel [(v f64) (scale f64)] (-> f64)
+  (/ (floor (+ (* v scale) 0.5)) scale))
+
+;;; The offset the transcript is drawn and hit-tested at: the scroll position
+;;; rounded to a whole backing pixel. A trackpad reports fractional deltas, and
+;;; text moved by a fraction of a pixel lands on a new sub-pixel phase, so every
+;;; visible word would have to be rasterized again on every frame of a scroll.
+;;; Moved by whole pixels, each word keeps its phase and its cached mask. The
+;;; position itself stays exact, so slow scrolls still accumulate.
+(defn shown-scroll [(s (ptr model/Session)) (scale f64)] (-> f64)
+  (snap-to-pixel (.scroll s) scale))
+
+(defn max-scroll [(s (ptr model/Session)) (viewport-height f64)] (-> f64)
+  (let [extent (- (.content-h s) viewport-height)]
+    (if (> extent 0.0) extent 0.0)))
+
+;;; Keep the spoken word on screen, but only move when it has actually left the
+;;; comfortable band — a transcript that re-centres on every word is unreadable.
+(defn follow [(s (ptr model/Session)) (index i64) (viewport-height f64)] (-> f64)
+  (if (or (< index 0) (>= index (.word-count s)))
+      (.scroll s)
+      (let [wy (.y (model/word index))
+            relative (- wy (.scroll s))]
+        (if (or (< relative 0.0)
+                (> relative (- viewport-height (* (line-height) 2.0))))
+            (let [target (- wy (/ viewport-height 2.0))
+                  limit (max-scroll s viewport-height)]
+              (if (< target 0.0) 0.0 (if (> target limit) limit target)))
+            (.scroll s)))))
+
+;;; The word or gap pill under a point in transcript content space. Returns the
+;;; word index, with `gap` set when the point landed on that word's pill.
+(defn hit-word [(s (ptr model/Session)) (x f64) (y f64) (gap (ptr bool))] (-> i64)
+  (let [lh (line-height)
+        (mut found) -1
+        (mut i) (first-visible s (- y (* 2.0 lh)))
+        (mut scanning) true]
+    (set! (index gap 0) false)
+    ;; Words are y-ordered, so stop once past this line. A pill that did not fit
+    ;; after its word wrapped onto the next line, so it is tested on its own
+    ;; line rather than its word's.
+    (while (and (load scanning) (< (load i) (.word-count s)))
+      (let [w (model/word (load i))]
+        (if (> (.y w) y)
+            (set! scanning false)
+            (do
+              (when (and (<= (.y w) y)
+                         (< y (+ (.y w) lh))
+                         (>= x (.x w))
+                         (< x (+ (.x w) (.width w))))
+                (set! found (load i))
+                (set! scanning false))
+              (when (and (> (.gap-w w) 0.0)
+                         (<= (.gap-y w) y)
+                         (< y (+ (.gap-y w) lh))
+                         (>= x (.gap-x w))
+                         (< x (+ (.gap-x w) (.gap-w w))))
+                (set! (index gap 0) true)
+                (set! found (load i))
+                (set! scanning false))
+              (set! i (+ (load i) 1))
+              0))))
+    (load found)))
+
+;;; ---- waveform ------------------------------------------------------------
+(defn points-per-ms [(s (ptr model/Session))] (-> f64)
+  (/ (.wzoom s) 1000.0))
+
+(defn ms-to-x [(s (ptr model/Session)) (origin f64) (ms f64)] (-> f64)
+  (+ origin (* (- ms (.wscroll s)) (points-per-ms s))))
+
+(defn x-to-ms [(s (ptr model/Session)) (origin f64) (x f64)] (-> f64)
+  (+ (.wscroll s) (/ (- x origin) (points-per-ms s))))
+
+(defn fit-zoom [(s (ptr model/Session)) (width f64)] (-> f64)
+  (if (> (.dur-ms s) 0.0) (/ width (/ (.dur-ms s) 1000.0)) 60.0))
+
+(defn max-pan [(s (ptr model/Session)) (width f64)] (-> f64)
+  (let [visible (/ width (points-per-ms s))
+        extent (- (.dur-ms s) visible)]
+    (if (> extent 0.0) extent 0.0)))
+
+(defn build-sumsq [(s (ptr model/Session))] (-> i64)
+  (invalidate-reference)
+  (let [(mut total) 0.0]
+    (for [i 0 (.peak-count s)]
+      (let [p (cast f64 (load (index (peaks-array) i)))]
+        (set! total (+ (load total) (* p p)))
+        (set! (index (model/sumsq) i) (load total))))
+    0))
+
+(defn peaks-array [] (-> (ptr (array f32 720000)))
+  (model/peaks))
+
+;;; Per-column energy, not RMS. Speech is loudness-compressed, so an RMS
+;;; envelope zoomed out is a near-flat band with no readable shape; squaring
+;;; spreads the midrange so quiet stretches drop away and loud ones stand up.
+;;; Every column aggregates every bucket it covers through the prefix sum, so
+;;; the contour is exact at any zoom instead of aliasing against a stride.
+;;;
+;;; The reference the columns are scaled against is the loudest column-sized
+;;; window in the WHOLE take, not the loudest one currently on screen. Scaling
+;;; to what is visible means the waveform changes shape as you pan — a quiet
+;;; passage stretches to full height the moment the loud one scrolls off — and
+;;; the picture stops describing the recording. It costs one pass over the
+;;; buckets, and it only depends on the zoom, so panning cannot alter it.
+(defn column-energy [(s (ptr model/Session)) (b0 i64) (b1 i64)] (-> f64)
+  (if (<= b1 b0)
+      0.0
+      (let [hi (load (index (model/sumsq) (- b1 1)))
+            lo (if (= b0 0) 0.0 (load (index (model/sumsq) (- b0 1))))]
+        (/ (- hi lo) (cast f64 (- b1 b0))))))
+
+(defn reference-cache [] (-> (ptr (array f64 2)))
+  (primitive/alloc-static (array f64 2)))
+
+;;; The reference depends only on the take and the zoom, so panning reuses it
+;;; rather than rescanning every bucket on every wheel event. `invalidate` is
+;;; called when the peaks change.
+(defn invalidate-reference [] (-> i64)
+  (set! (index (reference-cache) 0) -1.0)
+  (set! (index (reference-cache) 1) 0.0)
+  0)
+
+(defn column-reference [(s (ptr model/Session)) (buckets-per-column i64)] (-> f64)
+  (let [cache (reference-cache)]
+    (if (primitive/fcmp-eq (load (index cache 0)) (cast f64 buckets-per-column))
+        (load (index cache 1))
+        (let [value (scan-reference s buckets-per-column)]
+          (set! (index cache 0) (cast f64 buckets-per-column))
+          (set! (index cache 1) value)
+          value))))
+
+(defn scan-reference [(s (ptr model/Session)) (buckets-per-column i64)] (-> f64)
+  (let [n (.peak-count s)
+        step (if (< buckets-per-column 1) 1 buckets-per-column)
+        (mut best) 0.0000001
+        (mut b) 0]
+    (while (< (load b) n)
+      (let [b1 (if (> (+ (load b) step) n) n (+ (load b) step))
+            e (column-energy s (load b) b1)]
+        (when (> e (load best)) (set! best e))
+        (set! b (+ (load b) step))))
+    (load best)))
+
+;;; Buckets per column at the current zoom. The column windows are aligned to
+;;; multiples of this, so a given stretch of audio always falls in the same
+;;; window and always draws at the same height. Letting the window slide with
+;;; the scroll offset instead makes every bar recompute over a slightly
+;;; different span as you pan, and at zoom — where a column covers only a few
+;;; buckets — that reads as the waveform breathing in and out.
+(defn buckets-per-column [(s (ptr model/Session))] (-> i64)
+  (let [span-ms (* (column-stride) (/ 1000.0 (.wzoom s)))
+        n (cast i64 (+ 0.5 (/ span-ms (model/bucket-ms))))]
+    (if (< n 1) 1 n)))
+
+;;; The sampled window and its drawn spacing must describe the same time span.
+;;; Rounding the samples to whole buckets while retaining a fixed point stride
+;;; caused duplicate/skipped windows and changing bars at fractional zooms.
+(defn column-step [(s (ptr model/Session))] (-> f64)
+  (* (* (cast f64 (buckets-per-column s)) (model/bucket-ms)) (points-per-ms s)))
+
+(defn build-columns [(s (ptr model/Session)) (origin f64) (width f64)] (-> i64)
+  (let [stride (column-step s)
+        n (.peak-count s)
+        bucket (model/bucket-ms)
+        wanted (+ (cast i64 (/ width stride)) 2)
+        total (if (> wanted (column-cap)) (column-cap) wanted)]
+    (set! (index (column-origin) 0) origin)
+    (if (or (= n 0) (<= (.dur-ms s) 0.0))
+        (do (set! (index (column-count) 0) 0) 0)
+        (let [per-column (buckets-per-column s)
+              span (* (cast f64 per-column) bucket)
+              first (cast i64 (floor (/ (.wscroll s) span)))
+              reference (column-reference s per-column)]
+          (set! (index (column-origin) 0)
+                (- origin
+                   (* (- (.wscroll s) (* (cast f64 first) span))
+                      (points-per-ms s))))
+          (for [c 0 total]
+            (let [raw (* (+ first c) per-column)
+                  clamped (if (< raw 0) 0 (if (> raw n) n raw))
+                  b0 clamped
+                  b1 (if (> (+ b0 per-column) n) n (+ b0 per-column))
+                  v (/ (column-energy s b0 b1) reference)]
+              (set! (index (columns) c) (cast f32 (if (> v 1.0) 1.0 v)))))
+          (set! (index (column-count) 0) total)
+          0))))
+
+;;; Zoom about a fixed millisecond so the moment under the cursor stays put.
+(defn zoom-to [(s (ptr model/Session))
+               (target f64)
+               (anchor-ms f64)
+               (origin f64)
+               (width f64)] (-> i64)
+  (let [floor-zoom (/ (fit-zoom s width) 2.0)
+        clamped
+          (if (< target floor-zoom)
+              floor-zoom
+              (if (> target 1536000.0) 1536000.0 target))
+        anchor-x (ms-to-x s origin anchor-ms)]
+    (set! (.wzoom s) clamped)
+    (let [desired (- anchor-ms (/ (- anchor-x origin) (points-per-ms s)))
+          limit (max-pan s width)]
+      (set! (.wscroll s)
+            (if (< desired 0.0) 0.0 (if (> desired limit) limit desired))))
+    (build-columns s origin width)
+    0))
+
+(defn pan-to [(s (ptr model/Session)) (target f64) (origin f64) (width f64)] (-> i64)
+  (let [limit (max-pan s width)]
+    (set! (.wscroll s)
+          (if (< target 0.0) 0.0 (if (> target limit) limit target)))
+    (build-columns s origin width)
+    0))
+
+;;; The spans the edit removes, derived from the kept clips, for the shaded
+;;; cut-through bands on the waveform.
+(defn removed-span [(s (ptr model/Session))
+                    (i i64)
+                    (from (ptr f64))
+                    (to (ptr f64))] (-> bool)
+  (let [count (.clip-count s)]
+    (cond (= count 0)
+            (if (and (= i 0) (> (.dur-ms s) 0.0))
+                (do
+                  (set! (index from 0) 0.0)
+                  (set! (index to 0) (.dur-ms s))
+                  true)
+                false)
+          (< i count)
+            (let [start (if (= i 0) 0.0 (.to (index (model/clips) (- i 1))))
+                  end (.from (index (model/clips) i))]
+              (if (> end start)
+                  (do (set! (index from 0) start) (set! (index to 0) end) true)
+                  false))
+          (= i count)
+            (let [start (.to (index (model/clips) (- count 1)))]
+              (if (> (.dur-ms s) start)
+                  (do
+                    (set! (index from 0) start)
+                    (set! (index to 0) (.dur-ms s))
+                    true)
+                  false))
+          :else false)))

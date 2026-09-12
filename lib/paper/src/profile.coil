@@ -3,8 +3,13 @@
 (import "paper.ffi" :use [CACurrentMediaTime])
 
 (defstruct Counters
-  [(enabled bool) (bevel f64) (cuts f64) (masks f64)
-   (mask-reservation f64) (micro-preparation f64) (composition-encoding f64)])
+  [(enabled bool)
+   (bevel f64)
+   (cuts f64)
+   (masks f64)
+   (mask-reservation f64)
+   (micro-preparation f64)
+   (composition-encoding f64)])
 
 (defn counters [] (-> (ptr Counters))
   (p/alloc-static Counters))
@@ -14,3 +19,26 @@
 
 (defn elapsed [(start f64)] (-> f64)
   (if (> start 0.0) (- (CACurrentMediaTime) start) 0.0))
+
+;;; Unconditional clock read, for per-frame stage timing.
+(defn now [] (-> f64)
+  (CACurrentMediaTime))
+
+;;; Measure a body in milliseconds without hand-written clock plumbing. The
+;;; body is evaluated once, its result is returned, and generated identifiers
+;;; cannot capture locals at the call site.
+(defn measure-ms [(destination Code) & (body Code)] (-> Code)
+  (let [started (p/fresh-identifier "profile-start")
+        result (p/fresh-identifier "profile-result")]
+    `(let [~started (now)
+           ~result (do ~@body)]
+       (set! ~destination (* 1000.0 (- (now) ~started)))
+       ~result)))
+
+(defn accumulate-ms [(destination Code) & (body Code)] (-> Code)
+  (let [started (p/fresh-identifier "profile-start")
+        result (p/fresh-identifier "profile-result")]
+    `(let [~started (now)
+           ~result (do ~@body)]
+       (set! ~destination (+ ~destination (* 1000.0 (- (now) ~started))))
+       ~result)))

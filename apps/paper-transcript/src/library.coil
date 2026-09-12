@@ -1,0 +1,646 @@
+(module transcript.library)
+(import "coil.primitive" :as primitive)
+(import "coil.alloc" :as alloc)
+(import "coil.fs" :as fs)
+(import "coil.json" :as json)
+(import "coil.slice" :use *)
+(import "coil.result" :use *)
+(import "paper.objc" :as o)
+(import "paper.flow" :use [text-width])
+(import "paper.ffi" :use [snprintf strlen strcmp])
+(import "transcript.model" :as model)
+(import "transcript.page" :as page)
+
+(extern getenv :cc c [(ptr i8)] (-> (ptr i8)))
+
+(extern strtod :cc c [(ptr i8) (ptr (ptr i8))] (-> f64))
+
+(extern mkdir :cc c [(ptr i8) i32] (-> i32))
+
+(defn parse-float [(text (ptr i8))] (-> f64)
+  (strtod text (cast (ptr (ptr i8)) 0)))
+
+(defn same? [(a (ptr i8)) (b (ptr i8))] (-> bool)
+  (= (strcmp a b) 0))
+
+;;; Return a buffer `read-file` produced to its allocator.
+(defn release-bytes [(a (dyn alloc/Allocator)) (bytes (slice u8))] (-> i64)
+  (match (alloc/bytes-request (len bytes) 1)
+    (Some [request]
+          (alloc/raw-free a (cast (ptr i8) (slice-data bytes)) request))
+    (None [] 0)))
+
+;;; The library is the same one the editor in jim writes: recordings in
+;;; ~/.jim/recordings, whisper output and edit lists cached beside them in
+;;; ~/.jim/transcripts. Sharing those directories means an existing corpus and
+;;; its transcripts open here immediately, and an edit made in either editor is
+;;; visible to the other.
+(defn path-buffer [] (-> (ptr (array i8 1024)))
+  (primitive/alloc-static (array i8 1024)))
+
+(defn path-buffer-b [] (-> (ptr (array i8 1024)))
+  (primitive/alloc-static (array i8 1024)))
+
+(defn number-buffer [] (-> (ptr (array i8 64)))
+  (primitive/alloc-static (array i8 64)))
+
+(defn home [] (-> (ptr i8))
+  (let [value (getenv c"HOME")]
+    (if (= (cast i64 value) 0) c"/tmp" value)))
+
+(defn recordings-dir [(out (ptr i8))] (-> (ptr i8))
+  (cast i64 (snprintf out 1024 c"%s/.jim/recordings" (home)))
+  out)
+
+(defn transcripts-dir [(out (ptr i8))] (-> (ptr i8))
+  (cast i64 (snprintf out 1024 c"%s/.jim/transcripts" (home)))
+  out)
+
+(defn source-path [(out (ptr i8)) (name (ptr i8))] (-> (ptr i8))
+  (cast i64 (snprintf out 1024 c"%s/.jim/recordings/%s" (home) name))
+  out)
+
+(defn transcript-path [(out (ptr i8)) (name (ptr i8))] (-> (ptr i8))
+  (cast i64 (snprintf out 1024 c"%s/.jim/transcripts/%s.json" (home) name))
+  out)
+
+(defn peaks-path [(out (ptr i8)) (name (ptr i8))] (-> (ptr i8))
+  (cast i64
+        (snprintf out 1024 c"%s/.jim/transcripts/%s.peaks.json" (home) name))
+  out)
+
+(defn edits-path [(out (ptr i8)) (name (ptr i8))] (-> (ptr i8))
+  (cast i64
+        (snprintf out 1024 c"%s/.jim/transcripts/%s.edits.json" (home) name))
+  out)
+
+(defn export-path [(out (ptr i8)) (name (ptr i8))] (-> (ptr i8))
+  (cast i64 (snprintf out 1024 c"%s/.jim/recordings/%s_edited.wav" (home) name))
+  out)
+
+(defn ensure-dirs [] (-> i64)
+  (let [buffer (index (path-buffer) 0)]
+    (cast i64 (snprintf buffer 1024 c"%s/.jim" (home)))
+    (mkdir buffer 493)
+    (mkdir (transcripts-dir buffer) 493)
+    (mkdir (recordings-dir buffer) 493))
+  0)
+
+;;; ---- text helpers ---------------------------------------------------------
+(defn lower [(c i64)] (-> i64)
+  (if (and (>= c #\A) (<= c #\Z)) (+ c 32) c))
+
+(defn letter? [(c i64)] (-> bool)
+  (or (and (>= c #\a) (<= c #\z)) (= c #\') (= c #\-)))
+
+;;; Fillers are matched on the word's letters alone, so "Um," and "um" are the
+;;; same word and punctuation never hides one.
+(defn filler-word? [(word (ptr i8))] (-> bool)
+  (let [buffer (index (number-buffer) 0)
+        (mut n) 0]
+    (for [i 0 (cast i64 (strlen word))]
+      (let [c (lower (cast i64 (load (index word i))))]
+        (when (and (letter? c) (< (load n) 31))
+          (set! (index buffer (load n)) (cast i8 c))
+          (set! n (+ (load n) 1)))))
+    (set! (index buffer (load n)) (cast i8 0))
+    (or (same? buffer c"um")
+        (same? buffer c"umm")
+        (same? buffer c"uh")
+        (same? buffer c"uhh")
+        (same? buffer c"uhm")
+        (same? buffer c"er")
+        (same? buffer c"err")
+        (same? buffer c"erm")
+        (same? buffer c"ah")
+        (same? buffer c"ahh")
+        (same? buffer c"hmm")
+        (same? buffer c"mm")
+        (same? buffer c"mmm")
+        (same? buffer
+               c"mhm")
+        (same? buffer
+               c"huh"))))
+
+(defn sentence-end? [(word (ptr i8))] (-> bool)
+  (let [n (cast i64 (strlen word))]
+    (if (= n 0)
+        false
+        (let [c (cast i64 (load (index word (- n 1))))]
+          (or (= c #\.) (= c #\!) (= c #\?))))))
+
+(defn display-buffer [] (-> (ptr (array i8 256)))
+  (primitive/alloc-static (array i8 256)))
+
+;;; A recording's name as a person would write it: no extension, and without
+;;; the `rec_`/`note_` prefixes the capture tools prepend.
+(defn display-name [(name (ptr i8))] (-> (ptr i8))
+  (let [out (index (display-buffer) 0)
+        n (cast i64 (strlen name))
+        (mut dot) n
+        (mut start) 0]
+    (for [i 0 n]
+      (when (= (cast i64 (load (index name i))) #\.) (set! dot i)))
+    (when (and (> n 4) (same-prefix? name c"rec_")) (set! start 4))
+    (when (and (> n 5) (same-prefix? name c"note_")) (set! start 5))
+    (let [length (- (load dot) (load start))
+          capped (if (> length 250) 250 (if (< length 0) 0 length))]
+      (for [i 0 capped]
+        (set! (index out i) (load (index name (+ (load start) i)))))
+      (set! (index out capped) (cast i8 0)))
+    out))
+
+(defn same-prefix? [(name (ptr i8)) (prefix (ptr i8))] (-> bool)
+  (let [n (cast i64 (strlen prefix))
+        (mut ok) true]
+    (for [i 0 n]
+      (when (!= (load (index name i)) (load (index prefix i))) (set! ok false)))
+    (load ok)))
+
+;;; Read a take's duration from the file header. Opening an AVAudioFile does
+;;; not decode it, so the whole library can be measured at startup.
+(defn probe-duration [(path (ptr i8))] (-> f64)
+  (let [url
+          (o/msg (ptr i8)
+                 (o/class c"NSURL")
+                 (o/sel c"fileURLWithPath:")
+                 [(ptr i8)]
+                 (o/ns path))
+        (mut error) (o/nil)
+        file
+          (o/msg (ptr i8)
+                 (o/msg (ptr i8) (o/class c"AVAudioFile") (o/sel c"alloc") [])
+                 (o/sel c"initForReading:error:")
+                 [(ptr i8) (mut (ptr i8))]
+                 url
+                 (mut error))]
+    (if (= (cast i64 file) 0)
+        0.0
+        (let [frames (o/msg i64 file (o/sel c"length") [])
+              rate
+                (o/msg f64
+                       (o/msg (ptr i8) file (o/sel c"processingFormat") [])
+                       (o/sel c"sampleRate")
+                       [])
+              ms (if (> rate 0.0) (* 1000.0 (/ (cast f64 frames) rate)) 0.0)]
+          (o/release file)
+          ms))))
+
+(defn audio-name? [(name (ptr i8))] (-> bool)
+  (let [n (cast i64 (strlen name))
+        (mut dot) -1]
+    (for [i 0 n]
+      (when (= (cast i64 (load (index name i))) #\.) (set! dot i)))
+    (if (< (load dot) 0)
+        false
+        (let [buffer (index (number-buffer) 0)
+              (mut k) 0]
+          (for [i (+ (load dot) 1) n]
+            (when (< (load k) 15)
+              (set! (index buffer (load k))
+                    (cast i8 (lower (cast i64 (load (index name i))))))
+              (set! k (+ (load k) 1))))
+          (set! (index buffer (load k)) (cast i8 0))
+          (or (same? buffer c"wav")
+              (same? buffer c"m4a")
+              (same? buffer c"mp3")
+              (same? buffer c"aiff")
+              (same? buffer c"aif")
+              (same? buffer c"flac")
+              (same? buffer c"caf")
+              (same? buffer c"ogg")
+              (same? buffer c"mp4"))))))
+
+;;; ---- take list ------------------------------------------------------------
+
+;;; NSFileManager rather than a hand-rolled readdir: the recordings directory is
+;;; user-facing, so Unicode names and the platform's own ordering matter more
+;;; than avoiding an Objective-C call at startup.
+(defn refresh-takes [(s (ptr model/Session))] (-> i64)
+  (let [buffer (index (path-buffer) 0)
+        manager
+          (o/msg (ptr i8)
+                 (o/class c"NSFileManager")
+                 (o/sel c"defaultManager")
+                 [])
+        (mut error) (o/nil)
+        entries
+          (o/msg (ptr i8)
+                 manager
+                 (o/sel c"contentsOfDirectoryAtPath:error:")
+                 [(ptr i8) (mut (ptr i8))]
+                 (o/ns (recordings-dir buffer))
+                 (mut error))
+        count
+          (if (= (cast i64 entries) 0)
+              0
+              (o/msg i64 entries (o/sel c"count") []))
+        (mut used) 0
+        (mut taken) 0]
+    (for [i 0 count]
+      (when (< (load taken) 512)
+        (let [entry
+                (o/msg (ptr i8)
+                       entries
+                       (o/sel c"objectAtIndex:")
+                       [u64]
+                       (cast u64 i))
+              name (o/utf8 entry)
+              length (cast i64 (strlen name))]
+          (when (and (audio-name? name) (< (+ (+ (load used) length) 1) 65536))
+            (let [take (model/take-at (load taken))]
+              (for [k 0 (+ length 1)]
+                (set! (index (model/name-arena) (+ (load used) k))
+                      (load (index name k))))
+              (set! (.off take) (load used))
+              (set! (.len take) length)
+              (set! (.dur-ms take)
+                    (probe-duration (source-path (index (path-buffer-b) 0) name)))
+              (set! (.transcribed take) false)
+              (set! used (+ (+ (load used) length) 1))
+              (set! taken (+ (load taken) 1)))))))
+    (set! (.take-count s) (load taken))
+    (set! (.name-used s) (load used))
+    (load taken)))
+
+;;; ---- JSON reading ---------------------------------------------------------
+(defn token-number [(doc json/Doc) (i i64)] (-> f64)
+  (if (< i 0)
+      0.0
+      (let [span (json/number-text doc (json/token doc i))
+            buffer (index (number-buffer) 0)
+            n (len span)
+            length (if (> n 63) 63 n)]
+        (for [k 0 length] (set! (index buffer k) (cast i8 (get span k))))
+        (set! (index buffer length) (cast i8 0))
+        (strtod buffer (cast (ptr (ptr i8)) 0)))))
+
+;;; Append one word to the model, copying its text into the arena with the
+;;; leading space whisper emits removed. Returns false when a capacity is
+;;; reached, which the caller reports rather than silently truncating.
+(defn push-word [(s (ptr model/Session)) (span (slice u8)) (t0 f64) (t1 f64)] (-> bool)
+  (let [n (len span)
+        (mut start) 0
+        (mut end) n]
+    (while (and (< (load start) (load end))
+                (or (= (get span (load start)) 32)
+                    (= (get span (load start)) 10)))
+      (set! start (+ (load start) 1)))
+    (while (and (> (load end) (load start))
+                (or (= (get span (- (load end) 1)) 32)
+                    (= (get span (- (load end) 1)) 10)))
+      (set! end (- (load end) 1)))
+    (let [length (- (load end) (load start))]
+      (if (or (<= length 0)
+              (>= (.word-count s) 40000)
+              (>= (+ (+ (.arena-used s) length) 1) 1048576))
+          false
+          (let [w (model/word (.word-count s))
+                off (.arena-used s)]
+            (for [k 0 length]
+              (set! (index (model/text-arena) (+ off k))
+                    (cast i8 (get span (+ (load start) k)))))
+            (set! (index (model/text-arena) (+ off length)) (cast i8 0))
+            (set! (.off w) off)
+            (set! (.len w) length)
+            (set! (.t0 w) t0)
+            (set! (.t1 w) t1)
+            (set! (.gap-keep w) model/GAP-UNTOUCHED)
+            (set! (.deleted w) false)
+            (set! (.para w) false)
+            (set! (.speaker w) -1)
+            (set! (.filler w) (filler-word? (model/word-text w)))
+            (set! (.width w)
+                  (text-width (model/word-text w)
+                              (page/text-size)
+                              (page/transcript-font)))
+            (set! (.arena-used s) (+ (+ off length) 1))
+            (set! (.word-count s) (+ (.word-count s) 1))
+            true)))))
+
+;;; whisper writes two shapes. `-ojf` gives per-token DTW timings, where a token
+;;; beginning with a space opens a new word and the rest extend it; WhisperX
+;;; alignment rewrites the same file as one word per segment. Read both, so a
+;;; cache written before alignment finished still opens.
+(defn scratch-word [] (-> (ptr (array u8 256)))
+  (primitive/alloc-static (array u8 256)))
+
+;;; Reassemble sub-word tokens into words. A token whose text starts with a
+;;; space opens a new word; every other token extends the one in progress.
+(defn join-tokens [(s (ptr model/Session)) (doc json/Doc) (tokens i64)] (-> i64)
+  (let [count (json/child-count (json/token doc tokens))
+        buffer (scratch-word)
+        (mut used) 0
+        (mut open) false
+        (mut t0) 0.0
+        (mut t1) 0.0
+        (mut added) 0
+        (mut idx) (+ tokens 1)]
+    (for [i 0 count]
+      (let [entry (load idx)
+            text-index (json/object-get doc entry "text")
+            offsets (json/object-get doc entry "offsets")]
+        (when (and (>= text-index 0) (>= offsets 0))
+          (let [span (json/string-text doc (json/token doc text-index))
+                start (token-number doc (json/object-get doc offsets "from"))
+                stop (token-number doc (json/object-get doc offsets "to"))
+                n (len span)]
+            (when (and (> n 0) (!= (get span 0) 91))
+              (when (and (= (get span 0) 32) (load open))
+                (when (> (load used) 0)
+                  (when (push-word s
+                                   (slice-new [u8] (index buffer 0) (load used))
+                                   (load t0)
+                                   (load t1))
+                    (set! added (+ (load added) 1))))
+                (set! used 0)
+                (set! open false))
+              (when (not (load open))
+                (set! t0 start)
+                (set! open true))
+              (set! t1 stop)
+              (for [k 0 n]
+                (when (< (load used) 250)
+                  (set! (index buffer (load used)) (get span k))
+                  (set! used (+ (load used) 1)))))))
+        (set! idx (json/next-index doc entry))))
+    (when (and (load open) (> (load used) 0))
+      (when (push-word s
+                       (slice-new [u8] (index buffer 0) (load used))
+                       (load t0)
+                       (load t1))
+        (set! added (+ (load added) 1))))
+    (load added)))
+
+(defn read-transcript-doc [(s (ptr model/Session)) (doc json/Doc)] (-> i64)
+  (let [segments (json/object-get doc 0 "transcription")]
+    (if (< segments 0)
+        0
+        (let [count (json/child-count (json/token doc segments))
+              (mut added) 0
+              (mut idx) (+ segments 1)]
+          (for [i 0 count]
+            (let [segment (load idx)
+                  tokens (json/object-get doc segment "tokens")]
+              (if (and (>= tokens 0)
+                       (> (json/child-count (json/token doc tokens)) 0))
+                  (set! added (+ (load added) (join-tokens s doc tokens)))
+                  (let [text-index (json/object-get doc segment "text")
+                        offsets (json/object-get doc segment "offsets")]
+                    (when (and (>= text-index 0) (>= offsets 0))
+                      (when (push-word s
+                                       (json/string-text doc
+                                                         (json/token doc
+                                                                     text-index))
+                                       (token-number doc
+                                                     (json/object-get doc
+                                                                      offsets
+                                                                      "from"))
+                                       (token-number doc
+                                                     (json/object-get doc
+                                                                      offsets
+                                                                      "to")))
+                        (set! added (+ (load added) 1))))
+                    0))
+              (set! idx (json/next-index doc segment))))
+          (load added)))))
+
+;;; Paragraphs come from the recording, not from a fixed line count: a long
+;;; pause always breaks, and a run of sentences breaks so a monologue does not
+;;; become one unreadable block.
+(defn mark-paragraphs [(s (ptr model/Session))] (-> i64)
+  (let [(mut sentences) 0]
+    (for [i 0 (.word-count s)]
+      (let [w (model/word i)]
+        (when (sentence-end? (model/word-text w))
+          (set! sentences (+ (load sentences) 1)))
+        (when (< i (- (.word-count s) 1))
+          (let [gap (model/gap-full s i)]
+            (when (or (>= gap (page/paragraph-threshold))
+                      (and (sentence-end? (model/word-text w))
+                           (>= (load sentences) 5)))
+              (set! (.para w) true)
+              (set! sentences 0))))))
+    0))
+
+;;; Walk arrays sequentially rather than indexing them. `array-nth` on a token
+;;; tape scans from the array's start, so reading every element by index is
+;;; quadratic: on a 23-minute take that is 137,000 peak buckets and twelve
+;;; seconds of frozen UI just to open it. Children begin at the array token + 1,
+;;; and `next-index` steps over each value's whole subtree.
+(defn read-peaks-doc [(s (ptr model/Session)) (doc json/Doc)] (-> i64)
+  (let [array (json/object-get doc 0 "peaks")]
+    (if (< array 0)
+        0
+        (let [count (json/child-count (json/token doc array))
+              limit (if (> count 720000) 720000 count)
+              (mut idx) (+ array 1)]
+          (for [i 0 limit]
+            (set! (index (model/peaks) i)
+                  (cast f32 (token-number doc (load idx))))
+            (set! idx (json/next-index doc (load idx))))
+          (set! (.peak-count s) limit)
+          (set! (.dur-ms s) (* (cast f64 limit) (model/bucket-ms)))
+          limit))))
+
+(defn read-edits-doc [(s (ptr model/Session)) (doc json/Doc)] (-> i64)
+  (let [deleted (json/object-get doc 0 "deleted")
+        gaps (json/object-get doc 0 "gaps")
+        keeps (json/object-get doc 0 "gap_keep")
+        regions (json/object-get doc 0 "regions")
+        times (json/object-get doc 0 "times")]
+    (when (>= deleted 0)
+      (let [(mut idx) (+ deleted 1)]
+        (for [i 0 (json/child-count (json/token doc deleted))]
+          (let [k (cast i64 (token-number doc (load idx)))]
+            (when (and (>= k 0) (< k (.word-count s)))
+              (set! (.deleted (model/word k)) true))
+            (set! idx (json/next-index doc (load idx)))))))
+    (when (>= gaps 0)
+      (let [(mut idx) (+ gaps 1)]
+        (for [i 0 (json/child-count (json/token doc gaps))]
+          (let [k (cast i64 (token-number doc (load idx)))]
+            (when (and (>= k 0) (< k (.word-count s)))
+              (set! (.gap-keep (model/word k)) 0.0))
+            (set! idx (json/next-index doc (load idx)))))))
+    (when (>= keeps 0)
+      (let [(mut idx) (+ keeps 1)]
+        (for [i 0 (json/child-count (json/token doc keeps))]
+          (let [entry (load idx)
+                k (cast i64 (token-number doc (json/object-get doc entry "i")))
+                ms (token-number doc (json/object-get doc entry "ms"))]
+            (when (and (>= k 0) (< k (.word-count s)))
+              (set! (.gap-keep (model/word k)) ms))
+            (set! idx (json/next-index doc entry))))))
+    (when (>= times 0)
+      (let [(mut idx) (+ times 1)]
+        (for [i 0 (json/child-count (json/token doc times))]
+          (let [entry (load idx)
+                k (cast i64 (token-number doc (json/object-get doc entry "i")))]
+            (when (and (>= k 0) (< k (.word-count s)))
+              (set! (.t0 (model/word k))
+                    (token-number doc (json/object-get doc entry "t0")))
+              (set! (.t1 (model/word k))
+                    (token-number doc (json/object-get doc entry "t1"))))
+            (set! idx (json/next-index doc entry))))))
+    (when (>= regions 0)
+      (let [count (json/child-count (json/token doc regions))
+            limit (if (> count 512) 512 count)
+            (mut idx) (+ regions 1)]
+        (for [i 0 limit]
+          (let [entry (load idx)]
+            (set! (.from (index (model/regions) i))
+                  (token-number doc (json/object-get doc entry "from")))
+            (set! (.to (index (model/regions) i))
+                  (token-number doc (json/object-get doc entry "to")))
+            (set! idx (json/next-index doc entry))))
+        (set! (.region-count s) limit)))
+    0))
+
+(defn read-json [(s (ptr model/Session)) (path (ptr i8)) (kind i64)] (-> bool)
+  (let [a (alloc/malloc-allocator)
+        length (cast i64 (strlen path))
+        contents (fs/read-file a (slice-new [u8] (cast (ptr u8) path) length))]
+    (match contents
+      (Err [e] false)
+      (Ok [bytes]
+          (let [parsed (json/parse a bytes)
+                outcome
+                  (match parsed
+                    (Err [e] false)
+                    (Ok [doc]
+                        (let [(mut d) doc]
+                          (case kind 0
+                                (read-transcript-doc s doc) 1
+                                (read-peaks-doc s doc) (read-edits-doc s doc))
+                          (json/doc-free! (mut d))
+                          true)))]
+            (release-bytes a bytes)
+            outcome)))))
+
+(defn load-transcript [(s (ptr model/Session)) (name (ptr i8))] (-> bool)
+  (read-json s (transcript-path (index (path-buffer-b) 0) name) 0))
+
+(defn load-peaks [(s (ptr model/Session)) (name (ptr i8))] (-> bool)
+  (read-json s (peaks-path (index (path-buffer-b) 0) name) 1))
+
+(defn load-edits [(s (ptr model/Session)) (name (ptr i8))] (-> bool)
+  (read-json s (edits-path (index (path-buffer-b) 0) name) 2))
+
+;;; ---- peak import ----------------------------------------------------------
+
+;;; ffmpeg reports each 10 ms window's peak in dBFS. Mapping decibels linearly
+;;; crushes the dynamics into the top of the range — ordinary speech peaks
+;;; around -3 to -10 dB, which would put every bucket at nearly full height and
+;;; turn the waveform into a solid block. Convert to linear amplitude and
+;;; normalize against the loudest bucket instead, so quiet and loud passages
+;;; stay distinguishable.
+(defn decibels-to-amplitude [(db f64)] (-> f64)
+  (exp (* db 0.1151292546497022)))
+
+(extern exp :cc c [f64] (-> f64))
+
+(defn peak-text-path [] (-> (ptr i8))
+  c"/tmp/paper-transcript/peaks.txt")
+
+(defn import-peak-text [(s (ptr model/Session))] (-> i64)
+  (let [a (alloc/malloc-allocator)
+        path (peak-text-path)
+        contents
+          (fs/read-file a
+                        (slice-new [u8]
+                                   (cast (ptr u8) path)
+                                   (cast i64 (strlen path))))]
+    (match contents
+      (Err [e] 0)
+      (Ok [bytes]
+          (let [n (len bytes)
+                key "Peak_level="
+                (mut count) 0
+                (mut loudest) 0.0000001
+                buffer (index (number-buffer) 0)]
+            (let [(mut i) 0]
+              (while (< (load i) n)
+                (let [(mut match?) (< (+ (load i) 11) n)]
+                  (when (load match?)
+                    (for [k 0 11]
+                      (when (!= (get bytes (+ (load i) k))
+                                (get key k))
+                        (set! match? false))))
+                  (if (load match?)
+                      (do
+                        (let [(mut j) (+ (load i) 11)
+                              (mut used) 0]
+                          (while (and (< (load j) n)
+                                      (and (!= (get bytes (load j)) 10)
+                                           (< (load used) 63)))
+                            (set! (index buffer (load used))
+                                  (cast i8 (get bytes (load j))))
+                            (set! used (+ (load used) 1))
+                            (set! j (+ (load j) 1)))
+                          (set! (index buffer (load used)) (cast i8 0))
+                          (when (< (load count) 720000)
+                            ;; "-inf" is digital silence; strtod yields infinity,
+                            ;; so floor it at a level well below any real signal.
+                            (let [db (strtod buffer (cast (ptr (ptr i8)) 0))
+                                  clamped
+                                    (if (< db -120.0)
+                                        -120.0
+                                        (if (> db 0.0) 0.0 db))
+                                  amplitude (decibels-to-amplitude clamped)]
+                              (when (> amplitude (load loudest))
+                                (set! loudest amplitude))
+                              (set! (index (model/peaks) (load count))
+                                    (cast f32 amplitude))
+                              (set! count (+ (load count) 1))))
+                          (set! i (load j))))
+                      (set! i (+ (load i) 1))))))
+            (for [k 0 (load count)]
+              (set! (index (model/peaks) k)
+                    (cast f32
+                          (/ (cast f64 (load (index (model/peaks) k)))
+                             (load loudest)))))
+            (set! (.peak-count s) (load count))
+            (set! (.dur-ms s) (* (cast f64 (load count)) (model/bucket-ms)))
+            (release-bytes a bytes)
+            (load count))))))
+
+(defn peaks-json-buffer [] (-> (ptr (array i8 8388608)))
+  (primitive/alloc-static (array i8 8388608)))
+
+;;; Cache the envelope beside the transcript in the shape jim's editor reads, so
+;;; neither editor has to re-scan a take the other has already measured.
+(defn write-peaks-cache [(s (ptr model/Session)) (name (ptr i8))] (-> i64)
+  (let [out (index (peaks-json-buffer) 0)
+        capacity 8388608
+        (mut used) 0]
+    (set! used
+          (cast i64
+                (snprintf out
+                          (cast u64 capacity)
+                          c"{\"bucket_ms\":%.1f,\"peaks\":["
+                          (model/bucket-ms))))
+    (for [i 0 (.peak-count s)]
+      (when (< (load used) (- capacity 32))
+        (set! used
+              (+ (load used)
+                 (cast i64
+                       (snprintf (index out (load used))
+                                 (cast u64 (- capacity (load used)))
+                                 (if (= i 0) c"%.5f" c",%.5f")
+                                 (cast f64 (load (index (model/peaks) i)))))))))
+    (set! used
+          (+ (load used)
+             (cast i64
+                   (snprintf (index out (load used))
+                             (cast u64 (- capacity (load used)))
+                             c"]}"))))
+    (let [a (alloc/malloc-allocator)
+          path (peaks-path (index (path-buffer-b) 0) name)
+          written
+            (fs/write-file a
+                           (slice-new [u8]
+                                      (cast (ptr u8) path)
+                                      (cast i64 (strlen path)))
+                           (slice-new [u8] (cast (ptr u8) out) (load used)))]
+      (match written (Ok [n] (load used)) (Err [e] 0)))))

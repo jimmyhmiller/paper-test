@@ -1,0 +1,1564 @@
+(module transcript.ui)
+(import "coil.primitive" :as primitive)
+(import "paper.flow" :use *)
+(import "paper.platform" :as host)
+(import "paper.lighting" :as light)
+(import "paper.surface" :as surface)
+(import "paper.lettering" :use [beveled-carved])
+(import "paper.ffi" :use [snprintf])
+(import "transcript.model" :as model)
+(import "transcript.page" :as page)
+(import "transcript.library" :as lib)
+(import "transcript.theme" :as t)
+(import "transcript.details" :as d)
+(import "transcript.waveform" :as waveform)
+(import "transcript.diagnostics" :as diag)
+
+;;; Control identities. Rows take a block so a take list of any length keeps
+;;; stable ids, and every id is unique across the scene as the renderer
+;;; requires for hit testing, focus order, and accessibility.
+(const ID-DELETE 210)
+
+(const ID-FILLERS 211)
+
+(const ID-EXPORT 212)
+
+(const ID-RESTT 213)
+
+(const ID-HELP 214)
+
+(const ID-WORD-START 215)
+
+(const ID-WORD-END 216)
+
+(const ID-TRANSCRIPT 220)
+
+(const ID-WAVE 221)
+
+(const ID-RAIL 222)
+
+(const ID-PLAY 230)
+
+(const ID-ZOOM-OUT 231)
+
+(const ID-ZOOM-IN 232)
+
+(const ID-SPEED 233)
+
+(const ID-PREVIEW 234)
+
+(const ID-CROSSFADE 235)
+
+(const ID-WAVE-GAIN 236)
+
+(const ID-EXPORT-WAV 240)
+
+(const ID-RESET 241)
+
+(const ID-SUN 242)
+
+(const ID-DEPTH 243)
+
+(const ID-GRAIN 244)
+
+(const ID-HEIGHT 245)
+
+(const ID-TAKE-BASE 400)
+
+(const DRAG-NONE 0)
+
+(const DRAG-TRANSCRIPT 1)
+
+(const DRAG-WAVE 2)
+
+(const DRAG-GAP 3)
+
+;;; Rectangles the draw pass solved that the event pass needs. Events arrive
+;;; with window coordinates and no layout, so the two passes meet here.
+(defstruct Frame
+  [(transcript Rect)
+   (wave Rect)
+   (rail-list Rect)
+   (sun Rect)
+   (sun-height Rect)
+   (depth Rect)
+   (grain Rect)
+   (row-height f64)
+   (rail-scroll f64)
+   (rail-take i64)
+   (prose-w f64)
+   (wave-w f64)
+   (wave-zoom f64)
+   (wave-scroll f64)])
+
+(defn frame [] (-> (ptr Frame))
+  (primitive/alloc-static Frame))
+
+(defn lighting [] (-> (ptr light/Lighting))
+  (primitive/alloc-static light/Lighting))
+
+(defn scratch [] (-> (ptr (array i8 192)))
+  (primitive/alloc-static (array i8 192)))
+
+(defn scratch-b [] (-> (ptr (array i8 192)))
+  (primitive/alloc-static (array i8 192)))
+
+(defn text [] (-> (ptr i8))
+  (index (scratch) 0))
+
+(defn text-b [] (-> (ptr i8))
+  (index (scratch-b) 0))
+
+;;; ---- small drawing helpers ----------------------------------------------
+
+;;; Tracked serif capitals, printed into the same stock as their section.
+(defn eyebrow [(r Rect) (value (ptr i8))] (-> i64)
+  (d/tracked r value 11.0 1.8 (t/ink)))
+
+(defn tile [(r Rect) (radius f64) (z f64) (stock Material)] (-> i64)
+  (d/card r radius z stock))
+
+;;; A word's tile: the rectangle a highlight, cut, or marker occupies. Slightly
+;;; larger than the glyphs so adjacent words in one selection form a continuous
+;;; strip rather than a row of separate chips.
+(defn word-rect [(r Rect) (w (ptr model/Word)) (scroll f64)] (-> Rect)
+  (rect (+ (.x r) (- (.x w) 4.0))
+        (+ (+ (.y r) (- (.y w) scroll)) -2.0)
+        (+ (.width w) 8.0)
+        (- (page/line-height) 6.0)))
+
+(defn min-f [(a f64) (b f64)] (-> f64)
+  (if (< a b) a b))
+
+;;; The part of `r` inside `clip`, zero-sized when they do not meet.
+(defn rect-within [(r Rect) (clip Rect)] (-> Rect)
+  (let [x0 (if (> (.x r) (.x clip)) (.x r) (.x clip))
+        y0 (if (> (.y r) (.y clip)) (.y r) (.y clip))
+        x1 (min-f (+ (.x r) (.w r)) (+ (.x clip) (.w clip)))
+        y1 (min-f (+ (.y r) (.h r)) (+ (.y clip) (.h clip)))]
+    (rect x0 y0 (if (> x1 x0) (- x1 x0) 0.0) (if (> y1 y0) (- y1 y0) 0.0))))
+
+;;; Add `r`, trimmed to `clip`, as a hole in the sheet being built. Within one
+;;; sheet the renderer fills even-odd, so a nested outline is a hole — which is
+;;; how the transcript's cut words and silence pills, and the waveform's trough
+;;; and removed spans, are made. `cut-through` does the same job by subtracting
+;;; each hole from every sheet already submitted, and each subtraction leaves
+;;; the sheet more complex for the next one: a page of pills cost 80 ms a frame.
+;;; Built into the outline, they cost nothing.
+(defn hole [(r Rect) (clip Rect) (radius f64)] (-> i64)
+  (let [c (rect-within r clip)]
+    (when (and (> (.w c) 0.5) (> (.h c) 0.5))
+      (rounded-path c (min-f radius (min-f (* 0.5 (.w c)) (* 0.5 (.h c))))))
+    0))
+
+;;; A recess without its cut: the floor under a hole and the lip around it. The
+;;; hole itself must already be in the outline of the sheet above.
+(defn recess-floor [(r Rect)
+                    (radius f64)
+                    (z f64)
+                    (depth f64)
+                    (lip f64)
+                    (edge Material)
+                    (bottom Material)] (-> i64)
+  (let [rr (min-f radius (min-f (* 0.5 (.w r)) (* 0.5 (.h r))))]
+    (panel r rr (- z depth) bottom)
+    (when (and (> (.w r) (* 2.0 lip)) (> (.h r) (* 2.0 lip)) (<= lip rr))
+      (surface/frame r rr lip z edge))
+    0))
+
+(defn clamp-f [(v f64) (lo f64) (hi f64)] (-> f64)
+  (if (< v lo) lo (if (> v hi) hi v)))
+
+(defn format-time [(buffer (ptr i8)) (ms f64)] (-> (ptr i8))
+  (let [total (cast i64 (/ ms 1000.0))
+        minutes (/ total 60)
+        seconds (- total (* minutes 60))]
+    (snprintf buffer 192 c"%lld:%02lld" minutes seconds)
+    buffer))
+
+;;; ---- left rail ------------------------------------------------------------
+;;; One row plus the gap under it. The list scrolls by points, so a trackpad
+;;; gesture moves it by the distance of the gesture rather than by whole rows.
+(defn rail-row-height [] (-> f64)
+  62.0)
+
+(defn rail-extent [(s (ptr model/Session))] (-> f64)
+  (let [content (* (cast f64 (.take-count s)) (rail-row-height))
+        visible (.h (.rail-list (frame)))
+        extent (- content visible)]
+    (if (> extent 0.0) extent 0.0)))
+
+(defn draw-rail [(bounds Rect)] (-> i64)
+  (let [s (model/session)]
+    (d/card bounds 8.0 (t/z-casing) (t/rail-stock))
+    (arrange (inset bounds 16.0)
+             [rail
+              (column (grow 1.0) (grow 1.0) 12.0)
+              [heading (box (grow 1.0) (fixed 14.0))]
+              [list (box (grow 1.0) (grow 1.0))]
+              [footer (box (grow 1.0) (fixed 56.0))]]
+             (ink-height (t/z-casing))
+             (eyebrow heading c"RECORDINGS")
+             (set! (.rail-list (frame)) list)
+             (set! (.row-height (frame)) (rail-row-height))
+             (when (!= (.rail-take (frame)) (.take s))
+               (let [top (* (cast f64 (.take s)) (rail-row-height))
+                     bottom (+ top 58.0)
+                     scroll (.rail-scroll (frame))]
+                 (set! (.rail-scroll (frame))
+                       (clamp-f (if (< top scroll)
+                                    top
+                                    (if (> bottom (+ scroll (.h list)))
+                                        (- bottom (.h list))
+                                        scroll))
+                                0.0
+                                (rail-extent s)))
+                 (set! (.rail-take (frame)) (.take s))))
+             (host/paper_hit ID-RAIL
+                             (.x list)
+                             (.y list)
+                             (.w list)
+                             (.h list)
+                             c"Recordings"
+                             0
+                             0.0)
+             (with-clip (rect (- (.x list) 7.0)
+                              (- (.y list) 3.0)
+                              (+ (.w list) 14.0)
+                              (+ (.h list) 6.0))
+                        (let [row-h 56.0
+                              scrolled
+                                (page/snap-to-pixel (.rail-scroll (frame))
+                                                    (host/paper_backing_scale))]
+                          (for [i 0 (.take-count s)]
+                            (let [offset
+                                    (- (* (cast f64 i) (rail-row-height))
+                                       scrolled)
+                                  selected (= i (.take s))
+                                  hovered
+                                    (host/paper_hovered (+ ID-TAKE-BASE i))
+                                  pressed
+                                    (host/paper_pressed (+ ID-TAKE-BASE i))
+                                  grow (if selected 6.0 (if hovered 2.0 0.0))
+                                  z
+                                    (+ (t/z-casing)
+                                       (if pressed
+                                           2.0
+                                           (if selected
+                                               7.0
+                                               (if hovered 5.0 3.0))))
+                                  r
+                                    (rect (- (.x list) grow)
+                                          (+ (+ (.y list) offset)
+                                             (if selected
+                                                 -2.0
+                                                 (if hovered 1.0 2.0)))
+                                          (+ (.w list) (* grow 2.0))
+                                          (if selected
+                                              60.0
+                                              (if hovered 54.0 52.0)))
+                                  take (model/take-at i)]
+                              (when (and (< offset (.h list))
+                                         (> (+ offset row-h) 0.0))
+                                (d/card r
+                                        6.0
+                                        z
+                                        (if selected
+                                            (t/paper-stock)
+                                            (if hovered
+                                                (tint (t/rail-row-stock)
+                                                      0xeee3ce
+                                                      0.1)
+                                                (t/rail-row-stock))))
+                                (host/paper_hit (+ ID-TAKE-BASE i)
+                                                (.x r)
+                                                (.y r)
+                                                (.w r)
+                                                (.h r)
+                                                (lib/display-name (model/take-name take))
+                                                3
+                                                (if selected 1.0 0.0))
+                                (ink-height z)
+                                (when selected
+                                  (disc (+ (.x r) 12.0)
+                                        (+ (.y r) 24.0)
+                                        9.0
+                                        (+ z 1.5)
+                                        (t/terracotta-stock)))
+                                (text-box (rect (+ (.x r)
+                                                   (if selected 28.0 12.0))
+                                                (+ (.y r) 8.0)
+                                                (- (.w r)
+                                                   (if selected 38.0 24.0))
+                                                22.0)
+                                          16.0
+                                          (if selected (t/ink) 0x3c4636)
+                                          (t/serif)
+                                          (lib/display-name (model/take-name take)))
+                                (when (> (.dur-ms take) 0.0)
+                                  (let [stamp
+                                          (format-time (text) (.dur-ms take))
+                                        tw (text-width stamp 12.0 (t/serif))]
+                                    (label (- (+ (.x r) (.w r)) (+ tw 12.0))
+                                           (+ (.y r) 30.0)
+                                           12.0
+                                           (if selected (t/ink-soft) 0x4d5745)
+                                           (t/serif)
+                                           stamp))))))))
+             (d/card footer 6.0 (+ (t/z-casing) 2.0) (t/rail-row-stock))
+             (ink-height (+ (t/z-casing) 2.0))
+             (label (+ (.x footer) 14.0)
+                    (+ (.y footer) 12.0)
+                    14.0
+                    0x3c4636
+                    (t/serif)
+                    c"+  New Recording")
+             (text-box (rect (+ (.x footer) 14.0)
+                             (+ (.y footer) 32.0)
+                             (- (.w footer) 26.0)
+                             17.0)
+                       11.0
+                       0x4d5745
+                       (t/sans)
+                       c"Drop audio in ~/.jim/recordings")))
+  0)
+
+;;; ---- transcript -----------------------------------------------------------
+
+;;; Every word state is a different piece of paper. A kept word is ink on the
+;;; sheet; a selection is a strip laid over it; the spoken word is a raised
+;;; tile; a filler is marked but still present; a cut word is a hole punched
+;;; through to the stock below, with its ghost pressed into the floor.
+;;;
+;;; Runs of the same state on one line become ONE piece rather than one per
+;;; word. A hundred consecutive cuts should read as a single hole in the page,
+;;; not as a hundred adjacent holes with a hundred seams between them, and it
+;;; keeps the sheet count proportional to what is actually visible.
+(const STATE-PLAIN 0)
+
+(const STATE-CUT 1)
+
+(const STATE-SELECTED 2)
+
+(const STATE-CURRENT 3)
+
+(const STATE-FILLER 4)
+
+(defn word-state [(s (ptr model/Session)) (i i64) (current i64)] (-> i64)
+  (let [w (model/word i)]
+    (cond (.deleted w) STATE-CUT
+          (and (= (.sel-kind s) model/SEL-WORDS)
+               (and (>= (model/selection-low s) 0)
+                    (and (>= i (model/selection-low s))
+                         (<= i (model/selection-high s)))))
+            STATE-SELECTED
+          (= i current) STATE-CURRENT
+          (.filler w) STATE-FILLER
+          :else STATE-PLAIN)))
+
+;;; The last word of the run that starts at `i`: same state, same line, and no
+;;; gap pill in between to interrupt it.
+(defn run-end [(s (ptr model/Session)) (i i64) (state i64) (current i64)] (-> i64)
+  (let [(mut j) i]
+    (while (and (< (+ (load j) 1) (.word-count s))
+                (and (= (word-state s (+ (load j) 1) current) state)
+                     (and (primitive/fcmp-eq (.y (model/word (+ (load j) 1)))
+                                             (.y (model/word (load j))))
+                          (not (> (.gap-w (model/word (load j))) 0.0)))))
+      (set! j (+ (load j) 1)))
+    (load j)))
+
+(defn run-rect [(r Rect)
+                (s (ptr model/Session))
+                (from i64)
+                (to i64)
+                (scroll f64)] (-> Rect)
+  (let [a (model/word from)
+        b (model/word to)]
+    (rect (+ (.x r) (- (.x a) 4.0))
+          (+ (+ (.y r) (- (.y a) scroll)) -2.0)
+          (+ (- (+ (.x b) (.width b)) (.x a)) 8.0)
+          (- (page/line-height) 6.0))))
+
+;;; A pill's rectangle. `y` is its word's line relative to the view. A pill
+;;; that did not fit after its word wrapped to the start of the next line, so
+;;; it is moved by the difference between the line it was laid out on and its
+;;; word's — placing it on the word's line put it over that line's first words.
+(defn pill-rect [(r Rect) (s (ptr model/Session)) (i i64) (y f64)] (-> Rect)
+  (let [w (model/word i)
+        lh (page/line-height)
+        line (+ y (- (.gap-y w) (.y w)))]
+    (rect (+ (.x r) (.gap-x w)) (+ (+ (.y r) line) 1.0) (.gap-w w) (- lh 10.0))))
+
+;;; Every hole the transcript needs in the sheet this frame: each run of cut
+;;; words at least partly on screen. Silence pills sit on top. The walk is the one
+;;; `draw-transcript` makes, so the holes line up with the floors it draws.
+(defn transcript-holes [(r Rect)] (-> i64)
+  (let [s (model/session)
+        scroll (page/shown-scroll s (host/paper_backing_scale))
+        lh (page/line-height)
+        current (if (.playing s) (model/word-at s (.cur-ms s)) -1)
+        (mut i) (page/first-visible s (- scroll lh))
+        (mut running) true]
+    (while (and (load running) (< (load i) (.word-count s)))
+      (let [w (model/word (load i))
+            y (- (.y w) scroll)]
+        (if (> y (.h r))
+            (set! running false)
+            (let [state (word-state s (load i) current)
+                  last (run-end s (load i) state current)]
+              (when (> (+ y lh) 0.0)
+                (when (= state STATE-CUT)
+                  (hole (run-rect r s (load i) last scroll) r 3.0)))
+              (set! i (+ last 1))
+              0))))
+    0))
+
+(defn draw-gap-pill [(r Rect) (s (ptr model/Session)) (i i64) (y f64)] (-> i64)
+  (let [w (model/word i)
+        lh (page/line-height)
+        kept (model/gap-kept s i)
+        full (model/gap-full s i)
+        pr (pill-rect r s i y)
+        cut (< kept 1.0)
+        trimmed (< kept (- full 1.0))
+        stock
+          (if cut
+              (t/terracotta-stock)
+              (if trimmed (t/ochre-stock) (t/slate-stock)))]
+    (d/card pr (/ (- lh 10.0) 2.0) (+ (t/z-sheet) 1.8) stock)
+    (ink-height (+ (t/z-sheet) 1.8))
+    (label (+ (.x pr) 9.0)
+           (+ (.y pr) 1.0)
+           (- (page/text-size) 4.0)
+           (if cut 0x4a1c12 (if trimmed 0x4a3410 0x223442))
+           (t/serif)
+           (page/gap-label kept)))
+  0)
+
+;;; What to say when there are no words: which of the two reasons it is, and
+;;; what still works meanwhile — the waveform is editable without a transcript.
+(defn draw-empty [(r Rect)] (-> i64)
+  (let [s (model/session)]
+    (ink-height (t/z-sheet))
+    (cond (< (.take s) 0)
+            (label (.x r)
+                   (+ (.y r) 6.0)
+                   15.0
+                   (t/ink-faint)
+                   (t/serif)
+                   c"Choose a recording on the left.")
+          (.transcribing s)
+            (do
+              (label (.x r)
+                     (+ (.y r) 6.0)
+                     15.0
+                     (t/ink-faint)
+                     (t/serif)
+                     c"Listening to this take…")
+              (label (.x r)
+                     (+ (.y r) 30.0)
+                     12.0
+                     (t/ink-faint)
+                     (t/sans)
+                     c"Whisper is transcribing, then WhisperX aligns the word timings.")
+              0)
+          :else
+            (do
+              (label (.x r)
+                     (+ (.y r) 6.0)
+                     15.0
+                     (t/ink-faint)
+                     (t/serif)
+                     c"No transcript for this take yet.")
+              (label (.x r)
+                     (+ (.y r) 30.0)
+                     12.0
+                     (t/ink-faint)
+                     (t/sans)
+                     c"Press Re-do STT to transcribe it. You can already cut regions on the waveform below.")
+              0)))
+  0)
+
+(defn draw-transcript [(r Rect)] (-> i64)
+  (let [s (model/session)
+        scroll (page/shown-scroll s (host/paper_backing_scale))
+        lh (page/line-height)
+        size (page/text-size)
+        font (page/transcript-font)
+        current (if (.playing s) (model/word-at s (.cur-ms s)) -1)]
+    (set! (.transcript (frame)) r)
+    (let [phase (diag/now)]
+      (with-clip r
+                 (let [(mut i) (page/first-visible s (- scroll lh))
+                       (mut running) true]
+                   (while (and (load running) (< (load i) (.word-count s)))
+                     (let [w (model/word (load i))
+                           y (- (.y w) scroll)]
+                       (if (> y (.h r))
+                           (set! running false)
+                           (let [state (word-state s (load i) current)
+                                 last (run-end s (load i) state current)
+                                 wr (run-rect r s (load i) last scroll)]
+                             (when (> (+ y lh) 0.0)
+                               (case state STATE-CUT
+                                     (do
+                                       (recess-floor wr
+                                                     3.0
+                                                     (t/z-sheet)
+                                                     2.0
+                                                     0.55
+                                                     (t/cut-floor)
+                                                     (t/cut-floor))
+                                       (ink-height (- (t/z-sheet) 2.0))
+                                       (for [k (load i) (+ last 1)]
+                                         (label (+ (.x r) (.x (model/word k)))
+                                                (+ (.y r)
+                                                   (- (.y (model/word k))
+                                                      scroll))
+                                                size
+                                                0x968b78
+                                                font
+                                                (model/word-text (model/word k))))
+                                       0)
+                                       STATE-SELECTED
+                                     (do
+                                       (tile wr
+                                             1.5
+                                             (+ (t/z-sheet) 1.5)
+                                             (t/slate-stock))
+                                       (ink-height (+ (t/z-sheet) 1.5))
+                                       (for [k (load i) (+ last 1)]
+                                         (label (+ (.x r) (.x (model/word k)))
+                                                (+ (.y r)
+                                                   (- (.y (model/word k))
+                                                      scroll))
+                                                size
+                                                0x1c2933
+                                                font
+                                                (model/word-text (model/word k))))
+                                       0)
+                                       STATE-CURRENT
+                                     (do
+                                       (tile wr
+                                             5.0
+                                             (+ (t/z-sheet) 4.0)
+                                             (t/ochre-stock))
+                                       (ink-height (+ (t/z-sheet) 4.0))
+                                       (label (+ (.x r) (.x w))
+                                              (+ (.y r) y)
+                                              size
+                                              0x3d2c10
+                                              font
+                                              (model/word-text w))
+                                       0)
+                                       STATE-FILLER
+                                     (do
+                                       (tile wr
+                                             5.0
+                                             (+ (t/z-sheet) 2.0)
+                                             (t/plum-stock))
+                                       (ink-height (+ (t/z-sheet) 2.0))
+                                       (for [k (load i) (+ last 1)]
+                                         (label (+ (.x r) (.x (model/word k)))
+                                                (+ (.y r)
+                                                   (- (.y (model/word k))
+                                                      scroll))
+                                                size
+                                                0x3b2b41
+                                                font
+                                                (model/word-text (model/word k))))
+                                       0)
+                                       (do
+                                         (ink-height (t/z-sheet))
+                                         (for [k (load i) (+ last 1)]
+                                           (label (+ (.x r) (.x (model/word k)))
+                                                  (+ (.y r)
+                                                     (- (.y (model/word k))
+                                                        scroll))
+                                                  size
+                                                  (t/ink)
+                                                  font
+                                                  (model/word-text (model/word k))))
+                                         0))
+                               (for [k (load i) (+ last 1)]
+                                 (when (> (.gap-w (model/word k)) 0.0)
+                                   (draw-gap-pill r
+                                                  s
+                                                  k
+                                                  (- (.y (model/word k)) scroll)))))
+                             (set! i (+ last 1))
+                             0)))))
+                 (when (= (.word-count s) 0) (draw-empty r))
+                 ;; Registered after everything the transcript draws, so nothing drawn
+                 ;; later in this pass can sit over it for pointer input.
+                 (host/paper_hit ID-TRANSCRIPT
+                                 (.x r)
+                                 (.y r)
+                                 (.w r)
+                                 (.h r)
+                                 c"Transcript"
+                                 0
+                                 0.0))
+      (diag/add-phase diag/PHASE-TRANSCRIPT phase))
+    0))
+
+;;; ---- waveform -------------------------------------------------------------
+(defn envelope-y [(mid f64) (half f64) (value f32) (gain f64)] (-> f64)
+  (- mid (* half (clamp-f (* (cast f64 value) gain) -1.0 1.0))))
+
+;;; A short, flat piece of dyed stock: a fine exposed pulp edge rather than
+;;; a rounded tube. Height encodes the signed extrema of its complete time bin.
+(defn wave-strip [(r Rect) (z f64)] (-> i64)
+  (edged-panel r
+               0.45
+               z
+               0.38
+               0.32
+               (tint (t/slate-stock) 0xd8e3e4 0.42)
+               (t/slate-stock)))
+
+;;; At sample zoom, the envelope becomes a connected trace with discrete
+;;; sample beads once there is room. Stereo lanes are never downmixed.
+(defn draw-source-wave [(r Rect) (s (ptr model/Session))] (-> i64)
+  (let [w (waveform/state)
+        z (- (t/z-sheet) 2.0)
+        span (/ (.w r) (.wzoom s))
+        gain (if (> (.wave-gain s) 0.0) (.wave-gain s) 1.0)]
+    (if (waveform/prepare w
+                          (.wscroll s)
+                          (.wzoom s)
+                          (.w r)
+                          (host/paper_backing_scale))
+        (let [lane (/ (- (.h r) 13.0) (cast f64 (.channels w)))
+              half (maximum 1.0 (- (* lane 0.5) 2.0))
+              x (+ (.x r) (.offset w))
+              thickness (/ 0.45 (host/paper_backing_scale))]
+          (for [ch 0 (.channels w)]
+            (let [mid (+ (+ (.y r) 13.0) (* (+ (cast f64 ch) 0.5) lane))
+                  first (waveform/column w ch 0)]
+              (ink-height (- z 0.5))
+              (rule (.x r) mid (.w r) 0x918978)
+              (if (.sample-mode w)
+                  (do
+                    (begin-sheet)
+                    (move-to x
+                             (- (envelope-y mid half (.high first) gain)
+                                thickness))
+                    (for [i 1 (.columns w)]
+                      (let [v (waveform/column w ch i)]
+                        (line-to (+ x (* (cast f64 i) (.step w)))
+                                 (- (envelope-y mid half (.high v) gain)
+                                    thickness))))
+                    (let [(mut i) (- (.columns w) 1)]
+                      (while (>= (load i) 0)
+                        (let [v (waveform/column w ch (load i))]
+                          (line-to (+ x (* (cast f64 (load i)) (.step w)))
+                                   (+ (envelope-y mid half (.low v) gain)
+                                      thickness)))
+                        (set! i (- (load i) 1))))
+                    (close-path)
+                    (finish-sheet z (t/slate-stock))
+                    (when (>= (.step w) 3.0)
+                      (for [i 0 (.columns w)]
+                        (let [v (waveform/column w ch i)]
+                          (panel (rect (- (+ x (* (cast f64 i) (.step w))) 0.85)
+                                       (- (envelope-y mid half (.high v) gain)
+                                          0.85)
+                                       1.7
+                                       1.7)
+                                 0.85
+                                 (+ z 0.5)
+                                 (t/slate-stock)))))
+                    0)
+                  (let [group
+                          (waveform/strip-columns (host/paper_backing_scale))
+                        pitch (* (cast f64 group) (.step w))
+                        gap 1.55
+                        width (- pitch gap)
+                        (mut a) 0]
+                    (while (< (load a) (.columns w))
+                      (let [b (waveform/min-i (.columns w) (+ (load a) group))
+                            v (waveform/strip-range w ch (load a) b)
+                            top (envelope-y mid half (.high v) gain)
+                            bottom (envelope-y mid half (.low v) gain)
+                            h (maximum 1.1 (- bottom top))]
+                        (wave-strip (rect (+ (+ x
+                                                (* (cast f64 (load a))
+                                                   (.step w)))
+                                             (* gap 0.5))
+                                          (- (* (+ top bottom) 0.5) (* h 0.5))
+                                          width
+                                          h)
+                                    z)
+                        (set! a b)))
+                    0))
+              (ink-height (+ z 0.2))
+              (snprintf (text-b) 192 c"%lld" (+ ch 1))
+              (label (+ (.x r) 3.0)
+                     (- mid half)
+                     8.0
+                     0x243844
+                     (t/mono)
+                     (if (= (.channels w) 2) (if (= ch 0) c"L" c"R") (text-b)))))
+          ;; Source-time ticks keep the relation between the words and the
+          ;; audio explicit at every zoom, down to fractions of a millisecond.
+          (panel (rect (.x r) (.y r) (.w r) 12.0)
+                 0.0
+                 (- z 0.6)
+                 (t/cut-floor))
+          (ink-height z)
+          (for [i 0 5]
+            (let [fraction (/ (cast f64 i) 4.0)
+                  seconds (+ (/ (.wscroll s) 1000.0) (* fraction span))]
+              (snprintf (text-b)
+                        192
+                        (if (< span 0.1)
+                            c"%.6fs"
+                            (if (< span 10.0) c"%.3fs" c"%.1fs"))
+                        seconds)
+              (let [tw (text-width (text-b) 8.0 (t/mono))]
+                (label (+ (.x r) (* fraction (- (.w r) tw)))
+                       (.y r)
+                       8.0
+                       (t/ink)
+                       (t/mono)
+                       (text-b)))))
+          0)
+        (do
+          (ink-height (- (t/z-sheet) 5.0))
+          (label (+ (.x r) 8.0)
+                 (+ (.y r) 20.0)
+                 12.0
+                 (t/ink)
+                 (t/serif)
+                 (if (.running w)
+                     c"Reading the source waveform…"
+                     c"Source waveform unavailable."))
+          0))))
+
+(defn draw-waveform [(r Rect)] (-> i64)
+  (let [wave-phase (diag/now)
+        s (model/session)
+        inner (inset r 6.0)
+        mid (+ (.y inner) (* (.h inner) 0.5))
+        half (* (.h inner) 0.5)
+        origin (.x inner)
+        stride (page/column-stride)]
+    (set! (.wave (frame)) inner)
+    (when (or (primitive/fcmp-ne (.w inner) (.wave-w (frame)))
+              (primitive/fcmp-ne (.wzoom s) (.wave-zoom (frame)))
+              (primitive/fcmp-ne (.wscroll s) (.wave-scroll (frame))))
+      (when (and (primitive/fcmp-ne (.w inner) (.wave-w (frame)))
+                 (> (.dur-ms s) 0.0))
+        (set! (.wzoom s) (page/fit-zoom s (.w inner))))
+      (page/build-columns s origin (.w inner))
+      (set! (.wave-w (frame)) (.w inner))
+      (set! (.wave-zoom (frame)) (.wzoom s))
+      (set! (.wave-scroll (frame)) (.wscroll s)))
+    (trough r inner s origin)
+    (when (> (.dur-ms s) 0.0)
+      (with-clip inner
+                 ;; Removed spans are cut clean through the trough floor, so the edit
+                 ;; reads as missing material rather than a coloured overlay.
+                 (let [(mut from) 0.0
+                       (mut to) 0.0]
+                   (for [i 0 (+ (.clip-count s) 1)]
+                     (when (page/removed-span s i (mut from) (mut to))
+                       (let [x0
+                               (clamp-f (page/ms-to-x s origin (load from))
+                                        (.x inner)
+                                        (+ (.x inner) (.w inner)))
+                             x1
+                               (clamp-f (page/ms-to-x s origin (load to))
+                                        (.x inner)
+                                        (+ (.x inner) (.w inner)))]
+                         (when (> (- x1 x0) 0.4)
+                           (recess-floor (rect x0
+                                               (.y inner)
+                                               (- x1 x0)
+                                               (.h inner))
+                                         1.0
+                                         (- (t/z-sheet) 5.0)
+                                         5.0
+                                         0.45
+                                         (t/ground-stock)
+                                         (t/ground-stock)))))))
+                 ;; A word selection shades its own time span, so a run picked in the
+                 ;; transcript is visible as audio and the reverse.
+                 (let [(mut a) -1.0
+                       (mut b) -1.0]
+                   (cond (and (= (.sel-kind s) model/SEL-WORDS)
+                              (>= (model/selection-low s) 0))
+                           (do
+                             (set! a (.t0 (model/word (model/selection-low s))))
+                             (set! b
+                                   (.t1 (model/word (model/selection-high s))))
+                             0)
+                         (and (= (.sel-kind s) model/SEL-REGION)
+                              (>= (model/region-low s) 0.0))
+                           (do
+                             (set! a (model/region-low s))
+                             (set! b (model/region-high s))
+                             0)
+                         :else 0)
+                   (when (>= (load a) 0.0)
+                     (let [x0
+                             (clamp-f (page/ms-to-x s origin (load a))
+                                      (.x inner)
+                                      (+ (.x inner) (.w inner)))
+                           x1
+                             (clamp-f (page/ms-to-x s origin (load b))
+                                      (.x inner)
+                                      (+ (.x inner) (.w inner)))]
+                       (when (>= (- x1 x0) 1.0)
+                         (panel (rect x0
+                                      (.y inner)
+                                      (maximum 2.0 (- x1 x0))
+                                      (.h inner))
+                                2.0
+                                (- (t/z-sheet) 4.0)
+                                (t/slate-stock))))))
+                 (when (not (.requested (waveform/state)))
+                   ;; The deterministic visual fixture supplies its own envelope.
+                   ;; Real recordings always use the native source path below.
+                   (for [c 0 (load (index (page/column-count) 0))]
+                     (let [v (cast f64 (load (index (page/columns) c)))
+                           h (maximum 1.5 (* v half))
+                           x
+                             (+ (load (index (page/column-origin) 0))
+                                (* (cast f64 c) (page/column-step s)))]
+                       (panel (rect x
+                                    (- mid h)
+                                    (minimum (- stride 1.0)
+                                             (- (page/column-step s) 0.7))
+                                    (* h 2.0))
+                              1.0
+                              (- (t/z-sheet) 2.0)
+                              (t/slate-stock)))))
+                 (when (.requested (waveform/state)) (draw-source-wave inner s))
+                 ;; The playhead is a brass rule with a raised tab, the one warm vertical
+                 ;; in the strip.
+                 (let [px (page/ms-to-x s origin (.cur-ms s))]
+                   (when (and (>= px (.x inner))
+                              (<= px (+ (.x inner) (.w inner))))
+                     (panel (rect (- px 0.9) (.y inner) 1.8 (.h inner))
+                            0.0
+                            (+ (t/z-sheet) 2.0)
+                            (t/ochre-stock))
+                     (begin-sheet)
+                     (move-to (- px 9.0) (.y inner))
+                     (line-to (+ px 9.0) (.y inner))
+                     (line-to px (+ (.y inner) 16.0))
+                     (close-path)
+                     (finish-sheet (+ (t/z-sheet) 4.0) (t/ochre-stock))))
+                 0))
+    (host/paper_hit ID-WAVE (.x r) (.y r) (.w r) (.h r) c"Waveform" 0 0.0)
+    (diag/add-phase diag/PHASE-WAVEFORM wave-phase)
+    (when (<= (.dur-ms s) 0.0)
+      (ink-height (- (t/z-sheet) 5.0))
+      (label (+ (.x inner) 4.0)
+             (- mid 8.0)
+             12.0
+             (t/ink-faint)
+             (t/sans)
+             (if (= (.take s) -1)
+                 c"No take selected."
+                 c"Reading the waveform…")))
+    0))
+
+;;; The waveform's well without its cut. The trough's hole is in the main
+;;; sheet; its floor is built here with the removed spans already punched out,
+;;; and the well's two stepped frames are laid round it.
+(defn trough [(r Rect) (inner Rect) (s (ptr model/Session)) (origin f64)] (-> i64)
+  (let [z (t/z-sheet)]
+    (begin-sheet)
+    (rounded-path r 7.0)
+    (when (> (.dur-ms s) 0.0)
+      (let [(mut from) 0.0
+            (mut to) 0.0]
+        (for [i 0 (+ (.clip-count s) 1)]
+          (when (page/removed-span s i (mut from) (mut to))
+            (let [x0
+                    (clamp-f (page/ms-to-x s origin (load from))
+                             (.x inner)
+                             (+ (.x inner) (.w inner)))
+                  x1
+                    (clamp-f (page/ms-to-x s origin (load to))
+                             (.x inner)
+                             (+ (.x inner) (.w inner)))]
+              (when (> (- x1 x0) 0.4)
+                (hole (rect x0 (.y inner) (- x1 x0) (.h inner)) inner 1.0)))))))
+    (finish-sheet (- z 5.0) (t/cut-floor))
+    (surface/frame r 7.0 3.0 (- z 2.0) (t/cut-floor))
+    (surface/frame r 7.0 0.8 (+ z 1.0) (t/paper-stock))
+    0))
+
+;;; ---- transport ------------------------------------------------------------
+(defn draw-transport [(r Rect)] (-> i64)
+  (let [s (model/session)
+        compact (< (.w r) 680.0)
+        z (+ (t/z-sheet) 1.0)]
+    (arrange r
+             [bar
+              (row (grow 1.0) (grow 1.0) (if compact 5.0 8.0))
+              [play (box (fixed (if compact 94.0 112.0)) (grow 1.0))]
+              [clock (box (fixed (if compact 98.0 132.0)) (grow 1.0))]
+              [zoom-out (box (fixed (if compact 30.0 34.0)) (grow 1.0))]
+              [zoom-in (box (fixed (if compact 30.0 34.0)) (grow 1.0))]
+              [speed (box (fixed (if compact 60.0 64.0)) (grow 1.0))]
+              [preview (box (fixed (if compact 90.0 96.0)) (grow 1.0))]
+              [amplitude (box (fixed (if compact 60.0 76.0)) (grow 1.0))]
+              [spring (box (grow 1.0) (grow 1.0))]
+              [fade-label (box (fixed (if compact 0.0 74.0)) (grow 1.0))]
+              [fade (box (fixed 58.0) (grow 1.0))]]
+             (d/paper-button ID-PLAY
+                             play
+                             (if (.playing s) c"Pause" c"Play")
+                             (if (.playing s) 6 5)
+                             (t/terracotta-stock)
+                             z
+                             true)
+             (ink-height z)
+             (snprintf (text)
+                       192
+                       c"%s / %s"
+                       (format-time (text-b) (.cur-ms s))
+                       (format-time (index (scratch) 96) (.dur-ms s)))
+             (label (.x clock)
+                    (+ (.y clock) 11.0)
+                    (if compact 14.0 17.0)
+                    (t/ink)
+                    (t/serif)
+                    (text))
+             (d/paper-button ID-ZOOM-OUT
+                             zoom-out
+                             c"−"
+                             0
+                             (t/paper-stock)
+                             z
+                             false)
+             (d/paper-button ID-ZOOM-IN zoom-in c"+" 0 (t/paper-stock) z false)
+             (snprintf (text-b) 192 c"%.2f×" (.speed s))
+             (d/paper-button ID-SPEED speed (text-b) 0 (t/ochre-stock) z false)
+             (d/paper-button ID-PREVIEW
+                             preview
+                             c"Preview"
+                             0
+                             (t/paper-stock)
+                             z
+                             false)
+             (snprintf (text-b)
+                       192
+                       c"↕ %.1f×"
+                       (if (> (.wave-gain s) 0.0) (.wave-gain s) 1.0))
+             (d/named-button ID-WAVE-GAIN
+                             amplitude
+                             (text-b)
+                             0
+                             (t/paper-stock)
+                             z
+                             false
+                             c"Waveform vertical scale; does not change audio")
+             (ink-height z)
+             (when (not compact)
+               (label (.x fade-label)
+                      (+ (.y fade-label) 11.0)
+                      15.0
+                      (t/ink)
+                      (t/serif)
+                      c"crossfade"))
+             (let [track (rect (.x fade) (+ (.y fade) 8.0) 58.0 26.0)]
+               (recess track
+                       13.0
+                       z
+                       1.4
+                       0.65
+                       (t/casing-stock)
+                       (if (.crossfade s) (t/sage-stock) (t/cut-floor)))
+               (d/card (rect (+ (.x track) (if (.crossfade s) 32.0 1.0))
+                             (- (.y track) 2.0)
+                             29.0
+                             29.0)
+                       14.5
+                       (+ z 3.0)
+                       (d/interactive-stock ID-CROSSFADE (t/paper-stock)))
+               (host/paper_hit ID-CROSSFADE
+                               (.x track)
+                               (.y track)
+                               58.0
+                               26.0
+                               c"Crossfade"
+                               2
+                               (if (.crossfade s) 1.0 0.0)))))
+  0)
+
+;;; ---- main sheet -----------------------------------------------------------
+(defn draw-actions [(r Rect)] (-> i64)
+  (let [s (model/session)
+        armed (!= (.sel-kind s) model/SEL-NONE)
+        compact (< (.w r) 650.0)
+        single
+          (and (= (.sel-kind s) model/SEL-WORDS)
+               (>= (.sa s) 0)
+               (= (.sa s) (.sb s)))]
+    (arrange r
+             [bar
+              (row (grow 1.0) (grow 1.0) (if compact 8.0 14.0))
+              [cut (box (fixed (if compact 106.0 118.0)) (grow 1.0))]
+              [fillers (box (fixed (if compact 105.0 118.0)) (grow 1.0))]
+              [export (box (fixed (if compact 106.0 120.0)) (grow 1.0))]
+              [restt (box (fixed (if compact 140.0 148.0)) (grow 1.0))]
+              [help (box (fixed 42.0) (grow 1.0))]
+              [spring (box (grow 1.0) (grow 1.0))]]
+             (with-enabled armed
+                           (d/paper-button ID-DELETE
+                                           cut
+                                           (if (= (.sel-kind s)
+                                                  model/SEL-REGION)
+                                               c"Cut"
+                                               (if (model/selection-all-deleted? s)
+                                                   c"Restore"
+                                                   c"Delete"))
+                                           1
+                                           (t/terracotta-stock)
+                                           (t/z-sheet)
+                                           true))
+             (with-enabled (> (.word-count s) 0)
+                           (d/paper-button ID-FILLERS
+                                           fillers
+                                           c"Fillers"
+                                           2
+                                           (t/plum-stock)
+                                           (t/z-sheet)
+                                           true))
+             (with-enabled (> (.clip-count s) 0)
+                           (d/paper-button ID-EXPORT
+                                           export
+                                           c"Export"
+                                           3
+                                           (t/sage-stock)
+                                           (t/z-sheet)
+                                           false))
+             (with-enabled (and (>= (.take s) 0) (not (.transcribing s)))
+                           (d/paper-button ID-RESTT
+                                           restt
+                                           c"Re-do STT"
+                                           4
+                                           (t/paper-stock)
+                                           (t/z-sheet)
+                                           false))
+             (d/paper-button ID-HELP
+                             help
+                             c"?"
+                             7
+                             (t/paper-stock)
+                             (t/z-sheet)
+                             false)
+             ;; Alignment commands are contextual and live in the reserved gap
+             ;; below the main toolbar, so they never squeeze its primary actions.
+             (when single
+               (d/paper-button ID-WORD-START
+                               (rect (.x r)
+                                     (+ (+ (.y r) (.h r)) 7.0)
+                                     112.0
+                                     24.0)
+                               c"[  Word start"
+                               0
+                               (t/paper-stock)
+                               (t/z-sheet)
+                               false)
+               (d/paper-button ID-WORD-END
+                               (rect (+ (.x r) 122.0)
+                                     (+ (+ (.y r) (.h r)) 7.0)
+                                     112.0
+                                     24.0)
+                               c"Word end  ]"
+                               0
+                               (t/paper-stock)
+                               (t/z-sheet)
+                               false))))
+  0)
+
+(defn draw-sheet [(bounds Rect)] (-> i64)
+  (let [s (model/session)]
+    (arrange (inset bounds 4.0)
+             [sheet
+              (padded (column (grow 1.0) (grow 1.0) 10.0)
+                      (edges 24.0 18.0 24.0 16.0))
+              [title (box (grow 1.0) (fixed 60.0))]
+              [meta (box (grow 1.0) (fixed 17.0))]
+              [actions (box (grow 1.0) (fixed 42.0))]
+              [breath (box (grow 1.0) (fixed 26.0))]
+              [body
+               (row (grow 1.0) (grow 1.0) 16.0)
+               [margin (box (fixed 62.0) (grow 1.0))]
+               [prose (box (grow 1.0) (grow 1.0))]]
+              [tray-gap (box (grow 1.0) (fixed 16.0))]
+              [wave (box (grow 1.0) (fixed 112.0))]
+              [transport (box (grow 1.0) (fixed 40.0))]]
+             ;; Reflow first: the holes and both transcript columns read the
+             ;; word positions.
+             (when (primitive/fcmp-ne (.w prose) (.prose-w (frame)))
+               (page/reflow s (.w prose))
+               (set! (.prose-w (frame)) (.w prose)))
+             ;; The sheet is submitted once, with every hole this frame needs
+             ;; already in its outline: cut words, silence pills, the trough.
+             ;; The transcript is its own sheet. Its holes move on every scroll, and
+             ;; if they lived in the big sheet the whole sheet would be re-rastered
+             ;; and re-lit each frame; as a separate sheet only the transcript's
+             ;; own rectangle changes. The big sheet has a still hole where it sits.
+             (begin-sheet)
+             (rounded-path bounds 8.0)
+             (rounded-path prose 0.0)
+             (rounded-path wave 7.0)
+             (finish-sheet (t/z-sheet) (t/paper-stock))
+             (surface/frame bounds
+                            8.0
+                            0.6
+                            (t/z-sheet)
+                            (tint (t/paper-stock) 0xfff8e6 0.25))
+             ;; A separate warmer stock carries the audio controls. Its aperture
+             ;; shares the waveform hole; no frame-sized boolean subtraction.
+             (let [dock
+                     (rect (.x bounds)
+                           (- (.y wave) 16.0)
+                           (.w bounds)
+                           (- (+ (.y bounds) (.h bounds)) (- (.y wave) 16.0)))]
+               (begin-sheet)
+               (rounded-path dock 7.0)
+               (rounded-path wave 7.0)
+               (finish-sheet (+ (t/z-sheet) 1.0) (t/casing-stock))
+               (surface/frame dock
+                              7.0
+                              0.7
+                              (+ (t/z-sheet) 1.0)
+                              (tint (t/casing-stock) 0xfff3dd 0.22)))
+             ;; Its holes are edges; its boundary is a seamless join, since a paper
+             ;; edge there reads as a groove around the transcript. Grown past the
+             ;; hole it fills, so its edge lies on solid paper at the
+             ;; same height rather than meeting the hole's edge — two anti-aliased
+             ;; edges at one line leave a visible seam. The grain is offset to line
+             ;; up with the big sheet's.
+             (let [page (inset prose -1.5)]
+               (begin-sheet)
+               (transcript-holes prose)
+               (seamless-outline)
+               (rounded-path page 0.0)
+               (finish-sheet (t/z-sheet)
+                             (texture-offset (t/paper-stock)
+                                             (- (.x bounds) (.x page))
+                                             (- (.y bounds) (.y page)))))
+             ;; Shallow, ink-dark letterpress with a fine exposed pulp bevel.
+             (let [name
+                     (if (>= (.take s) 0)
+                         (lib/display-name (model/take-name (model/take-at (.take s))))
+                         c"No recording selected")
+                   size (if (< (.w title) 650.0) 36.0 44.0)
+                   width (minimum (.w title) (text-width name size (t/serif)))]
+               (beveled-carved (rect (.x title) (.y title) width (.h title))
+                               name
+                               size
+                               (t/serif)
+                               (t/z-sheet)
+                               false
+                               1.1
+                               0.28
+                               (t/paper-stock)
+                               (texture-relief (cardstock 0x342719) 0.08)))
+             (ink-height (t/z-sheet))
+             (when (> (.word-count s) 0)
+               (snprintf (text)
+                         192
+                         c"%lld WORDS  ·  %s SOURCE  ·  %s EDITED"
+                         (.word-count s)
+                         (format-time (text-b) (.dur-ms s))
+                         (format-time (index (scratch) 96) (model/edited-ms s)))
+               (text-box meta 11.0 (t/ink) (t/serif) (text)))
+             ;; Routine counts stay above the transcript; notices use the footer.
+             (draw-actions actions)
+             (draw-margin margin prose)
+             (draw-transcript prose)
+             (draw-waveform wave)
+             (draw-transport transport)))
+  0)
+
+;;; The left margin of the transcript carries a timecode tab at the head of
+;;; each paragraph — the transcript's own scale, and somewhere to aim a click.
+;;; When a transcript carries speaker labels the tab shows those instead.
+(defn draw-margin [(r Rect) (prose Rect)] (-> i64)
+  (let [s (model/session)
+        scroll (page/shown-scroll s (host/paper_backing_scale))
+        lh (page/line-height)]
+    (with-clip (rect (- (.x r) 28.0) (.y r) (+ (.w r) 28.0) (.h r))
+               (for [i
+                     (page/first-visible s (- scroll lh))
+                     (let [past
+                             (+ (page/first-visible s (+ (+ scroll (.h r)) lh))
+                                1)]
+                       (if (> past (.word-count s)) (.word-count s) past))]
+                 (let [w (model/word i)
+                       y (- (.y w) scroll)]
+                   (when (and (< y (.h r)) (> (+ y lh) 0.0))
+                     ;; A paragraph head is the first word, or any word whose predecessor
+                     ;; ended a paragraph.
+                     (when (or (= i 0) (.para (model/word (- i 1))))
+                       (let [tr
+                               (rect (- (.x r) 28.0)
+                                     (+ (.y r) y)
+                                     (+ (.w r) 8.0)
+                                     (- lh 1.0))]
+                         (d/card tr 3.0 (+ (t/z-sheet) 2.0) (t/rail-stock))
+                         (ink-height (+ (t/z-sheet) 2.0))
+                         (let [stamp (page/timecode (text-b) 192 (.t0 w))
+                               tw (text-width stamp 12.0 (t/serif))]
+                           (label (+ (.x tr) (* 0.5 (- (.w tr) tw)))
+                                  (+ (.y tr) 6.0)
+                                  12.0
+                                  0x27301f
+                                  (t/serif)
+                                  stamp))))))))
+    0))
+
+;;; ---- ledger ---------------------------------------------------------------
+(defn stat [(r Rect) (heading (ptr i8)) (value (ptr i8)) (stock Material)] (-> i64)
+  (d/card r 6.0 (t/z-inset) stock)
+  (ink-height (t/z-inset))
+  (d/tracked (rect (+ (.x r) 18.0) (+ (.y r) 10.0) (- (.w r) 30.0) 15.0)
+             heading
+             10.0
+             1.1
+             (t/ink))
+  (label (+ (.x r) 18.0)
+         (+ (.y r) (if (< (.h r) 70.0) 24.0 27.0))
+         (if (< (.h r) 70.0) 32.0 40.0)
+         (t/ink)
+         (t/serif)
+         value)
+  0)
+
+;;; The light well and the two material sliders drive the same lighting state
+;;; the whole scene is rendered with, so the paper is adjustable from inside
+;;; the picture rather than from a menu.
+(defn draw-sun [(r Rect)] (-> i64)
+  (let [l (lighting)]
+    (set! (.sun (frame)) r)
+    (recess r 5.0 (t/z-casing) 3.0 0.8 (t/paper-stock) (t/sage-stock))
+    (host/paper_hit ID-SUN (.x r) (.y r) (.w r) (.h r) c"Light position" 0 0.0)
+    (let [floor-z (- (t/z-casing) 3.0)
+          grid (inset r 1.0)
+          inner (inset r 18.0)]
+      (for [i 1 4]
+        (panel (rect (.x grid)
+                     (+ (.y grid) (* (cast f64 i) (/ (.h grid) 4.0)))
+                     (.w grid)
+                     0.5)
+               0.0
+               (+ floor-z 0.2)
+               (smooth 0x59684e)))
+      (for [i 1 8]
+        (panel (rect (+ (.x grid) (* (cast f64 i) (/ (.w grid) 8.0)))
+                     (.y grid)
+                     0.5
+                     (.h grid))
+               0.0
+               (+ floor-z 0.2)
+               (smooth 0x59684e)))
+      (let [cx
+              (+ (.x inner)
+                 (* (.w inner) (clamp-f (/ (+ (.x l) 1.0) 3.0) 0.0 1.0)))
+            cy
+              (+ (.y inner)
+                 (* (.h inner) (clamp-f (/ (+ (.y l) 1.0) 3.0) 0.0 1.0)))]
+        (d/card (rect (- cx 16.0) (- cy 16.0) 32.0 32.0)
+                16.0
+                (+ (t/z-casing) 6.0)
+                (t/ochre-stock)))))
+  0)
+
+(defn material-slider [(id i64)
+                       (r Rect)
+                       (name (ptr i8))
+                       (value f64)
+                       (stock Material)] (-> i64)
+  (let [track (rect (.x r) (+ (.y r) 7.0) (.w r) 15.0)
+        v (clamp-f value 0.0 1.0)
+        cx (+ (.x r) (* (.w r) v))]
+    (recess track 7.5 (t/z-casing) 1.8 0.65 (t/paper-stock) (t/cut-floor))
+    (when (> v 0.0)
+      (with-clip (rect (.x track) (.y track) (* (.w track) v) (.h track))
+                 (panel (inset track 0.7) 6.8 (- (t/z-casing) 1.3) stock)))
+    (d/card (rect (- cx 12.0) (+ (.y r) 2.0) 24.0 24.0)
+            12.0
+            (+ (t/z-casing) 3.0)
+            (d/interactive-stock id (t/paper-stock))))
+  (host/paper_hit id (.x r) (.y r) (.w r) (.h r) name 1 value)
+  0)
+
+(defn draw-ledger [(bounds Rect)] (-> i64)
+  (let [s (model/session)
+        l (lighting)
+        compact (< (.h bounds) 760.0)]
+    (d/card bounds 8.0 (t/z-casing) (t/paper-stock))
+    (arrange (inset bounds 18.0)
+             [rail
+              (column (grow 1.0) (grow 1.0) (if compact 7.0 11.0))
+              [heading (box (grow 1.0) (fixed 14.0))]
+              [silence (box (grow 1.0) (fixed (if compact 66.0 76.0)))]
+              [fillers (box (grow 1.0) (fixed (if compact 66.0 76.0)))]
+              [final (box (grow 1.0) (fixed (if compact 66.0 76.0)))]
+              [divider (box (grow 1.0) (fixed 1.0))]
+              [sun-label (box (grow 1.0) (fixed 13.0))]
+              [sun (box (grow 1.0) (fixed (if compact 72.0 86.0)))]
+              [height-label (box (grow 1.0) (fixed 13.0))]
+              [height (box (grow 1.0) (fixed 30.0))]
+              [depth-label (box (grow 1.0) (fixed 13.0))]
+              [depth (box (grow 1.0) (fixed 30.0))]
+              [grain-label (box (grow 1.0) (fixed 13.0))]
+              [grain (box (grow 1.0) (fixed 30.0))]
+              [spring (box (grow 1.0) (grow 1.0))]
+              [buttons
+               (row (grow 1.0) (fixed 56.0) 12.0)
+               [save (box (grow 1.0) (grow 1.0))]
+               [reset (box (fixed 84.0) (grow 1.0))]]]
+             (ink-height (t/z-casing))
+             (eyebrow heading c"THE EDIT LEDGER")
+             (stat silence
+                   c"TIME REMOVED"
+                   (format-time (text) (removed-silence s))
+                   (t/ochre-stock))
+             (do
+               (snprintf (text-b) 192 c"%lld" (cut-word-count s))
+               (stat fillers c"WORDS CUT" (text-b) (t/plum-stock)))
+             (stat final
+                   c"FINAL LENGTH"
+                   (format-time (index (scratch) 96) (model/edited-ms s))
+                   (t/sage-stock))
+             (ink-height (t/z-casing))
+             (separator divider 0x8b7e67)
+             (eyebrow sun-label c"DRAG THE SUN")
+             (draw-sun sun)
+             (ink-height (t/z-casing))
+             (eyebrow height-label c"SUN HEIGHT")
+             (set! (.sun-height (frame)) height)
+             (material-slider ID-HEIGHT
+                              height
+                              c"Sun height; lower for longer shadows"
+                              (/ (- (.height l) 200.0) 2200.0)
+                              (t/ochre-stock))
+             (ink-height (t/z-casing))
+             (eyebrow depth-label c"PAPER DEPTH")
+             (set! (.depth (frame)) depth)
+             (material-slider ID-DEPTH
+                              depth
+                              c"Paper depth"
+                              (/ (.depth l) 1.5)
+                              (t/slate-stock))
+             (ink-height (t/z-casing))
+             (eyebrow grain-label c"FIBER & GRAIN")
+             (set! (.grain (frame)) grain)
+             (material-slider ID-GRAIN
+                              grain
+                              c"Fiber and grain"
+                              (/ (.grain l) 2.0)
+                              (t/sage-stock))
+             (with-enabled (> (.clip-count s) 0)
+                           (d/paper-button ID-EXPORT-WAV
+                                           save
+                                           c"Export WAV"
+                                           0
+                                           (t/sage-stock)
+                                           (t/z-casing)
+                                           false))
+             (d/paper-button ID-RESET
+                             reset
+                             c"Reset"
+                             0
+                             (t/paper-stock)
+                             (t/z-casing)
+                             false)))
+  0)
+
+;;; Total source silence and speech the edit removes. Reported from the EDL, so
+;;; it always describes what an export would actually produce.
+(defn removed-silence [(s (ptr model/Session))] (-> f64)
+  (let [kept (model/edited-ms s)]
+    (if (> (.dur-ms s) kept) (- (.dur-ms s) kept) 0.0)))
+
+(defn cut-word-count [(s (ptr model/Session))] (-> i64)
+  (let [(mut n) 0]
+    (for [i 0 (.word-count s)]
+      (when (.deleted (model/word i)) (set! n (+ (load n) 1))))
+    (load n)))
+
+;;; ---- chrome ---------------------------------------------------------------
+(defn draw-chrome [(header Rect) (footer Rect)] (-> i64)
+  (let [s (model/session)]
+    (ink-height 2.0)
+    (label (.x header)
+           (+ (.y header) 2.0)
+           26.0
+           0xd8d2c0
+           (t/serif)
+           c"paper transcript")
+    (d/tracked (rect (+ (.x header) 230.0) (+ (.y header) 13.0) 150.0 14.0)
+               c"STUDIO / 05"
+               10.0
+               2.5
+               0xd8d2c0)
+    (text-box (rect (.x footer) (.y footer) (* (.w footer) 0.65) (.h footer))
+              12.0
+              0xd8d2c0
+              (t/serif)
+              (if (.status-notice s)
+                  (model/status s)
+                  c"Cut the words. The audio follows."))
+    (let [credit c"WHISPER · FORCED ALIGNMENT · NON-DESTRUCTIVE"
+          w (text-width credit 10.0 (t/mono))]
+      (label (- (+ (.x footer) (.w footer)) w)
+             (+ (.y footer) 1.0)
+             10.0
+             0xb1b4a3
+             (t/mono)
+             credit))
+    (when (.transcribing s)
+      (progress (rect (+ (.x header) 360.0) (+ (.y header) 12.0) 180.0 8.0)
+                (/ (cast f64 (.progress s)) 100.0)
+                (t/ochre-stock))))
+  0)
+
+;;; ---- help -----------------------------------------------------------------
+(defn help-line [(r Rect) (row i64) (keys (ptr i8)) (meaning (ptr i8))] (-> i64)
+  (let [y (+ (+ (.y r) 46.0) (* (cast f64 row) 23.0))]
+    (label (+ (.x r) 24.0) y 12.0 (t/ink) (t/mono) keys)
+    (label (+ (.x r) 152.0) y 12.0 (t/ink-soft) (t/sans) meaning))
+  0)
+
+(defn draw-help [(viewport Rect)] (-> i64)
+  (let [w 460.0
+        h 494.0
+        r
+          (rect (+ (.x viewport) (* 0.5 (- (.w viewport) w)))
+                (+ (.y viewport) (* 0.5 (- (.h viewport) h)))
+                w
+                h)]
+    (host/paper_modal_scope)
+    (panel viewport 0.0 (t/z-raised) (cotton 0x1d221c))
+    (panel r 18.0 (+ (t/z-raised) 8.0) (t/paper-stock))
+    (ink-height (+ (t/z-raised) 8.0))
+    (label (+ (.x r) 24.0) (+ (.y r) 20.0) 16.0 (t/ink) (t/serif) c"Shortcuts")
+    (help-line r 0 c"Space" c"Play or pause the edit")
+    (help-line r 1 c"← / →" c"Seek three seconds")
+    (help-line r 2 c"Click word" c"Move the playhead there")
+    (help-line r 3 c"Drag text" c"Select a run of words")
+    (help-line r 4 c"Shift-click" c"Extend the selection")
+    (help-line r 5 c"Drag wave" c"Select an audio region")
+    (help-line r 6 c"Delete" c"Cut or restore the selection")
+    (help-line r 7 c"F" c"Cut every filler word")
+    (help-line r 8 c"Tap a gap" c"Cut or restore that silence")
+    (help-line r 9 c"Drag a gap" c"Trim the silence shorter")
+    (help-line r 10 c"[ / ]" c"Snap word start or end to playhead")
+    (help-line r 11 c"− / +" c"Zoom the waveform")
+    (help-line r 12 c"X" c"Toggle crossfades at the seams")
+    (help-line r 13 c"⌘Z / ⇧⌘Z" c"Undo / redo")
+    (help-line r 14 c"⇧⌘D" c"Frame rate and state overlay")
+    (help-line r 15 c"⇧⌘T" c"Write a trace to /tmp")
+    (help-line r 16 c"↕ scale" c"Magnify the wave, not the audio")
+    (help-line r 17 c"?" c"Close this")
+    (label (+ (.x r) 24.0)
+           (+ (+ (.y r) h) -30.0)
+           11.0
+           (t/ink-faint)
+           (t/sans)
+           c"The source recording is never modified.")
+    (host/paper_hit ID-HELP
+                    (.x viewport)
+                    (.y viewport)
+                    (.w viewport)
+                    (.h viewport)
+                    c"Close help"
+                    0
+                    0.0))
+  0)
+
+;;; ---- frame ----------------------------------------------------------------
+;;; The overlay floats top-right, over the ledger and the edge of the
+;;; transcript: those are the least-used surfaces, and it keeps clear of the
+;;; transport and the waveform, which are what you touch while measuring.
+(defn overlay-line [(r Rect) (row i64) (color u32) (value (ptr i8))] (-> i64)
+  (label (+ (.x r) 16.0)
+         (+ (.y r) (+ 12.0 (* (cast f64 row) 19.0)))
+         (if (= row 0) 12.0 11.0)
+         color
+         (t/mono)
+         value))
+
+(defn draw-diagnostics [(viewport Rect)] (-> i64)
+  (let [s (model/session)
+        d (diag/diagnostics)
+        w 640.0
+        h 224.0
+        r (rect (- (.w viewport) (+ w 24.0)) 58.0 w h)]
+    (panel r 10.0 (t/z-raised) (cotton 0x20261f))
+    (ink-height (t/z-raised))
+    (overlay-line r 0 0xe0c98a (diag/line-frames d))
+    (overlay-line r 10 0xe0c98a (diag/line-display d))
+    (overlay-line r 1 0x9fb094 (diag/line-phases d))
+    (overlay-line r 2 0x9fb094 (diag/line-renderer d))
+    (overlay-line r 9 0x9fb094 (diag/line-scene d))
+    (overlay-line r 3 0xc2b79c (diag/line-take d s))
+    (overlay-line r 4 0xc2b79c (diag/line-counts d s))
+    (overlay-line r 5 0xc2b79c (diag/line-audio d s))
+    (overlay-line r 6 0xc2b79c (diag/line-wave d s))
+    (overlay-line r 7 0xc2b79c (diag/line-text d s))
+    (overlay-line r
+                  8
+                  0x8b9683
+                  c"⇧⌘D closes this   ⇧⌘T writes a trace to /tmp/paper-transcript-trace.txt"))
+  0)
+
+(defn draw [] (-> i64)
+  (diag/begin-frame)
+  (let [w (host/logical-width)
+        h (host/logical-height)
+        viewport (rect 0.0 0.0 w h)
+        s (model/session)]
+    (host/paper_begin (t/ground))
+    (light/apply-light (lighting) viewport)
+    (panel viewport 0.0 0.5 (t/ground-stock))
+    (arrange viewport
+             [page
+              (padded (column (grow 1.0) (grow 1.0) 10.0)
+                      (edges 14.0
+                             12.0
+                             14.0
+                             12.0))
+              [header (box (grow 1.0) (fixed 32.0))]
+              [body
+               (row (grow 1.0) (grow 1.0) 7.0)
+               [rail (box (fixed (if (< w 1250.0) 192.0 224.0)) (grow 1.0))]
+               [main (box (grow 1.0) (grow 1.0))]
+               [ledger (box (fixed 254.0) (grow 1.0))]]
+              [footer (box (grow 1.0) (fixed 16.0))]]
+             (host/paper_drag_area header)
+             (let [inset (host/paper_titlebar_inset)]
+               (draw-chrome (rect (+ (.x header) inset)
+                                  (.y header)
+                                  (- (.w header) inset)
+                                  (.h header))
+                            footer))
+             (let [phase (diag/now)]
+               (draw-rail rail)
+               (diag/add-phase diag/PHASE-RAIL phase))
+             (let [phase (diag/now)]
+               (draw-sheet main)
+               (diag/add-phase diag/PHASE-SHEET phase))
+             (let [phase (diag/now)]
+               (draw-ledger ledger)
+               (diag/add-phase diag/PHASE-LEDGER phase)))
+    (when (.show-help s) (draw-help viewport))
+    ;; Closed before the overlay is drawn, so the reported build time and sheet
+    ;; counts describe the editor rather than the instrument measuring it.
+    (diag/end-frame)
+    (when (diag/overlay?) (draw-diagnostics viewport)))
+  0)

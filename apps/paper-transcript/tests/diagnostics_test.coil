@@ -1,0 +1,20 @@
+(module transcript.tests.diagnostics)
+(import "coil.primitive" :as primitive)
+(import "coil.assert" :use *)
+(import "paper.ffi" :use [strcmp])
+(import "transcript.diagnostics" :as diag)
+
+;;; The overlay can be on from the first frame, before there are two samples to
+;;; take a rate between; the pacing line has to say so rather than divide by an
+;;; empty window, and report rates once there is one.
+(deftest the_pacing_line_waits_for_two_frames
+         (let [d (diag/diagnostics)]
+           (assert (= (strcmp (diag/line-display d) c"display  measuring") 0))
+           (diag/begin-frame)
+           (diag/end-frame)
+           (assert (= (strcmp (diag/line-display d) c"display  measuring") 0))
+           (diag/begin-frame)
+           (diag/end-frame)
+           (diag/begin-frame)
+           (diag/end-frame)
+           (assert (!= (strcmp (diag/line-display d) c"display  measuring") 0))))

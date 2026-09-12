@@ -17,6 +17,7 @@
   (cond (= font 1) c"Georgia"
         (= font 2) c"Menlo"
         (= font 3) c"HelveticaNeue-Medium"
+        (= font 4) c"Baskerville"
         :else c"HelveticaNeue"))
 
 (defn ink-attributes [(ink Ink)] (-> (ptr i8))

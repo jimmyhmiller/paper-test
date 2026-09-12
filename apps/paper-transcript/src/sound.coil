@@ -1,0 +1,390 @@
+(module transcript.sound)
+(import "coil.primitive" :as primitive)
+(import "paper.objc" :use *)
+(import "transcript.model" :as model)
+
+(extern malloc :cc c [u64] (-> (ptr i8)))
+
+(extern free :cc c [(ptr i8)] (-> void))
+
+(extern memcpy :cc c [(ptr i8) (ptr i8) u64] (-> (ptr i8)))
+
+;;; Playback of the edit, not of the file. The source is decoded once into
+;;; memory; every edit splices a new non-interleaved float buffer from it, and
+;;; AVAudioEngine plays that. The playhead comes from the player node's own
+;;; sample clock, so the word highlight and the waveform cursor track the audio
+;;; exactly rather than estimating from wall time.
+;;;
+;;; Seams are declicked with short equal-power ramps inside each clip rather
+;;; than by overlapping neighbours. An overlap would shorten the timeline by a
+;;; few milliseconds per seam, and a heavily cut episode has thousands of them:
+;;; the drift would put the transcript visibly out of step with the audio, and
+;;; the exported file would no longer match the preview. Ramping in place keeps
+;;; edited duration exactly equal to the sum of the kept spans.
+(const MAX-CHANNELS 8)
+
+(defstruct AudioBufferRec [(channels u32) (bytes u32) (data (ptr i8))])
+
+;;; CoreAudio's AudioBufferList: a count followed by 8-byte-aligned buffer
+;;; records, one per channel for non-interleaved float.
+(defstruct BufferList
+  [(count u32)
+   (padding u32)
+   (buffers (array AudioBufferRec 8))])
+
+(defstruct Sound
+  [(engine (ptr i8))
+   (player (ptr i8))
+   (pitch (ptr i8))
+   (format (ptr i8))
+   (view (ptr i8))
+   (list BufferList)
+   (source (array (ptr f32) 8))
+   (edit (array (ptr f32) 8))
+   (channels i64)
+   (rate f64)
+   (source-frames i64)
+   (edit-frames i64)
+   (edit-capacity i64)
+   (edit-channels i64)
+   (start-frame i64)
+   (loaded-take i64)
+   (ready bool)
+   (playing bool)
+   (engine-up bool)])
+
+(defn sound [] (-> (ptr Sound))
+  (primitive/alloc-static Sound))
+
+(defn maximum-i [(a i64) (b i64)] (-> i64)
+  (if (> a b) a b))
+
+(defn ms-to-frames [(s (ptr Sound)) (ms f64)] (-> i64)
+  (cast i64 (* (/ ms 1000.0) (.rate s))))
+
+(defn frames-to-ms [(s (ptr Sound)) (frames i64)] (-> f64)
+  (if (> (.rate s) 0.0) (* 1000.0 (/ (cast f64 frames) (.rate s))) 0.0))
+
+(defn release-source [(s (ptr Sound))] (-> i64)
+  (for [c 0 MAX-CHANNELS]
+    (let [p (load (index (field s source) c))]
+      (when (!= (cast i64 p) 0)
+        (free (cast (ptr i8) p))
+        (set! (index (field s source) c) (cast (ptr f32) 0)))))
+  (set! (.source-frames s) 0)
+  (set! (.ready s) false)
+  0)
+
+(defn release-edit [(s (ptr Sound))] (-> i64)
+  (for [c 0 MAX-CHANNELS]
+    (let [p (load (index (field s edit) c))]
+      (when (!= (cast i64 p) 0)
+        (free (cast (ptr i8) p))
+        (set! (index (field s edit) c) (cast (ptr f32) 0)))))
+  (set! (.edit-frames s) 0)
+  (set! (.edit-capacity s) 0)
+  (set! (.edit-channels s) 0)
+  0)
+
+;;; Decode the whole take into our own memory. AVAudioFile hands back its
+;;; processing format, which is non-interleaved float32 — the same layout the
+;;; engine wants back, so the splice never converts.
+(defn decode [(s (ptr Sound)) (path (ptr i8))] (-> bool)
+  (release-source s)
+  (let [url
+          (msg (ptr i8)
+               (class c"NSURL")
+               (sel c"fileURLWithPath:")
+               [(ptr i8)]
+               (ns path))
+        (mut error) (nil)
+        file
+          (msg (ptr i8)
+               (msg (ptr i8) (class c"AVAudioFile") (sel c"alloc") [])
+               (sel c"initForReading:error:")
+               [(ptr i8) (mut (ptr i8))]
+               url
+               (mut error))]
+    (if (= (cast i64 file) 0)
+        false
+        (let [format (msg (ptr i8) file (sel c"processingFormat") [])
+              frames (msg i64 file (sel c"length") [])
+              rate (msg f64 format (sel c"sampleRate") [])
+              channels (cast i64 (msg u32 format (sel c"channelCount") []))]
+          (if (or (<= frames 0) (< channels 1) (> channels MAX-CHANNELS))
+              (do (release file) false)
+              (let [buffer
+                      (msg (ptr i8)
+                           (msg (ptr i8)
+                                (class c"AVAudioPCMBuffer")
+                                (sel c"alloc")
+                                [])
+                           (sel c"initWithPCMFormat:frameCapacity:")
+                           [(ptr i8) u32]
+                           format
+                           (cast u32 frames))
+                    ok
+                      (msg bool
+                           file
+                           (sel c"readIntoBuffer:error:")
+                           [(ptr i8) (mut (ptr i8))]
+                           buffer
+                           (mut error))]
+                (if (not ok)
+                    (do (release buffer) (release file) false)
+                    (let [count
+                            (cast i64 (msg u32 buffer (sel c"frameLength") []))
+                          data
+                            (msg (ptr (ptr f32))
+                                 buffer
+                                 (sel c"floatChannelData")
+                                 [])
+                          bytes (cast u64 (* count 4))]
+                      (set! (.channels s) channels)
+                      (set! (.rate s) rate)
+                      (set! (.source-frames s) count)
+                      (set! (.format s) (retain format))
+                      (for [c 0 channels]
+                        (let [block (malloc bytes)]
+                          (memcpy block
+                                  (cast (ptr i8) (load (index data c)))
+                                  bytes)
+                          (set! (index (field s source) c)
+                                (cast (ptr f32) block))))
+                      (release buffer)
+                      (release file)
+                      (set! (.ready s) true)
+                      true))))))))
+
+;;; Equal-power ramp length at a seam. Long enough to remove the step, short
+;;; enough that a clipped consonant is not audibly softened.
+(defn ramp-frames [(s (ptr Sound))] (-> i64)
+  (let [n (cast i64 (* 0.005 (.rate s)))]
+    (if (< n 1) 1 n)))
+
+;;; Splice the EDL into one contiguous buffer. Called whenever the edit changes;
+;;; the result's frame count is exactly the sum of the kept spans, which is what
+;;; keeps the transcript and the audio in step.
+(defn splice [(s (ptr Sound)) (session (ptr model/Session)) (soften bool)] (-> i64)
+  (if (not (.ready s))
+      0
+      (let [(mut total) 0]
+        (for [i 0 (.clip-count session)]
+          (let [c (index (model/clips) i)
+                from (ms-to-frames s (.from c))
+                to (ms-to-frames s (.to c))
+                a
+                  (if (< from 0)
+                      0
+                      (if (> from (.source-frames s)) (.source-frames s) from))
+                b
+                  (if (< to a)
+                      a
+                      (if (> to (.source-frames s)) (.source-frames s) to))]
+            (set! total (+ (load total) (- b a)))))
+        ;; One buffer per channel. Reallocate when the edit outgrows them OR
+        ;; when the take has a different channel count from the one they were
+        ;; allocated for — a stereo take opened after a mono one is no longer
+        ;; than it, and reusing its buffers would leave the second channel
+        ;; unallocated.
+        (when (or (> (load total) (.edit-capacity s))
+                  (!= (.channels s) (.edit-channels s)))
+          (release-edit s)
+          (for [c 0 (.channels s)]
+            (set! (index (field s edit) c)
+                  (cast (ptr f32)
+                        (malloc (cast u64 (* (maximum-i (load total) 1) 4))))))
+          (set! (.edit-capacity s) (load total))
+          (set! (.edit-channels s) (.channels s)))
+        (let [ramp (ramp-frames s)
+              (mut cursor) 0]
+          (for [i 0 (.clip-count session)]
+            (let [c (index (model/clips) i)
+                  from (ms-to-frames s (.from c))
+                  to (ms-to-frames s (.to c))
+                  a
+                    (if (< from 0)
+                        0
+                        (if (> from (.source-frames s)) (.source-frames s) from))
+                  b
+                    (if (< to a)
+                        a
+                        (if (> to (.source-frames s)) (.source-frames s) to))
+                  span (- b a)]
+              (when (> span 0)
+                (for [ch 0 (.channels s)]
+                  (let [src (load (index (field s source) ch))
+                        dst (load (index (field s edit) ch))]
+                    (memcpy (cast (ptr i8) (index dst (load cursor)))
+                            (cast (ptr i8) (index src a))
+                            (cast u64 (* span 4)))
+                    (when soften
+                      (let [n (if (> ramp (/ span 2)) (/ span 2) ramp)]
+                        (for [k 0 n]
+                          (let [gain (/ (cast f64 k) (cast f64 n))
+                                head (index dst (+ (load cursor) k))
+                                tail
+                                  (index dst (- (+ (load cursor) span) (+ k 1)))]
+                            (set! (index head 0)
+                                  (cast f32 (* (cast f64 (load head)) gain)))
+                            (set! (index tail 0)
+                                  (cast f32 (* (cast f64 (load tail)) gain)))))))))
+                (set! cursor (+ (load cursor) span)))))
+          (set! (.edit-frames s) (load cursor)))
+        (.edit-frames s))))
+
+(defn ensure-engine [(s (ptr Sound))] (-> bool)
+  (if (.engine-up s)
+      true
+      (let [engine
+              (msg (ptr i8)
+                   (msg (ptr i8) (class c"AVAudioEngine") (sel c"alloc") [])
+                   (sel c"init")
+                   [])
+            player
+              (msg (ptr i8)
+                   (msg (ptr i8) (class c"AVAudioPlayerNode") (sel c"alloc") [])
+                   (sel c"init")
+                   [])
+            pitch
+              (msg (ptr i8)
+                   (msg (ptr i8)
+                        (class c"AVAudioUnitTimePitch")
+                        (sel c"alloc")
+                        [])
+                   (sel c"init")
+                   [])
+            (mut error) (nil)]
+        (msg i64 engine (sel c"attachNode:") [(ptr i8)] player)
+        (msg i64 engine (sel c"attachNode:") [(ptr i8)] pitch)
+        (msg i64
+             engine
+             (sel c"connect:to:format:")
+             [(ptr i8) (ptr i8) (ptr i8)]
+             player
+             pitch
+             (.format s))
+        (msg i64
+             engine
+             (sel c"connect:to:format:")
+             [(ptr i8) (ptr i8) (ptr i8)]
+             pitch
+             (msg (ptr i8) engine (sel c"mainMixerNode") [])
+             (.format s))
+        (msg i64 engine (sel c"prepare") [])
+        (let [started
+                (msg bool
+                     engine
+                     (sel c"startAndReturnError:")
+                     [(mut (ptr i8))]
+                     (mut error))]
+          (if started
+              (do
+                (set! (.engine s) engine)
+                (set! (.player s) player)
+                (set! (.pitch s) pitch)
+                (set! (.engine-up s) true)
+                true)
+              (do (release engine) false))))))
+
+;;; Wrap the spliced audio from `offset` onward without copying it. A player
+;;; node can only be handed a whole buffer, so seeking means presenting a
+;;; different window onto the same allocation; `bufferListNoCopy:` is what makes
+;;; that possible, and it is why the edit is kept in memory we own.
+(defn present [(s (ptr Sound)) (offset i64)] (-> (ptr i8))
+  (let [frames (- (.edit-frames s) offset)
+        list (field s list)]
+    (if (<= frames 0)
+        (nil)
+        (do
+          (set! (.count list) (cast u32 (.channels s)))
+          (for [c 0 (.channels s)]
+            (let [entry (index (field list buffers) c)
+                  base (load (index (field s edit) c))]
+              (set! (.channels entry) (cast u32 1))
+              (set! (.bytes entry) (cast u32 (* frames 4)))
+              (set! (.data entry) (cast (ptr i8) (index base offset)))))
+          (let [view
+                  (msg (ptr i8)
+                       (msg (ptr i8)
+                            (class c"AVAudioPCMBuffer")
+                            (sel c"alloc")
+                            [])
+                       (sel c"initWithPCMFormat:bufferListNoCopy:deallocator:")
+                       [(ptr i8) (ptr i8) (ptr i8)]
+                       (.format s)
+                       (cast (ptr i8) list)
+                       (nil))]
+            (msg i64 view (sel c"setFrameLength:") [u32] (cast u32 frames))
+            view)))))
+
+(defn stop [(s (ptr Sound))] (-> i64)
+  (when (.engine-up s)
+    (msg i64 (.player s) (sel c"stop") []))
+  (when (!= (cast i64 (.view s)) 0)
+    (release (.view s))
+    (set! (.view s) (nil)))
+  (set! (.playing s) false)
+  0)
+
+(defn set-rate [(s (ptr Sound)) (rate f64)] (-> i64)
+  (when (.engine-up s)
+    (msg i64 (.pitch s) (sel c"setRate:") [f32] (cast f32 rate)))
+  0)
+
+;;; Begin playback at a position on the edited timeline.
+(defn play-from [(s (ptr Sound)) (edited-ms f64) (rate f64)] (-> bool)
+  (if (or (not (.ready s)) (<= (.edit-frames s) 0))
+      false
+      (if (not (ensure-engine s))
+          false
+          (let [requested (ms-to-frames s edited-ms)
+                offset
+                  (if (< requested 0)
+                      0
+                      (if (>= requested (.edit-frames s)) 0 requested))]
+            (stop s)
+            (let [view (present s offset)]
+              (if (= (cast i64 view) 0)
+                  false
+                  (do
+                    (set! (.view s) view)
+                    (set! (.start-frame s) offset)
+                    (set-rate s rate)
+                    (msg i64
+                         (.player s)
+                         (sel c"scheduleBuffer:atTime:options:completionHandler:")
+                         [(ptr i8) (ptr i8) u64 (ptr i8)]
+                         view
+                         (nil)
+                         (cast u64 0)
+                         (nil))
+                    (msg i64 (.player s) (sel c"play") [])
+                    (set! (.playing s) true)
+                    true)))))))
+
+;;; Where the player actually is, in milliseconds on the edited timeline, taken
+;;; from the node's render clock.
+(defn position-ms [(s (ptr Sound))] (-> f64)
+  (if (not (.playing s))
+      (frames-to-ms s (.start-frame s))
+      (let [node-time (msg (ptr i8) (.player s) (sel c"lastRenderTime") [])]
+        (if (= (cast i64 node-time) 0)
+            (frames-to-ms s (.start-frame s))
+            (let [player-time
+                    (msg (ptr i8)
+                         (.player s)
+                         (sel c"playerTimeForNodeTime:")
+                         [(ptr i8)]
+                         node-time)]
+              (if (= (cast i64 player-time) 0)
+                  (frames-to-ms s (.start-frame s))
+                  (frames-to-ms s
+                                (+ (.start-frame s)
+                                   (msg i64 player-time (sel c"sampleTime") [])))))))))
+
+(defn finished? [(s (ptr Sound))] (-> bool)
+  (and (.playing s) (>= (ms-to-frames s (position-ms s)) (.edit-frames s))))
+
+(defn edited-duration-ms [(s (ptr Sound))] (-> f64)
+  (frames-to-ms s (.edit-frames s)))

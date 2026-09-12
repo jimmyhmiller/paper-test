@@ -1,0 +1,36 @@
+(module transcript.waveform-view)
+(import "coil.primitive" :as p)
+(import "paper.platform" :as host)
+(import "transcript.ui" :as ui)
+(import "transcript.app" :as app)
+(import "transcript.model" :as model)
+(import "transcript.library" :as lib)
+(import "transcript.waveform" :as wave)
+
+;;; Read-only snapshot harness for a real take at a reproducible zoom/position.
+;;; First layout establishes the viewport; the second draws the requested view.
+(defn configured [] (-> (ptr bool))
+  (p/alloc-static bool))
+
+(defn draw [] (-> i64)
+  (ui/draw)
+  (when (not (load (configured)))
+    (let [s (model/session)
+          zoom (lib/getenv c"TRANSCRIPT_TEST_ZOOM")
+          start (lib/getenv c"TRANSCRIPT_TEST_START")
+          gain (lib/getenv c"TRANSCRIPT_TEST_GAIN")]
+      (when (!= (cast i64 zoom) 0) (set! (.wzoom s) (lib/parse-float zoom)))
+      (when (!= (cast i64 start) 0) (set! (.wscroll s) (lib/parse-float start)))
+      (when (!= (cast i64 gain) 0) (set! (.wave-gain s) (lib/parse-float gain)))
+      (set! (configured) true)
+      (ui/draw)))
+  0)
+
+(defn main [] (-> i64)
+  (host/paper_configure c"Paper Transcript — waveform inspection"
+                        1480.0
+                        940.0)
+  (host/paper_responsive 1120.0 760.0)
+  (host/paper_unified_window true)
+  (host/paper_run (p/fnptr-of draw) (p/fnptr-of app/event))
+  (wave/stop (wave/state)))

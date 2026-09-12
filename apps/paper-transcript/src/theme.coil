@@ -1,0 +1,112 @@
+(module transcript.theme)
+(import "paper.flow" :use *)
+
+;;; One palette and one elevation ladder for the whole application, so a sheet
+;;; drawn in the ledger sits at a comparable height to a sheet drawn in the
+;;; transcript and the single light reads consistently across the window.
+(defn ground [] (-> u32)
+  0x30372d)
+
+(defn casing [] (-> u32)
+  0xbbae96)
+
+(defn paper [] (-> u32)
+  0xeee3ce)
+
+(defn floor-stock [] (-> u32)
+  0xb4a894)
+
+(defn rail [] (-> u32)
+  0xa3ac91)
+
+(defn rail-row [] (-> u32)
+  0xaab298)
+
+(defn ink [] (-> u32)
+  0x2f2a24)
+
+(defn ink-soft [] (-> u32)
+  0x6d6455)
+
+(defn ink-faint [] (-> u32)
+  0x8d8571)
+
+(defn terracotta [] (-> u32)
+  0xc26347)
+
+(defn ochre [] (-> u32)
+  0xd7a34c)
+
+(defn slate [] (-> u32)
+  0x8ca7bd)
+
+(defn plum [] (-> u32)
+  0xa48bab)
+
+(defn sage-deep [] (-> u32)
+  0x7e8f6f)
+
+(defn ground-stock [] (-> Material)
+  (texture-relief (texture-scale (felt (ground)) 0.7) 0.65))
+
+(defn casing-stock [] (-> Material)
+  (texture-relief (texture-scale (kraft (casing)) 0.85) 0.4))
+
+(defn paper-stock [] (-> Material)
+  (texture-relief (texture-scale (watercolor (paper)) 0.75) 0.32))
+
+(defn cut-floor [] (-> Material)
+  (texture-relief (pressed-paper (floor-stock)) 0.4))
+
+(defn rail-stock [] (-> Material)
+  (texture-relief (texture-scale (pressed-paper (rail)) 1.1) 0.55))
+
+(defn rail-row-stock [] (-> Material)
+  (texture-relief (texture-scale (pressed-paper (rail-row)) 1.1) 0.55))
+
+(defn terracotta-stock [] (-> Material)
+  (texture-relief (pressed-paper (terracotta)) 0.5))
+
+(defn ochre-stock [] (-> Material)
+  (texture-relief (pressed-paper (ochre)) 0.5))
+
+(defn slate-stock [] (-> Material)
+  (texture-relief (pressed-paper (slate)) 0.4))
+
+(defn plum-stock [] (-> Material)
+  (texture-relief (pressed-paper (plum)) 0.45))
+
+(defn sage-stock [] (-> Material)
+  (texture-relief (texture-scale (pressed-paper (sage-deep)) 1.1) 0.5))
+
+;;; Elevations, in logical paper points. The renderer clamps outside 0..64, and
+;;; ink inherits the last sheet submitted unless `ink-height` says otherwise.
+(defn z-casing [] (-> f64)
+  8.0)
+
+(defn z-sheet [] (-> f64)
+  12.0)
+
+(defn z-inset [] (-> f64)
+  12.0)
+
+(defn z-control [] (-> f64)
+  16.0)
+
+(defn z-raised [] (-> f64)
+  22.0)
+
+;;; Font indices supplied by the renderer: 0 Helvetica Neue, 1 Georgia,
+;;; 2 Menlo, 3 medium Helvetica Neue, 4 Baskerville. Georgia gives this edition
+;;; stronger fine serifs and a darker, more legible impression at native size.
+(defn serif [] (-> i64)
+  1)
+
+(defn sans [] (-> i64)
+  0)
+
+(defn mono [] (-> i64)
+  2)
+
+(defn strong [] (-> i64)
+  3)

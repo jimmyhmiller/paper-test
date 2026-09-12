@@ -1,0 +1,141 @@
+(module transcript.tests.history)
+(import "coil.primitive" :as primitive)
+(import "coil.assert" :use *)
+(import "transcript.model" :as model)
+(import "transcript.history" :as history)
+
+(defn fixture [(count i64)] (-> (ptr model/Session))
+  (let [s (model/session)
+        h (history/history)]
+    (history/clear h)
+    (model/reset-session s)
+    (for [i 0 count]
+      (let [w (model/word i)
+            start (* (cast f64 i) 1000.0)]
+        (set! (.t0 w) start)
+        (set! (.t1 w) (+ start 200.0))
+        (set! (.gap-keep w) model/GAP-UNTOUCHED)
+        (set! (.deleted w) false)
+        (set! (.filler w) false)
+        (set! (.para w) false)))
+    (set! (.word-count s) count)
+    (set! (.dur-ms s) (* (cast f64 count) 1000.0))
+    (model/rebuild-clips s)
+    s))
+
+(defn step [(s (ptr model/Session)) (lo i64) (hi i64) (regions bool)] (-> i64)
+  (let [h (history/history)]
+    (history/clear-side h history/SIDE-REDO)
+    (history/begin h history/SIDE-UNDO s)
+    (when (> hi lo) (history/record-words h history/SIDE-UNDO lo hi))
+    (when regions (history/record-regions h history/SIDE-UNDO s) 0))
+  0)
+
+(deftest a_cut_is_undone_and_redone
+         (let [s (fixture 6)
+               h (history/history)]
+           (step s 1 4 false)
+           (for [i 1 4] (set! (.deleted (model/word i)) true))
+           (model/rebuild-clips s)
+           (history/commit h history/SIDE-UNDO)
+           (assert-eq (model/kept-word-count s) 3)
+           (assert (history/can-undo? h))
+
+           (assert (history/restore h history/SIDE-UNDO s))
+           (assert-eq (model/kept-word-count s) 6)
+           (assert (not (history/can-undo? h)))
+           (assert (history/can-redo? h))
+
+           (assert (history/restore h history/SIDE-REDO s))
+           (assert-eq (model/kept-word-count s) 3)
+           (assert (history/can-undo? h))))
+
+(deftest undo_walks_back_through_several_edits
+         (let [s (fixture 8)
+               h (history/history)]
+           (for [k 0 4]
+             (step s k (+ k 1) false)
+             (set! (.deleted (model/word k)) true)
+             (model/rebuild-clips s)
+             (history/commit h history/SIDE-UNDO))
+           (assert-eq (model/kept-word-count s) 4)
+           (for [k 0 4] (history/restore h history/SIDE-UNDO s))
+           (assert-eq (model/kept-word-count s) 8)
+           (assert (not (history/can-undo? h)))))
+
+;;; A gap trim and a word cut restore independently and in the right order.
+(deftest gap_and_word_edits_unwind_in_order
+         (let [s (fixture 4)
+               h (history/history)]
+           (step s 0 1 false)
+           (model/set-gap-keep s 0 100.0)
+           (history/commit h history/SIDE-UNDO)
+           (step s 2 3 false)
+           (set! (.deleted (model/word 2)) true)
+           (model/rebuild-clips s)
+           (history/commit h history/SIDE-UNDO)
+
+           (history/restore h history/SIDE-UNDO s)
+           (assert (not (.deleted (model/word 2))))
+           (assert (primitive/fcmp-eq (.gap-keep (model/word 0)) 100.0))
+
+           (history/restore h history/SIDE-UNDO s)
+           (assert (primitive/fcmp-eq (.gap-keep (model/word 0))
+                                      model/GAP-UNTOUCHED))))
+
+(deftest regions_are_restored_whole
+         (let [s (fixture 4)
+               h (history/history)]
+           (step s -1 -1 true)
+           (set! (.sel-kind s) model/SEL-REGION)
+           (set! (.ra s) 500.0)
+           (set! (.rb s) 700.0)
+           (model/toggle-selection s)
+           (history/commit h history/SIDE-UNDO)
+           (assert-eq (.region-count s) 1)
+
+           (history/restore h history/SIDE-UNDO s)
+           (assert-eq (.region-count s) 0)
+           (history/restore h history/SIDE-REDO s)
+           (assert-eq (.region-count s) 1)
+           (assert (primitive/fcmp-eq (.from (index (model/regions) 0)) 500.0))))
+
+;;; An action that changes nothing must not consume an undo press.
+(deftest a_step_that_recorded_nothing_is_discarded
+         (let [s (fixture 4)
+               h (history/history)]
+           (step s -1 -1 false)
+           (assert (not (history/commit h history/SIDE-UNDO)))
+           (assert (not (history/can-undo? h)))))
+
+;;; Undoing then making a new edit must drop the redo branch.
+(deftest a_new_edit_discards_the_redo_branch
+         (let [s (fixture 4)
+               h (history/history)]
+           (step s 0 1 false)
+           (set! (.deleted (model/word 0)) true)
+           (model/rebuild-clips s)
+           (history/commit h history/SIDE-UNDO)
+           (history/restore h history/SIDE-UNDO s)
+           (assert (history/can-redo? h))
+           (step s 1 2 false)
+           (set! (.deleted (model/word 1)) true)
+           (model/rebuild-clips s)
+           (history/commit h history/SIDE-UNDO)
+           (assert (not (history/can-redo? h)))))
+
+(deftest the_selection_comes_back_with_the_edit
+         (let [s (fixture 6)
+               h (history/history)]
+           (set! (.sel-kind s) model/SEL-WORDS)
+           (set! (.sa s) 2)
+           (set! (.sb s) 4)
+           (step s 2 5 false)
+           (for [i 2 5] (set! (.deleted (model/word i)) true))
+           (model/rebuild-clips s)
+           (history/commit h history/SIDE-UNDO)
+           (model/clear-selection s)
+           (history/restore h history/SIDE-UNDO s)
+           (assert-eq (.sel-kind s) model/SEL-WORDS)
+           (assert-eq (.sa s) 2)
+           (assert-eq (.sb s) 4)))

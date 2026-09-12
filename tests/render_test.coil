@@ -5,7 +5,7 @@
 (import "paper.surface" :use *)
 (import "paper.material" :use *)
 (import "paper.geometry" :use [rect])
-(import "paper.ffi" :use [CGBitmapContextGetData])
+(import "paper.ffi" :use [CGBitmapContextGetData fabs])
 (import "paper.objc" :as objc)
 (import "paper.components" :use [button])
 
@@ -318,3 +318,30 @@
          ;; The one-pixel rim has antialiased coverage at this sample.
          (assert (> (height 23 40) 19.0))
          (assert (< (height 70 57) 0.1)))
+
+;;; A sheet laid into a hole in another at the same height: its outline dips to
+;;; a paper edge all round unless the join is marked seamless, and holes cut in
+;;; it keep their edge either way.
+(defn inlaid-sheet [(seamless bool)] (-> i64)
+  (small-scene)
+  (begin-sheet)
+  (rounded-path (rect 10.0 10.0 160.0 140.0) 0.0)
+  (rounded-path (rect 40.0 40.0 100.0 80.0) 0.0)
+  (finish-sheet 20.0 (cream))
+  (begin-sheet)
+  (rounded-path (rect 60.0 60.0 20.0 20.0) 0.0)
+  (when seamless (seamless-outline))
+  (rounded-path (rect 38.0 38.0 104.0 84.0) 0.0)
+  (finish-sheet 20.0 (cream))
+  (render/rasterize))
+
+(deftest a-seamless-outline-joins-coplanar-paper-without-an-edge
+         (inlaid-sheet false)
+         (let [plain-join (height 38 90)]
+           (inlaid-sheet true)
+           (let [join (height 38 90)
+                 inside (height 110 90)
+                 hole-edge (height 59 70)]
+             (assert (< plain-join (- inside 0.2)))
+             (assert (< (fabs (- join inside)) 0.05))
+             (assert (< hole-edge (- inside 0.2))))))

@@ -1,0 +1,19 @@
+(module paper.tests.profile)
+(import "coil.assert" :use *)
+(import "paper.profile" :as profile)
+
+(deftest measured_body_runs_once_and_returns_its_result
+         (let [(mut calls) 0
+               (mut milliseconds) -1.0
+               answer
+                 (profile/measure-ms milliseconds
+                                     (set! calls (+ (load calls) 1))
+                                     42)]
+           (assert-eq answer 42)
+           (assert-eq (load calls) 1)
+           (assert (>= (load milliseconds) 0.0))))
+
+(deftest accumulated_measurements_preserve_prior_samples
+         (let [(mut milliseconds) 5.0]
+           (profile/accumulate-ms milliseconds 9)
+           (assert (>= (load milliseconds) 5.0))))

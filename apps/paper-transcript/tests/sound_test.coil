@@ -1,0 +1,145 @@
+(module transcript.tests.sound)
+(import "coil.primitive" :as primitive)
+(import "coil.assert" :use *)
+(import "transcript.model" :as model)
+(import "transcript.sound" :as sound)
+
+;;; The splice is tested against a synthetic take rather than a file: one
+;;; channel at 1000 Hz, so a frame is a millisecond and every assertion below
+;;; reads directly as a time. Each sample carries its own source frame number,
+;;; which is what lets the test check that the kept audio came from the right
+;;; place and not merely that the right amount of it survived.
+(defn source-buffer [] (-> (ptr (array f32 20000)))
+  (primitive/alloc-static (array f32 20000)))
+
+(defn fixture [] (-> (ptr sound/Sound))
+  (let [s (sound/sound)
+        session (model/session)]
+    (for [i 0 20000]
+      (set! (index (source-buffer) i) (cast f32 i)))
+    (set! (.channels s) 1)
+    (set! (.rate s) 1000.0)
+    (set! (.source-frames s) 20000)
+    (set! (index (field s source) 0) (index (source-buffer) 0))
+    (set! (.edit-frames s) 0)
+    (set! (.ready s) true)
+    (model/reset-session session)
+    (for [i 0 3]
+      (let [w (model/word i)
+            start (* (cast f64 i) 1000.0)]
+        (set! (.t0 w) start)
+        (set! (.t1 w) (+ start 200.0))
+        (set! (.gap-keep w) model/GAP-UNTOUCHED)
+        (set! (.deleted w) false)
+        (set! (.filler w) false)
+        (set! (.para w) false)))
+    (set! (.word-count session) 3)
+    (set! (.dur-ms session) 3000.0)
+    (model/rebuild-clips session)
+    s))
+
+(defn sample [(s (ptr sound/Sound)) (i i64)] (-> f64)
+  (cast f64 (load (index (load (index (field s edit) 0)) i))))
+
+(deftest an_unedited_take_splices_to_its_own_length
+         (let [s (fixture)
+               session (model/session)]
+           (assert-eq (sound/splice s session false) 2200)
+           (assert (primitive/fcmp-eq (sample s 0) 0.0))
+           (assert (primitive/fcmp-eq (sample s 2199) 2199.0))))
+
+;;; The edited length must equal the sum of the kept spans exactly. Playback
+;;; reports a position on this timeline and the transcript is drawn from it, so
+;;; any per-seam drift would separate the highlighted word from the audio.
+(deftest a_cut_removes_exactly_its_own_span
+         (let [s (fixture)
+               session (model/session)]
+           (set! (.deleted (model/word 1)) true)
+           (model/rebuild-clips session)
+           (assert-eq (sound/splice s session false) 400)
+           (assert (primitive/fcmp-eq (sample s 0) 0.0))
+           ;; The seam: the last kept frame before the cut, then the first frame after.
+           (assert (primitive/fcmp-eq (sample s 199) 199.0))
+           (assert (primitive/fcmp-eq (sample s 200) 2000.0))
+           (assert (primitive/fcmp-eq (model/edited-ms session) 400.0))))
+
+(deftest softening_the_seams_does_not_change_the_timeline
+         (let [s (fixture)
+               session (model/session)]
+           (set! (.deleted (model/word 1)) true)
+           (model/rebuild-clips session)
+           (let [hard (sound/splice s session false)
+                 soft (sound/splice s session true)]
+             (assert-eq hard soft))))
+
+;;; The ramp is applied inside each kept span, so the first and last frames of a
+;;; clip are silent and the frames between them are untouched.
+(deftest softening_ramps_the_edges_of_each_clip
+         (let [s (fixture)
+               session (model/session)]
+           (sound/splice s session true)
+           (assert (primitive/fcmp-eq (sample s 0) 0.0))
+           (assert (primitive/fcmp-eq (sample s 2199) 0.0))
+           (assert (primitive/fcmp-eq (sample s 1100) 1100.0))))
+
+(deftest frames_and_milliseconds_convert_at_the_take_rate
+         (let [s (fixture)]
+           (assert-eq (sound/ms-to-frames s 1500.0) 1500)
+           (assert (primitive/fcmp-eq (sound/frames-to-ms s 250) 250.0))))
+
+(deftest an_empty_edit_splices_to_nothing
+         (let [s (fixture)
+               session (model/session)]
+           (for [i 0 3] (set! (.deleted (model/word i)) true))
+           (model/rebuild-clips session)
+           (assert-eq (.clip-count session) 0)
+           (assert-eq (sound/splice s session false) 0)))
+
+(defn second-source-buffer [] (-> (ptr (array f32 20000)))
+  (primitive/alloc-static (array f32 20000)))
+
+;;; Opening a stereo take after a mono one is the case that crashed: its edit
+;;; was no longer than the previous take's, so the buffers were reused, and the
+;;; second channel had never been allocated. The channel count has to force a
+;;; reallocation on its own.
+(deftest a_take_with_more_channels_reallocates_its_buffers
+         (let [s (fixture)
+               session (model/session)]
+           ;; A long mono edit first, so the stereo take that follows cannot grow it.
+           (sound/splice s session false)
+           (assert-eq (.edit-channels s) 1)
+           (for [i 0 20000]
+             (set! (index (second-source-buffer) i) (cast f32 (- 0 i))))
+           (set! (.channels s) 2)
+           (set! (index (field s source) 1) (index (second-source-buffer) 0))
+           (set! (.deleted (model/word 2)) true)
+           (model/rebuild-clips session)
+           (assert-eq (sound/splice s session false) 1200)
+           (assert-eq (.edit-channels s) 2)
+           ;; Both channels must hold their own audio, from their own source.
+           (assert (primitive/fcmp-eq (sample s 0) 0.0))
+           (assert (primitive/fcmp-eq (cast f64
+                                            (load (index (load (index (field s
+                                                                             source)
+                                                                      1))
+                                                         5)))
+                                      -5.0))
+           (assert (primitive/fcmp-eq (cast f64
+                                            (load (index (load (index (field s
+                                                                             edit)
+                                                                      1))
+                                                         5)))
+                                      -5.0))))
+
+;;; And the reverse: a mono take opened after a stereo one must not keep
+;;; splicing into two channels.
+(deftest a_take_with_fewer_channels_also_reallocates
+         (let [s (fixture)
+               session (model/session)]
+           (set! (.channels s) 2)
+           (set! (index (field s source) 1) (index (second-source-buffer) 0))
+           (sound/splice s session false)
+           (assert-eq (.edit-channels s) 2)
+           (set! (.channels s) 1)
+           (assert (> (sound/splice s session false) 0))
+           (assert-eq (.edit-channels s) 1)))

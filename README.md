@@ -80,6 +80,15 @@ The sun control opens the same reusable lighting popover in Calculator, Terminal
 
 Calculator also tries an opt-in shaped native window. Its transparent exterior follows the paper casing; a five-second hold on AC turns it off, and a View menu switch restores standard macOS chrome. Other apps retain their standard windows. Configure this with `paper_window_shape` before `paper_run`; `window-snapshot` exports the same outline without modifying retained rendering buffers.
 
+## Standalone podcast editor
+
+[Paper Transcript](apps/paper-transcript/README.md) is a separate native app for
+editing a recording by editing its transcript: whisper writes the words, cuts to
+the words and to the silences between them resolve into one list of kept spans,
+and AVAudioEngine plays that list back with a sample-accurate playhead. It reads
+and writes the same library as the podcast editor in jim. Build it with
+`coil build -o build/paper-transcript` from `apps/paper-transcript`.
+
 ## Build your own interface
 
 Start with [examples/minimal.coil](examples/minimal.coil), a complete 640 × 480 application. Import `paper.flow` for layout, drawing, components, and native text measurement; import `paper.platform` for the application loop and native text input values.
@@ -101,6 +110,18 @@ Use logical coordinates with the origin at the top left. Call `paper_configure` 
 This places cream paper at elevation 28 above clay at elevation 10. The enclosed oval is a hole, so you see the clay through it. Build curved outlines with `move-to`, `line-to`, `curve-to`, and `close-path`. Within one sheet, subpaths use the even-odd fill rule.
 
 For a cut across several existing sheets, construct its path and call `cut-through floor`. This subtracts the path from previously submitted sheets above that elevation, including cuts that cross their outside edges. Submit the lower stock first. Cuts do not modify sheets submitted afterward.
+
+Every sheet's outline is drawn as a paper edge, slightly lower than the sheet. Where a sheet continues paper at the same height — laid into a hole in another sheet, say, so it can change without the other re-rendering — that edge reads as a groove. Call `seamless-outline` partway through building the sheet: everything outlined before it keeps its edge, and everything outlined after it joins the neighbouring paper with none. Holes go first, then the join.
+
+```coil
+(begin-sheet)
+(rounded-path pill 9.0)          ; a hole: keeps its edge
+(seamless-outline)
+(rounded-path page 0.0)          ; the join with the page around it
+(finish-sheet 21.0 (cream))
+```
+
+Cuts and clips that later reshape the sheet add their outlines as edges.
 
 `well` carves a three-step recess into the current stack. `frame` and `ring` add sheets with apertures. Wrap a component subtree in `with-elevation` to offset its depths; nested scopes restore the previous geometry and ink depth.
 
@@ -124,7 +145,7 @@ Text and rules inherit the last submitted sheet's elevation. Set `ink-height` to
 
 Custom control hit regions also follow cuts. A hole exposes an eligible control below it, and a complete cut removes the control from pointer, keyboard, and accessibility interaction. Overlapping controls use elevation first and submission order to break ties. Native text fields still use their separate macOS view geometry.
 
-Use `text-box` for bounded wrapping and last-line truncation. Font indices select Helvetica Neue (0), Georgia (1), Menlo (2), or medium Helvetica Neue (3). Native editable text fields support normal macOS selection and editing; they overlay the rendered image.
+Use `text-box` for bounded wrapping and last-line truncation. Font indices select Helvetica Neue (0), Georgia (1), Menlo (2), medium Helvetica Neue (3), or Baskerville (4). Native editable text fields support normal macOS selection and editing; they overlay the rendered image.
 
 ### Input and state
 
@@ -163,6 +184,8 @@ This is a top-down 2.5D height-field renderer. It supports stacked cutouts and d
 The runtime currently owns one window and one global scene. The layout package provides content measurement, reflow, scroll offsets, and clip geometry. The runtime does not provide virtualized lists, wheel/inertia policies, application-level undo/redo, or a visual interface editor. Native text editing does support undo/redo. Designers compose interfaces in Coil.
 
 ## Verification and project notes
+
+[Paper profiling](lib/paper/PROFILING.md) documents reusable stage measurements and the transcript benchmark.
 
 `coil verify` checks formatting, lint, compilation, and the test suite. Performance regressions cover incremental/full-frame agreement, odd image dimensions, lighting invalidation, accumulated raster damage, worker-pool completion and restart, empty masks, cached readback, fractional mask placement, and viewport clipping. The accelerated GPU shadow result is compared byte-for-byte with all 32 original samples. Tests cover cutout pixels, cuts crossing outside edges, light reversal, zero-depth shadows, ink occlusion, nested elevation scopes, layout bounds, disabled controls, focus order, choice navigation, pagination boundaries, and native decoding of the three generated audio tracks. The original examples were checked through the native UI. The new layout pass adds rendered galleries at three logical viewport sizes; see [current validation and native UI limitations](LAYOUT.md).
 
