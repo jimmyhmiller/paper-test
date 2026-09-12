@@ -3,7 +3,8 @@
 (import "paper.ffi" :use [CACurrentMediaTime])
 
 (defstruct Counters
-  [(enabled bool) (bevel f64) (cuts f64) (masks f64)])
+  [(enabled bool) (bevel f64) (cuts f64) (masks f64)
+   (mask-reservation f64) (micro-preparation f64) (composition-encoding f64)])
 
 (defn counters [] (-> (ptr Counters))
   (p/alloc-static Counters))

@@ -5,6 +5,30 @@
 (extern printf :cc c [(ptr i8) ...] (-> i32))
 (extern fflush :cc c [(ptr i8)] (-> i32))
 
+(deftest cherry-petal-folds-have-supporting-stock-at-authored-proportions
+  (scene/init)
+  (for [scale 1 4]
+    (set! (.sx (ukiyo/canvas)) (cast f64 scale))
+    (set! (.sy (ukiyo/canvas)) (cast f64 scale))
+    (for [which 0 26]
+      (scene/clear 0xffffff)
+      (let [pose (ukiyo/blossom-pose which)]
+        (ukiyo/blossom 40.0 40.0 (.radius pose) (.rotation pose) (.aspect pose) 31.0)
+        (assert (= (len (.sheets (scene/scene))) 10))
+        (for [petal 0 5]
+          (let [stock (get (.sheets (scene/scene)) (* petal 2))
+                fold (get (.sheets (scene/scene)) (+ (* petal 2) 1))
+                bounds (CGPathGetPathBoundingBox (.path fold))]
+            (assert (> (.z fold) (.z stock)))
+            (assert (not (CGPathIsEmpty (.path fold))))
+            (for [y 0 16]
+              (for [x 0 16]
+                (let [point (CGPoint :x (+ (.x bounds) (* (.w bounds) (/ (+ (cast f64 x) 0.37) 16.0)))
+                                      :y (+ (.y bounds) (* (.h bounds) (/ (+ (cast f64 y) 0.37) 16.0))))]
+                  (when (CGPathContainsPoint (.path fold) (cast (ptr CGAffine) 0) point true)
+                    (assert (CGPathContainsPoint (.path stock) (cast (ptr CGAffine) 0) point true)))))))))))
+  (scene/clear 0xffffff))
+
 (deftest header-stock-continues-under-cherry-occluders
   (scene/init)
   (let [path (ukiyo/cloud-path 3)

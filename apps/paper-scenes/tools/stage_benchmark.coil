@@ -7,6 +7,7 @@
 (import "paper.damage" :as damage)
 (import "paper.platform" :as host)
 (import "paper.workers" :as workers)
+(import "paper.profile" :as profile)
 (import "paper.objc" :as o)
 (import "paper.ffi" :use [CACurrentMediaTime])
 
@@ -32,14 +33,19 @@
     (set! (.width (scene/scene)) (setting c"PAPER_BENCH_WIDTH" 2560))
     (set! (.height (scene/scene)) (setting c"PAPER_BENCH_HEIGHT" 1680))
     (render/setup)
+    (set! (.enabled (profile/counters)) true)
     (assert (.available (gpu/gpu)))
-    (printf c"theme,scenario,frame,scene_ms,compose_cpu_ms,compose_gpu_ms,prepare_light_cpu_ms,prepare_light_gpu_ms,regions,composed_pixels,micro_pixels\n")
+    (printf c"theme,scenario,frame,scene_ms,compose_cpu_ms,compose_gpu_ms,prepare_light_cpu_ms,prepare_light_gpu_ms,regions,composed_pixels,micro_pixels,reservation_ms,mask_raster_ms,micro_encode_ms,composition_encode_ms,micro_entries\n")
     (for [scenario 0 3]
       (for [frame 0 frames]
         (let [frame-pool (o/new c"NSAutoreleasePool")
               start (CACurrentMediaTime)]
           (draw-case theme scenario frame 4)
           (let [built (CACurrentMediaTime)]
+            (set! (.mask-reservation (profile/counters)) 0.0)
+            (set! (.masks (profile/counters)) 0.0)
+            (set! (.micro-preparation (profile/counters)) 0.0)
+            (set! (.composition-encoding (profile/counters)) 0.0)
             (store! (masks/last-composed-area) 0.0)
             (set! (.prepared-pixels (masks/micro-cache)) 0)
             (render/rasterize-frame false)
@@ -49,7 +55,7 @@
               (render/render-frame false)
               (let [lit (CACurrentMediaTime)
                     light-gpu (drain-stage)]
-                (printf c"%lld,%lld,%lld,%.4f,%.4f,%.4f,%.4f,%.4f,%lld,%.0f,%lld\n"
+                (printf c"%lld,%lld,%lld,%.4f,%.4f,%.4f,%.4f,%.4f,%lld,%.0f,%lld,%.4f,%.4f,%.4f,%.4f,%lld\n"
                         theme
                         scenario
                         frame
@@ -60,7 +66,12 @@
                         light-gpu
                         (.region-count (damage/cache))
                         (load (masks/last-composed-area))
-                        (.prepared-pixels (masks/micro-cache))))))
+                        (.prepared-pixels (masks/micro-cache))
+                        (* 1000.0 (.mask-reservation (profile/counters)))
+                        (* 1000.0 (.masks (profile/counters)))
+                        (* 1000.0 (.micro-preparation (profile/counters)))
+                        (* 1000.0 (.composition-encoding (profile/counters)))
+                        (len (.entries (masks/micro-cache)))))))
           (o/release frame-pool)))
       (fflush (o/nil)))
     (workers/stop)

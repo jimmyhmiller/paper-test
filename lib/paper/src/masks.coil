@@ -1353,7 +1353,8 @@
 (defn prepare-masks [] (-> i64)
   (set! (.serial (micro-cache)) (+ (.serial (micro-cache)) 1))
   (let [s (scene)
-        c (cache)]
+        c (cache)
+        reservation-start (profile/start)]
     (set! (.frame-start c) (+ (.serial c) 1))
     (al/al-clear! [i64] (mut (.pending c)))
     (al/al-clear! [i64] (mut (.records c)))
@@ -1363,6 +1364,8 @@
       (sheet (nil) (al/al-get [Sheet] (.sheets s) i)))
     (for [i 0 (al/al-len [Ink] (.inks s))]
       (ink (nil) (al/al-get [Ink] (.inks s) i)))
+    (set! (.mask-reservation (profile/counters))
+          (+ (.mask-reservation (profile/counters)) (profile/elapsed reservation-start)))
     (let [start (profile/start)]
       (workers/apply (cast u64 (len (.pending c)))
                      (nil)
@@ -1392,7 +1395,10 @@
 (defn prepare-region [(region CGRect)] (-> i64)
   (set-composition-region region)
   (prepare-masks)
-  (prepare-micro)
+  (let [start (profile/start)]
+    (prepare-micro)
+    (set! (.micro-preparation (profile/counters))
+          (+ (.micro-preparation (profile/counters)) (profile/elapsed start))))
   (visibility-setup)
   0)
 
@@ -1410,7 +1416,8 @@
   (store! (last-composed-area) 0.0)
   (prepare-region bounds)
   (when (> count 0)
-    (let [full (and (= count 1) (full-region (load (index regions 0))))
+    (let [start (profile/start)
+          full (and (= count 1) (full-region (load (index regions 0))))
           encoder (begin-composition full)]
       (for [i 0 count]
         (let [region (load (index regions i))
@@ -1418,7 +1425,9 @@
           (when (and (> (.width pixels) (cast u64 0))
                      (> (.height pixels) (cast u64 0)))
             (compose-region encoder region full))))
-      (msg i64 encoder (sel c"endEncoding") [])))
+      (msg i64 encoder (sel c"endEncoding") [])
+      (set! (.composition-encoding (profile/counters))
+            (+ (.composition-encoding (profile/counters)) (profile/elapsed start)))))
   (let [pixels (gpu/pixel-region bounds 0.0)]
     (store! (last-damage)
             (cgrect (cast f64 (.x pixels))
@@ -1440,10 +1449,13 @@
          (= (.height pixels) (cast u64 (.height s))))))
 
 (defn encode-region [(region CGRect)] (-> i64)
-  (let [full (full-region region)
+  (let [start (profile/start)
+        full (full-region region)
         encoder (begin-composition full)]
     (compose-region encoder region full)
-    (msg i64 encoder (sel c"endEncoding") []))
+    (msg i64 encoder (sel c"endEncoding") [])
+    (set! (.composition-encoding (profile/counters))
+          (+ (.composition-encoding (profile/counters)) (profile/elapsed start))))
   0)
 
 ;;; Share attachment loads/stores and the visibility depth clear across regions.
