@@ -25,6 +25,17 @@ def deadline_summary(rows, warmup):
     if len(set(minimums)) != 1:
         raise ValueError('mixed presentation policies within one scenario')
     relative = minimums[0] > 0
+    try:
+        clocks = [int(row.get('metal_clock', 0)) for row in rows]
+    except (TypeError, ValueError) as error:
+        raise ValueError('invalid display-link source') from error
+    if len(set(clocks)) != 1 or clocks[0] not in (0, 1):
+        raise ValueError('invalid or mixed display-link source')
+    metal = clocks[0] == 1
+    if metal:
+        if relative:
+            raise ValueError('Metal display-link drawables manage their own presentation')
+        fields += ('target_s',)
     for row in rows:
         try:
             values = {field: float(row[field]) for field in fields}
@@ -48,11 +59,12 @@ def deadline_summary(rows, warmup):
     offsets = [(float(row['presented_s']) - float(row['requested_s'])) * 1000
                for row in warm if float(row['presented_s']) > 0]
     return dict(
+        clock_source='metal' if metal else 'view',
         requested_interval_p95_ms=round(percentile(intervals, .95), 3),
         requested_long_intervals=sum(value >= 25 - .001 for value in intervals),
         nonincreasing_requests=sum(value <= 0 for value in intervals),
         submit_late_frames=sum(float(row['start_s']) + float(row['cpu_ms']) / 1000 >
-                               float(row['requested_s']) + .000001 for row in warm),
+                               float(row['target_s' if metal else 'requested_s']) + .000001 for row in warm),
         gpu_late_frames=sum(float(row['gpu_end_s']) > float(row['requested_s']) + .000001
                             for row in warm),
         presentation_offset_p95_ms=round(percentile(offsets, .95), 3))

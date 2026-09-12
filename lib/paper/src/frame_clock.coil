@@ -10,6 +10,7 @@
   [(link (ptr i8))
    (target (ptr i8))
    (class (ptr i8))
+   (metal-class (ptr i8))
    (callback (fnptr c [] i64))
    (timestamp f64)
    (duration f64)
@@ -33,6 +34,44 @@
     (release (.target c))
     (set! (.link c) (nil))
     (set! (.target c) (nil)))
+  0)
+
+;;; Use the drawable and deadline belonging to this exact display-link update.
+;;; The update owns the drawable during the synchronous callback. Presentation
+;;; retains its last-drawable separately; do not carry this borrowed slot over.
+(defn metal-tick [(object (ptr i8)) (selector (ptr i8)) (link (ptr i8)) (update (ptr i8))] (-> void)
+  (let [c (clock) g (gpu/gpu)]
+    (set! (.timestamp c) (msg f64 update (sel c"targetTimestamp") []))
+    (set! (.presentation-time g) (msg f64 update (sel c"targetPresentationTimestamp") []))
+    (set! (.scheduled-drawable g) (msg (ptr i8) update (sel c"drawable") []))
+    (set! (.frames c) (+ (.frames c) 1))
+    (call-ptr (.callback c))
+    (set! (.scheduled-drawable g) (nil))))
+
+;;; Explicit opt-in for a CAMetalLayer on macOS 14+. Duration records the
+;;; requested cadence here, not a measured CADisplayLink timestamp difference.
+(defn start-metal [(layer (ptr i8)) (callback (fnptr c [] i64)) (fps f32)] (-> i64)
+  (assert (> fps 0.0))
+  (stop)
+  (let [c (clock) link-class (class c"CAMetalDisplayLink")]
+    (assert (!= link-class (nil)))
+    (when (= (.metal-class c) (nil))
+      (set! (.metal-class c) (objc_allocateClassPair (class c"NSObject") c"CoilPaperMetalFrameClock" 0))
+      (assert (class_addMethod (.metal-class c) (sel c"metalDisplayLink:needsUpdate:")
+                (cast (ptr i8) (fnptr-of metal-tick)) c"v@:@@"))
+      (objc_registerClassPair (.metal-class c)) 0)
+    (set! (.callback c) callback)
+    (set! (.duration c) (/ 1.0 (cast f64 fps)))
+    (set! (.target c) (msg (ptr i8) (.metal-class c) (sel c"new") []))
+    (set! (.link c) (msg (ptr i8) (msg (ptr i8) link-class (sel c"alloc") [])
+                      (sel c"initWithMetalLayer:") [(ptr i8)] layer))
+    (assert (!= (.link c) (nil)))
+    (msg i64 (.link c) (sel c"setDelegate:") [(ptr i8)] (.target c))
+    (msg i64 (.link c) (sel c"setPreferredFrameRateRange:") [RateRange]
+         (RateRange :minimum fps :maximum fps :preferred fps))
+    (msg i64 (.link c) (sel c"addToRunLoop:forMode:") [(ptr i8) (ptr i8)]
+         (msg (ptr i8) (class c"NSRunLoop") (sel c"mainRunLoop") [])
+         (constant-object c"NSRunLoopCommonModes")))
   0)
 
 (defn start [(view (ptr i8)) (callback (fnptr c [] i64)) (fps f32)] (-> i64)

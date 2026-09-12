@@ -43,6 +43,8 @@
    ; Zero preserves absolute-time/immediate presentation. A positive minimum
    ; display duration takes precedence; callers must choose one timing policy.
    (presentation-duration f64)
+   ; Borrowed only for the synchronous Metal display-link callback.
+   (scheduled-drawable (ptr i8))
    (command (ptr i8))
    (last-command (ptr i8))
    (last-drawable (ptr i8))
@@ -474,7 +476,9 @@
 ;;; copies it for asynchronous delivery. Captured state must survive delivery.
 (defn present-with-handler [(layer (ptr i8)) (handler (ptr i8))] (-> bool)
   (let [g (gpu)
-        drawable (msg (ptr i8) layer (sel c"nextDrawable") [])]
+        drawable (if (!= (.scheduled-drawable g) (nil))
+                     (.scheduled-drawable g)
+                     (msg (ptr i8) layer (sel c"nextDrawable") []))]
     (if (= drawable (nil))
         false
         (let [command (command-buffer)
@@ -494,6 +498,8 @@
           (when (!= handler (nil))
             (msg i64 drawable (sel c"addPresentedHandler:") [(ptr i8)] handler))
           (cond
+            (!= (.scheduled-drawable g) (nil))
+              (msg i64 command (sel c"presentDrawable:") [(ptr i8)] drawable)
             (> (.presentation-duration g) 0.0)
               (msg i64 command (sel c"presentDrawable:afterMinimumDuration:") [(ptr i8) f64] drawable (.presentation-duration g))
             (> (.presentation-time g) 0.0)

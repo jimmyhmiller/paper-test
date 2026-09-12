@@ -146,6 +146,40 @@ class PresentationReportTest(unittest.TestCase):
             rows[3].update(requested_s=0, min_duration_s=1 / 60)
         self.assertNotEqual(self.report(mixed).returncode, 0)
 
+    def test_metal_clock_uses_submission_deadline_not_display_prediction(self):
+        def metal(rows):
+            self.deadlines(rows)
+            for row in rows:
+                row.update(metal_clock=1, target_s=row['requested_s'] - .008)
+            rows[3]['cpu_ms'] = 6
+        result = self.report(metal)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first = next(csv.DictReader(io.StringIO(result.stdout)))
+        self.assertEqual(first['clock_source'], 'metal')
+        self.assertEqual(first['submit_late_frames'], '1')
+        self.assertEqual(first['gpu_late_frames'], '0')
+
+    def test_invalid_or_mixed_clock_is_rejected(self):
+        for value in [None, '', 'invalid', 2, 1]:
+            def invalid(rows):
+                self.deadlines(rows)
+                for row in rows:
+                    row['metal_clock'] = 0
+                rows[3]['metal_clock'] = value
+            with self.subTest(value=value):
+                result = self.report(invalid)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn('Traceback', result.stderr)
+
+    def test_metal_clock_rejects_minimum_duration_policy(self):
+        def invalid(rows):
+            self.deadlines(rows)
+            for row in rows:
+                row.update(metal_clock=1, min_duration_s=1 / 60, requested_s=0)
+        result = self.report(invalid)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('manage their own presentation', result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

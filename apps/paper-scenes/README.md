@@ -64,6 +64,16 @@ policy, run the native benchmark with `PAPER_BENCH_MIN_DURATION=1`. This request
 is zero and `min_duration_s` records the policy; the report omits absolute-deadline
 lateness metrics. See Apple's [minimum-duration presentation documentation](https://developer.apple.com/documentation/metal/mtldrawable/present(afterminimumduration:)).
 
+To test the Metal display clock on macOS 14+, use `PAPER_BENCH_METAL_CLOCK=1`.
+The benchmark presents the drawable supplied by that update with `presentDrawable:`.
+In this mode, `target_s` records the CPU submission deadline and `requested_s`
+records the system's predicted display time. `clock_duration_s` records the
+requested cadence, and `metal_clock=1` identifies these rows. The report compares
+CPU submission against the CPU deadline and GPU completion against the display
+prediction. Do not combine this mode with minimum-duration presentation.
+The app retains its existing view display clock; the Metal clock remains a
+benchmark option pending evidence of better pacing.
+
 The completed-frame benchmark waits for the GPU on each frame and includes scene
 construction. It excludes screenshot readback. It does not measure display fps.
 
