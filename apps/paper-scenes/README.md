@@ -77,12 +77,28 @@ the paper stocks between them. We cap the search at 64 edits and use conservativ
 redraw beyond that budget. Reordering remains an edit; raster quality is unchanged.
 For Metal material composition we retain up to 32 separated damage regions,
 merge touching regions, and collapse to their union if fragmentation exceeds
-that bound. We prepare the frame mask working set once, encode each pixel-aligned
-region, then allow cache eviction. Normal/material preparation accumulates changed
+that bound. We prepare the frame mask working set once, encode the pixel-aligned
+regions in one shared render pass, then allow cache eviction. Overlapping regions
+retain the same painter ranks and preserve depth/coverage results.
+Normal/material preparation accumulates changed
 bounds with a two-pixel dependency halo; we still rebuild the shadow-height
-hierarchy. The CPU fallback and lighting cover the enclosing bounds.
+hierarchy. The CPU fallback covers the enclosing bounds. GPU lighting expands
+those bounds by the maximum shader ray reach for the current light and viewport,
+including the sample offset and edge margin. This changes dispatch coverage only;
+the shadow samples and their appearance stay unchanged.
 `masks/last-composed-area` records the summed pixel area
 of the composition passes, including any overlap from antialias padding.
+
+For a stage-cost diagnostic, build `tools/stage_benchmark.coil` and run it with
+`PAPER_BENCH_THEME=5 PAPER_BENCH_FRAMES=300`. It reports scene construction,
+material composition, and preparation/lighting separately, including completed
+GPU times and composed pixel area. It inserts waits between stages, so use the
+native benchmark to assess presentation cadence. Empty stages report zero GPU
+time rather than repeating the preceding command buffer's measurement.
+The `micro_pixels` column counts regenerated material-texture samples separately
+from the pixels composed onto the scene. Rendering requests these samples only
+where the sheet intersects damage, retaining the original pattern phase, origin
+and scale. Cached supersets remain reusable; shader sampling is unchanged.
 
 In the 60 fps native report, `missed_intervals` counts presentation gaps of at
 least 25 ms, with a 1 µs timestamp tolerance. Earlier reports used a strict

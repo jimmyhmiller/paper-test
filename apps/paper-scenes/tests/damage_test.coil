@@ -9,9 +9,9 @@
 (import "paper.workers" :as workers)
 (import "paper.surface" :use *)
 (import "paper.material" :use *)
-(import "paper.geometry" :use [rect])
+(import "paper.geometry" :use [rect clamp])
 (import "paper.objc" :as o)
-(import "paper.ffi" :use [CGBitmapContextGetData cgrect])
+(import "paper.ffi" :use [CGBitmapContextGetData cgrect sqrt])
 (import "coil.alloc" :as alloc)
 
 (extern memcpy :cc c [(ptr u8) (ptr u8) u64] (-> (ptr u8)))
@@ -83,7 +83,7 @@
 
 (defn separated-edits [(selection i64) (cursor bool)] (-> i64)
   (host/paper_begin 0xeee8d9)
-  (panel (rect 4.0 4.0 280.0 180.0) 7.0 1.0 (cream))
+  (panel (rect 4.0 4.0 280.0 180.0) 7.0 1.0 (watercolor 0xeee8d9))
   (ink-height 10.0)
   (host/paper_rule (+ 20.0 (* 10.0 (cast f64 selection)))
                    20.0
@@ -107,14 +107,74 @@
              (let [bounds (damage/measure)]
                (assert (> (.x bounds) 15.0))
                (assert (< (+ (.x bounds) (.w bounds)) 45.0)))
+             (masks/micro-reset)
              (render/rasterize-frame false)
              (when (.available (gpu/gpu))
+               (assert (> (.prepared-pixels (masks/micro-cache)) 0))
+               (assert (< (.prepared-pixels (masks/micro-cache)) 3000))
                (assert (> (.w (.pending (gpu/gpu))) 0.0))
                (assert (< (.w (.pending (gpu/gpu))) 45.0)))
              (render/render-frame true)
              (when (.available (gpu/gpu))
                (assert (> (load (masks/last-composed-area)) 0.0))
                (assert (< (load (masks/last-composed-area)) 800.0)))
+             (assert-full-agreement copy 240000))
+           (render/free (cast (ptr i8) copy))
+           (workers/stop)
+           (o/release pool)))
+
+(deftest lighting-dispatch-padding-bounds-the-unchanged-shadow-sampler
+         (scene/init)
+         (set! (.width (scene/scene)) 2560)
+         (set! (.height (scene/scene)) 1680)
+         (for [backing 1 4]
+           (let [scale (* (cast f64 backing) 0.5)
+                 w (/ 2560.0 scale)
+                 h (/ 1680.0 scale)]
+             (set! (.scale (scene/scene)) scale)
+             (for [variant 0 4]
+               (let [lx (case variant 0 -600.0 1 256.0 2 3000.0 0.0)
+                     ly (case variant 0 900.0 1 -220.0 2 1400.0 0.0)
+                     elevation (case variant 0 10.0 1 700.0 2 300.0 100000.0)
+                     depth (case variant 0 0.0 1 0.45 2 1.0 0.45)]
+                 (host/paper_light lx ly elevation depth 0.8)
+                 (let [padding (gpu/shadow-padding)]
+                   (assert (<= padding (+ (* 181.0 scale) 2.0)))
+                   (for [yi 0 17]
+                     (for [xi 0 17]
+                       (let [dx (- lx (* w (/ (cast f64 xi) 16.0)))
+                             dy (- ly (* h (/ (cast f64 yi) 16.0)))
+                             horizontal (sqrt (+ (+ (* dx dx) (* dy dy)) 0.001))
+                             reach
+                               (clamp (/ (* (* 64.0 (.depth (scene/scene)))
+                                            horizontal)
+                                         (.elevation (scene/scene)))
+                                      1.0
+                                      180.0)]
+                         (assert (>= padding (+ (* (+ reach 0.6) scale) 1.0)))))))))))
+         (set! (.scale (scene/scene)) 2.0)
+         (host/paper_light 256.0 -220.0 700.0 0.45 0.8)
+         (assert (< (gpu/shadow-padding) 150.0)))
+
+(deftest overlapping-regions-share-depth-without-changing-coverage
+         (let [pool (o/new c"NSAutoreleasePool")
+               copy (cast (ptr u8) (alloc/malloc 240000))]
+           (setup 300 200 1.0)
+           (for [variant 0 4]
+             (cursor-scene (= (% variant 2) 0) (= (% (/ variant 2) 2) 0))
+             (render/render-frame true)
+             (when (.available (gpu/gpu))
+               (let [c (damage/cache)
+                     bounds (cgrect 10.0 15.0 180.0 120.0)]
+                 (store! (index (field c regions) 0)
+                         (cgrect 10.0 15.0 120.0 100.0))
+                 (store! (index (field c regions) 1)
+                         (cgrect 60.0 30.0 130.0 105.0))
+                 (store! (index (field c regions) 2)
+                         (cgrect 25.0 20.0 130.0 90.0))
+                 (masks/render-regions (index (field c regions) 0) 3 bounds)
+                 (damage/include bounds)
+                 (render/render-frame true)))
              (assert-full-agreement copy 240000))
            (render/free (cast (ptr i8) copy))
            (workers/stop)

@@ -330,6 +330,24 @@
             (set! (.pending g) (cgrect x y (- right x) (- bottom y)))))))
   0)
 
+;;; Bound the shader's existing ray reach over the complete viewport. Distance
+;;; from a fixed light is maximal at a rectangle corner. Keep the shader's
+;;; 64-unit height ceiling and 180-unit clamp; this changes dispatch bounds, not
+;;; sample positions, penumbra, or visibility. One extra point covers its 0.6
+;;; sample offset and floating-point rounding, plus two backing pixels for edges.
+(defn shadow-padding [] (-> f64)
+  (let [s (scene) scale (.scale s)
+        w (/ (cast f64 (.width s)) scale)
+        h (/ (cast f64 (.height s)) scale)
+        lx (.light-x s) ly (.light-y s)
+        dx (if (> (fabs lx) (fabs (- w lx))) (fabs lx) (fabs (- w lx)))
+        dy (if (> (fabs ly) (fabs (- h ly))) (fabs ly) (fabs (- h ly)))
+        reach (if (and (> (.elevation s) 0.0) (>= (.depth s) 0.0))
+                  (clamp (/ (* (* 64.0 (.depth s)) (sqrt (+ (+ (* dx dx) (* dy dy)) 0.001)))
+                            (.elevation s)) 1.0 180.0)
+                  180.0)]
+    (+ (* (+ reach 1.0) scale) 2.0)))
+
 (defn render [(bounds CGRect) (all bool) (readback bool)] (-> i64)
   (let [g (gpu)
         s (scene)
@@ -343,7 +361,7 @@
                       :width (cast u64 (.width s))
                       :height (cast u64 (.height s))
                       :depth 1))
-              (pixel-region bounds (+ (* 181.0 (.scale s)) 2.0)))]
+              (pixel-region bounds (shadow-padding)))]
     (when (> (.w (.pending g)) 0.0)
       (encode command (.prepare g) (pixel-region (.pending g) 2.0))
       (encode-maximum command)
