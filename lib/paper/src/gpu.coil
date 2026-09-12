@@ -40,6 +40,9 @@
    (output (ptr i8))
    (prepared (ptr i8))
    (presentation-time f64)
+   ; Zero preserves absolute-time/immediate presentation. A positive minimum
+   ; display duration takes precedence; callers must choose one timing policy.
+   (presentation-duration f64)
    (command (ptr i8))
    (last-command (ptr i8))
    (last-drawable (ptr i8))
@@ -490,9 +493,12 @@
           (set! (.last-drawable g) (retain drawable))
           (when (!= handler (nil))
             (msg i64 drawable (sel c"addPresentedHandler:") [(ptr i8)] handler))
-          (if (> (.presentation-time g) 0.0)
+          (cond
+            (> (.presentation-duration g) 0.0)
+              (msg i64 command (sel c"presentDrawable:afterMinimumDuration:") [(ptr i8) f64] drawable (.presentation-duration g))
+            (> (.presentation-time g) 0.0)
               (msg i64 command (sel c"presentDrawable:atTime:") [(ptr i8) f64] drawable (.presentation-time g))
-              (msg i64 command (sel c"presentDrawable:") [(ptr i8)] drawable))
+            true (msg i64 command (sel c"presentDrawable:") [(ptr i8)] drawable))
           (submit)
           true))))
 

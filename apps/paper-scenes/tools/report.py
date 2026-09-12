@@ -12,6 +12,52 @@ def percentile(values, fraction):
     return sorted(values)[max(0, math.ceil(len(values) * fraction) - 1)]
 
 
+def deadline_summary(rows, warmup):
+    """Report recorded deadlines without attributing display gaps to a cause."""
+    fields = ('requested_s', 'clock_duration_s', 'gpu_start_s', 'gpu_end_s',
+              'start_s', 'cpu_ms', 'presented_s')
+    try:
+        minimums = [float(row.get('min_duration_s', 0)) for row in rows]
+    except (TypeError, ValueError) as error:
+        raise ValueError('invalid minimum display duration') from error
+    if any(not math.isfinite(value) or value < 0 for value in minimums):
+        raise ValueError('invalid minimum display duration')
+    if len(set(minimums)) != 1:
+        raise ValueError('mixed presentation policies within one scenario')
+    relative = minimums[0] > 0
+    for row in rows:
+        try:
+            values = {field: float(row[field]) for field in fields}
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError('incomplete deadline timestamps') from error
+        if any(not math.isfinite(value) or value < 0 for value in values.values()):
+            raise ValueError('invalid deadline timestamp')
+        if (values['requested_s'] != 0 if relative else values['requested_s'] <= 0) or values['clock_duration_s'] <= 0:
+            raise ValueError('invalid requested deadline or clock duration')
+        if values['gpu_end_s'] < values['gpu_start_s']:
+            raise ValueError('backwards GPU timestamps')
+        if abs(values['gpu_end_s'] - values['start_s']) >= 10:
+            raise ValueError('GPU/host timestamps exceed benchmark watchdog window')
+    if relative:
+        # This policy has no requested absolute deadline. Do not fabricate CPU
+        # or GPU deadline-lateness statistics from the display-link prediction.
+        return dict(minimum_display_duration_ms=round(minimums[0] * 1000, 3))
+    warm = rows[warmup:]
+    requests = [float(row['requested_s']) for row in warm]
+    intervals = [(b - a) * 1000 for a, b in zip(requests, requests[1:])]
+    offsets = [(float(row['presented_s']) - float(row['requested_s'])) * 1000
+               for row in warm if float(row['presented_s']) > 0]
+    return dict(
+        requested_interval_p95_ms=round(percentile(intervals, .95), 3),
+        requested_long_intervals=sum(value >= 25 - .001 for value in intervals),
+        nonincreasing_requests=sum(value <= 0 for value in intervals),
+        submit_late_frames=sum(float(row['start_s']) + float(row['cpu_ms']) / 1000 >
+                               float(row['requested_s']) + .000001 for row in warm),
+        gpu_late_frames=sum(float(row['gpu_end_s']) > float(row['requested_s']) + .000001
+                            for row in warm),
+        presentation_offset_p95_ms=round(percentile(offsets, .95), 3))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("csv")
@@ -81,6 +127,11 @@ def main():
                           # subtraction of large uptime values can straddle it.
                           missed_intervals=sum(x >= 25 - .001 for x in intervals),
                           intervals=len(intervals))
+            if 'requested_s' in rows[0]:
+                try:
+                    result.update(deadline_summary(rows, args.warmup))
+                except ValueError as error:
+                    parser.error(str(error))
         output.append(result)
     writer = csv.DictWriter(sys.stdout, fieldnames=output[0].keys())
     writer.writeheader()

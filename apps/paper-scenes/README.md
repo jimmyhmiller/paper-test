@@ -52,6 +52,18 @@ IDs and backwards timestamps. Intervals over 25 ms count as long presentation ga
 Average fps can hide uneven pacing, so inspect interval percentiles too.
 CPU submission time excludes asynchronous GPU execution.
 
+For a deadline investigation, inspect `requested_s`, `clock_duration_s`, and the
+absolute `gpu_start_s`/`gpu_end_s` fields. The report counts CPU submissions and
+GPU completions after the requested presentation time, apart from actual display
+gaps. It also reports requested interval spacing. On-time rendering does not prove
+on-time display.
+
+To compare Metal minimum-duration presentation with the default absolute-time
+policy, run the native benchmark with `PAPER_BENCH_MIN_DURATION=1`. This requests
+1/60 second of display time for the previous drawable. In that mode, `requested_s`
+is zero and `min_duration_s` records the policy; the report omits absolute-deadline
+lateness metrics. See Apple's [minimum-duration presentation documentation](https://developer.apple.com/documentation/metal/mtldrawable/present(afterminimumduration:)).
+
 The completed-frame benchmark waits for the GPU on each frame and includes scene
 construction. It excludes screenshot readback. It does not measure display fps.
 

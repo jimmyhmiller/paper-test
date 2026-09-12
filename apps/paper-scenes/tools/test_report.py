@@ -9,6 +9,14 @@ import unittest
 
 
 class PresentationReportTest(unittest.TestCase):
+    @staticmethod
+    def deadlines(rows):
+        for row in rows:
+            requested = row['presented_s']
+            row.update(requested_s=requested, clock_duration_s=1 / 60,
+                       start_s=requested - .012, gpu_start_s=requested - .006,
+                       gpu_end_s=requested - .004)
+
     def report(self, mutate=lambda rows: None):
         rows = [dict(theme=5, scenario=scenario, frame=frame, cpu_ms=2,
                      presented_s=10 + scenario + frame / 60)
@@ -84,6 +92,59 @@ class PresentationReportTest(unittest.TestCase):
             for row in rows:
                 row["presented_s"] = 0
         self.assertNotEqual(self.report(drop_all).returncode, 0)
+
+    def test_deadlines_distinguish_render_lateness_from_actual_cadence(self):
+        def late(rows):
+            self.deadlines(rows)
+            rows[3]['gpu_end_s'] = rows[3]['requested_s'] + .002
+            rows[4]['cpu_ms'] = 15
+        result = self.report(late)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first = next(csv.DictReader(io.StringIO(result.stdout)))
+        self.assertEqual(first['gpu_late_frames'], '1')
+        self.assertEqual(first['submit_late_frames'], '1')
+        self.assertEqual(first['missed_intervals'], '0')
+        self.assertEqual(first['requested_long_intervals'], '0')
+
+    def test_requested_gap_does_not_invent_a_presented_gap(self):
+        def shifted(rows):
+            self.deadlines(rows)
+            rows[3]['requested_s'] += 1 / 60
+        result = self.report(shifted)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first = next(csv.DictReader(io.StringIO(result.stdout)))
+        self.assertEqual(first['requested_long_intervals'], '1')
+        self.assertEqual(first['nonincreasing_requests'], '1')
+        self.assertEqual(first['missed_intervals'], '0')
+
+    def test_invalid_deadline_data_is_rejected(self):
+        for field, value in [('requested_s', float('nan')), ('clock_duration_s', 0),
+                             ('gpu_end_s', -1), ('gpu_start_s', 10000),
+                             ('gpu_end_s', 10000), ('cpu_ms', float('inf'))]:
+            def invalid(rows):
+                self.deadlines(rows)
+                rows[3][field] = value
+            with self.subTest(field=field, value=value):
+                self.assertNotEqual(self.report(invalid).returncode, 0)
+
+    def test_relative_policy_does_not_fabricate_absolute_deadlines(self):
+        def relative(rows):
+            self.deadlines(rows)
+            for row in rows:
+                row.update(requested_s=0, min_duration_s=1 / 60)
+        result = self.report(relative)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first = next(csv.DictReader(io.StringIO(result.stdout)))
+        self.assertEqual(first['minimum_display_duration_ms'], '16.667')
+        self.assertNotIn('gpu_late_frames', first)
+
+    def test_mixed_policy_is_rejected(self):
+        def mixed(rows):
+            self.deadlines(rows)
+            for row in rows:
+                row['min_duration_s'] = 0
+            rows[3].update(requested_s=0, min_duration_s=1 / 60)
+        self.assertNotEqual(self.report(mixed).returncode, 0)
 
 
 if __name__ == "__main__":
