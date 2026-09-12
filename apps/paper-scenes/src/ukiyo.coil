@@ -333,59 +333,32 @@
 
 ;;; Keep canonical engraved surf paths and transform copies for the viewport.
 
-(defstruct WaveArt [(paths (array (ptr i8) 4))])
+(defstruct WaveArt [(paths (array (ptr i8) 6))])
 (defn wave-art [] (-> (ptr WaveArt)) (p/alloc-static WaveArt))
-
-(defn engraved-flow [] (-> i64)
-  (for [group 0 5]
-    (for [i 0 16]
-      (let [n (cast f64 i) x (case group 0 81.0 1 135.0 2 438.0 3 557.0 690.0)
-            y (case group 0 428.0 1 455.0 2 480.0 3 436.0 381.0)
-            dx (* n 1.9) dy (* n 0.5)]
-        (move-to (+ x dx) (+ y dy))
-        (curve-to (+ x (+ dx 8.0)) (+ y 40.0)
-                  (+ x (+ dx 21.0)) 499.0 (+ x (+ dx 55.0)) 514.0))))
-  0)
 
 (defn wave-asset [(which i64)] (-> (ptr i8))
   (let [slot (index (field (wave-art) paths) which)]
     (when (= (load slot) (cast (ptr i8) 0))
-      (if (< which 3)
-          (do
-            (begin-sheet)
-            (case which 0 (waves/ink-path 1.0 1.0) 1 (waves/mid-path 1.0 1.0) (waves/line-path 1.0 1.0))
-            (store! slot (CGPathCreateCopy (.path (scene/scene))))
-            0)
-          (let [clip (wave-asset 0)]
-            (begin-sheet) (engraved-flow)
-            (let [stroke (CGPathCreateCopyByStrokingPath (.path (scene/scene)) (cast (ptr CGAffine) 0) 0.33 1 1 10.0)
-                  clipped (CGPathCreateCopyByIntersectingPath stroke clip true)]
-              (store! slot clipped) (CGPathRelease stroke))
-            0)))
+      (begin-sheet)
+      (case which 0 (waves/ink-path 1.0 1.0) 1 (waves/mid-path 1.0 1.0)
+                  2 (waves/line-path 1.0 1.0) 3 (waves/pale-path 1.0 1.0)
+                  4 (waves/dark-path 1.0 1.0) (waves/paper-path 1.0 1.0))
+      (store! slot (CGPathCreateCopy (.path (scene/scene)))))
     (load slot)))
 
 (defn print-wave-asset [(which i64) (color u32)] (-> i64)
   (print-path (wave-asset which) color))
 
 (defn surf [] (-> i64)
-  ; Uneven ivory undercut separates the foreground wave group from the panes.
-  (begin-sheet) (move 0.0 411.0)
-  (curve 39.0 390.0 46.0 422.0 80.0 407.0)
-  (curve 100.0 398.0 105.0 445.0 139.0 435.0)
-  (curve 172.0 427.0 163.0 471.0 201.0 467.0)
-  (curve 230.0 467.0 230.0 498.0 277.0 504.0)
-  (curve 364.0 516.0 376.0 491.0 421.0 470.0)
-  (curve 451.0 449.0 470.0 488.0 501.0 475.0)
-  (curve 532.0 455.0 548.0 424.0 577.0 426.0)
-  (curve 614.0 423.0 622.0 449.0 654.0 418.0)
-  (curve 689.0 385.0 685.0 359.0 717.0 363.0)
-  (curve 738.0 339.0 750.0 350.0 768.0 341.0)
-  (line 768.0 512.0) (line 0.0 512.0) (close-path) (finish 35.0 0xe1cfab 0.38)
+  ; The reference has separate left and right wave stocks, with navy visible
+  ; between them. Do not bridge those openings with a full-width ivory sheet.
+  (path-stock (wave-asset 5) 35.0 0xe1cfab 0.38)
   (ink-height 35.0)
   (print-wave-asset 0 0x214b5e)
-  (print-wave-asset 1 0x496a74)
+  (print-wave-asset 4 0x1a3b4c)
+  (print-wave-asset 1 0x365a68)
+  (print-wave-asset 3 0x55737c)
   (print-wave-asset 2 0x8e9b92)
-  (print-wave-asset 3 0x83978f)
   0)
 
 (defn file-icon [(x f64) (y f64) (folder bool)] (-> i64)

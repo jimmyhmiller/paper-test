@@ -5,6 +5,20 @@
 (extern printf :cc c [(ptr i8) ...] (-> i32))
 (extern fflush :cc c [(ptr i8)] (-> i32))
 
+(deftest surf-stock-keeps-the-central-navy-opening-and-caches-ink-tones
+  (scene/init)
+  (for [which 0 6]
+    (let [path (ukiyo/wave-asset which)]
+      (assert (not (CGPathIsEmpty path)))
+      (assert (= path (ukiyo/wave-asset which)))))
+  (let [paper (ukiyo/wave-asset 5)]
+    (assert (CGPathContainsPoint paper (cast (ptr CGAffine) 0) (CGPoint :x 120.0 :y 490.0) true))
+    (assert (CGPathContainsPoint paper (cast (ptr CGAffine) 0) (CGPoint :x 600.0 :y 490.0) true))
+    (for [x 280 380]
+      (for [y 480 512]
+        (assert (not (CGPathContainsPoint paper (cast (ptr CGAffine) 0)
+                      (CGPoint :x (cast f64 x) :y (cast f64 y)) true)))))))
+
 (deftest folded-wrapping-stock-preserves-printable-pane-interiors
   (scene/init)
   (for [face 0 8]

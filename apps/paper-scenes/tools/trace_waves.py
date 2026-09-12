@@ -9,6 +9,23 @@ import cv2
 import numpy as np
 
 
+def ink_details(rgb, ink):
+    """Separate source ink tones and bright cuts from broad cream openings."""
+    gray = cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32)
+    # Bright engraved lines are holes in the blue pigment mask. Build their
+    # support from a closed wave body, so erosion does not discard the marks
+    # themselves. Larger cream openings and the outer wave boundary stay out.
+    body = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    interior = cv2.erode(body, np.ones((3, 3), np.uint8)) != 0
+    medium = ((gray > 65) & (ink != 0)).astype(np.uint8) * 255
+    pale = ((gray > 90) & (ink != 0)).astype(np.uint8) * 255
+    dark = ((gray < 45) & interior & (ink != 0)).astype(np.uint8) * 255
+    highlight = ((gray - cv2.GaussianBlur(gray, (0, 0), 2.0) > 7) &
+                 (gray > 45) & interior).astype(np.uint8) * 255
+    return [('mid-path', medium, .45), ('line-path', highlight, .45),
+            ('pale-path', pale, .45), ('dark-path', dark, .45)]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("reference")
@@ -29,7 +46,7 @@ def main():
     red, green, blue = rgb.transpose(2, 0, 1)
     ink = ((red < 139) & (blue > red * 1.05) & (green > red * 1.04) & (roi != 0)).astype(np.uint8) * 255
     print('(module paper-scenes.wave-paths)')
-    print('(import "paper.surface" :use [move-to curve-to close-path])')
+    print('(import "paper.surface" :use [move-to line-to curve-to close-path])')
     print(';;; Traced native contours from the supplied ukiyo-e foreground, in 768 × 512 reference coordinates.')
     print(';;; No source pixels or baked lighting enter the renderer. Includes foam counters and spray islands.')
     print('''(defn append-contours [(data (slice i64)) (sx f64) (sy f64)] (-> i64)
@@ -50,11 +67,7 @@ def main():
                       (* bx sx) (* by sy))))
         (close-path) (set! cursor (+ start (* count 2))))))
   0)''')
-    gray = cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32)
-    interior = cv2.erode(ink, np.ones((3, 3), np.uint8)) != 0
-    medium = ((red > 68) & (ink != 0)).astype(np.uint8) * 255
-    highlight = ((gray - cv2.GaussianBlur(gray, (0, 0), 2.0) > 7) & interior).astype(np.uint8) * 255
-    for name, mask, minimum in [('ink-path', ink, .45), ('mid-path', medium, 1.0), ('line-path', highlight, .8)]:
+    for name, mask, minimum in [('ink-path', ink, .45)] + ink_details(rgb, ink):
         # Trace a bilinear level set at quarter-pixel spacing. Direct contours
         # through source pixel centers collapse one-pixel engraving to zero area.
         level_set = (cv2.resize(mask, None, fx=4, fy=4, interpolation=cv2.INTER_LINEAR) > 127).astype(np.uint8) * 255
@@ -66,7 +79,7 @@ def main():
                 continue
             if name == 'line-path':
                 _, _, cw, ch = cv2.boundingRect(contour)
-                if max(cw, ch) < 20:
+                if max(cw, ch) < 12:
                     continue
             points = cv2.approxPolyDP(contour, 0.26 * 4, True).reshape(-1, 2)
             if len(points) < 3:
@@ -81,6 +94,29 @@ def main():
             print('    ' + ' '.join(map(str, values[i:i+28])))
         print('  ]] (append-contours data sx sy)))')
         print(f'; {kept} closed contours; topology from source, rounded native quadratic-to-cubic edges.')
+    # The ink ownership envelopes are selection regions, not paper edges.
+    # Keep the authored crest curves and split their stock at the navy opening.
+    paper = [
+        [('move-to', [0, 411]), ('curve-to', [39, 390, 46, 422, 80, 407]),
+         ('curve-to', [100, 398, 105, 445, 139, 435]),
+         ('curve-to', [172, 427, 163, 471, 201, 467]),
+         ('curve-to', [230, 467, 230, 498, 267, 512]),
+         ('line-to', [0, 512])],
+        [('move-to', [381, 512]), ('curve-to', [397, 501, 400, 481, 421, 470]),
+         ('curve-to', [451, 449, 470, 488, 501, 475]),
+         ('curve-to', [532, 455, 548, 424, 577, 426]),
+         ('curve-to', [614, 423, 622, 449, 654, 418]),
+         ('curve-to', [689, 385, 685, 359, 717, 363]),
+         ('curve-to', [738, 339, 750, 350, 768, 341]), ('line-to', [768, 512])],
+    ]
+    print('(defn paper-path [(sx f64) (sy f64)] (-> i64)')
+    for contour in paper:
+        for command, coordinates in contour:
+            terms = [f'(* {value}.0 {"sx" if i % 2 == 0 else "sy"})'
+                     for i, value in enumerate(coordinates)]
+            print(f'  ({command} {" ".join(terms)})')
+        print('  (close-path)')
+    print('  0)')
 
 
 if __name__ == '__main__':
