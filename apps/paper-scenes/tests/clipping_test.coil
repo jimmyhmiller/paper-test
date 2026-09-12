@@ -39,6 +39,30 @@
     (CGContextRelease a) (CGContextRelease b))
   0)
 
+(deftest cached-petal-engraving-matches-fresh-paths-after-resize-and-motion
+  (scene/init)
+  (for [viewport 0 2]
+    (set! (.sx (ukiyo/canvas)) (if (= viewport 0) 1.0 1.6))
+    (set! (.sy (ukiyo/canvas)) (if (= viewport 0) 1.0 1.3))
+    (let [actual (CGPathCreateMutable) reference (CGPathCreateMutable)]
+      (for [which 0 26]
+        (let [pose (ukiyo/blossom-pose which)
+              x (+ 30.013 (* 65.0 (cast f64 (% which 7))))
+              y (+ 30.027 (* 65.0 (cast f64 (/ which 7))))
+              cached (ukiyo/blossom-engraving which)
+              fresh (ukiyo/petal-engraving x y (.radius pose) (.rotation pose) (.aspect pose))
+              transform (CGAffine :a (.sx (ukiyo/canvas)) :b 0.0 :c 0.0 :d (.sy (ukiyo/canvas))
+                                   :tx (* x (.sx (ukiyo/canvas))) :ty (* y (.sy (ukiyo/canvas))))]
+          (assert (= cached (ukiyo/blossom-engraving which)))
+          (let [placed (CGPathCreateCopyByTransformingPath cached transform)]
+            (CGPathAddPath actual (cast (ptr CGAffine) 0) placed)
+            (CGPathRelease placed))
+          (CGPathAddPath reference (cast (ptr CGAffine) 0) fresh)
+          (CGPathRelease fresh)))
+      (for [scale 1 4] (assert-same-fill actual reference scale))
+      (CGPathRelease actual) (CGPathRelease reference)))
+  (scene/clear 0xffffff))
+
 (deftest contour-clipping-handles-empty-artwork-and-empty-occluders
   (let [empty (CGPathCreateMutable) source (CGPathCreateMutable)]
     (CGPathAddEllipseInRect source (cast (ptr CGAffine) 0) (cgrect 10.0 10.0 30.0 30.0))

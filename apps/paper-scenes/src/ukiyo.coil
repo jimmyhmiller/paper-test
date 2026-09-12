@@ -283,7 +283,43 @@
 (defn petal-radius [(radius f64) (rotation f64) (i i64)] (-> f64)
   (* radius (+ 0.88 (* 0.16 (sin (+ (* (cast f64 i) 2.1) rotation))))))
 
-(defn blossom [(x f64) (y f64) (radius f64) (rotation f64) (aspect f64) (z f64)] (-> i64)
+(defn petal-engraving-source [(x f64) (y f64) (radius f64) (rotation f64) (aspect f64)] (-> (ptr i8))
+  ; Curved secondary veins branch from the central fold. Construct these in the
+  ; same petal basis as the paper, including its unequal face widths.
+  (begin-sheet)
+  (for [i 0 5]
+    (let [angle (petal-angle rotation i) dx (cos angle) dy (* aspect (sin angle))
+          r (petal-radius radius rotation i)
+          width (+ 0.85 (* 0.23 (cos (+ rotation (* (cast f64 i) 1.9)))))
+          nx (* width (- 0.0 (sin angle))) ny (* width (* aspect dx))]
+      (move-to x y)
+      (curve-to (+ x (* dx (* r 0.30))) (+ y (* dy (* r 0.30)))
+             (+ x (* r (+ (* dx 0.58) (* nx 0.025))))
+             (+ y (* r (+ (* dy 0.58) (* ny 0.025))))
+             (+ x (* dx (* r 0.80))) (+ y (* dy (* r 0.80))))
+      (for [side 0 2]
+        (for [branch 0 3]
+          (let [n (cast f64 branch) sign (if (= side 0) -1.0 1.0)
+                start (+ 0.13 (* n 0.16)) end (+ 0.43 (* n 0.14))
+                spread (* sign (+ 0.20 (* 0.035 (sin (+ rotation n)))))]
+            (move-to (+ x (* dx (* r start))) (+ y (* dy (* r start))))
+            (curve-to (+ x (* r (+ (* dx (+ start 0.09)) (* nx (* spread 0.22)))))
+                   (+ y (* r (+ (* dy (+ start 0.09)) (* ny (* spread 0.22)))))
+                   (+ x (* r (+ (* dx (- end 0.06)) (* nx (* spread 0.81)))))
+                   (+ y (* r (+ (* dy (- end 0.06)) (* ny (* spread 0.81)))))
+                   (+ x (* r (+ (* dx end) (* nx spread))))
+                   (+ y (* r (+ (* dy end) (* ny spread))))))))))
+  (CGPathCreateCopyByStrokingPath (.path (scene/scene)) (cast (ptr CGAffine) 0)
+    0.13 1 1 10.0))
+
+(defn petal-engraving [(x f64) (y f64) (radius f64) (rotation f64) (aspect f64)] (-> (ptr i8))
+  (let [source (petal-engraving-source x y radius rotation aspect)
+        path (CGPathCreateCopyByTransformingPath source
+               (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
+    (CGPathRelease source) path))
+
+(defn blossom-with-engraving [(x f64) (y f64) (radius f64) (rotation f64) (aspect f64)
+                              (z f64) (engraving (ptr i8))] (-> i64)
   (for [i 0 5]
     (let [angle (petal-angle rotation i) dx (cos angle) dy (* aspect (sin angle))
           r (petal-radius radius rotation i)
@@ -314,17 +350,12 @@
               (if (= (% i 2) 0) 0xeed0ad 0xe2b899) (+ 0.13 (* (cast f64 i) 0.17)))))
   ; The woodblock print lies on the petals; these marks have no paper thickness.
   (ink-height (+ z 0.8))
-  (begin-sheet)
-  (for [i 0 5]
-    (let [angle (petal-angle rotation i) dx (cos angle) dy (* aspect (sin angle))
-          r (petal-radius radius rotation i)]
-      (move x y)
-      (curve (+ x (* dx (* r 0.4))) (+ y (* dy (* r 0.4)))
-             (+ x (* dx (* r 0.65))) (+ y (* dy (* r 0.65)))
-             (+ x (* dx (* r 0.82))) (+ y (* dy (* r 0.82))))))
-  (let [veins (CGPathCreateCopyByStrokingPath (.path (scene/scene)) (cast (ptr CGAffine) 0)
-                (* 0.25 (.sx (canvas))) 1 1 10.0)]
-    (host/paper_path_ink veins 0xc0876c) (CGPathRelease veins))
+  (let [veins (if (= engraving (cast (ptr i8) 0))
+                 (petal-engraving x y radius rotation aspect)
+                 (CGPathCreateCopyByTransformingPath engraving
+                   (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas))
+                             :tx (* x (.sx (canvas))) :ty (* y (.sy (canvas))))))]
+    (host/paper_path_ink veins 0xb99173) (CGPathRelease veins))
   (begin-sheet)
   (for [i 0 11]
     (let [a (+ rotation (* (cast f64 i) 0.5711986)) r (* radius (+ 0.28 (* 0.13 (sin (cast f64 i)))))
@@ -345,6 +376,9 @@
                        (* (* rx 2.0) (.sx (canvas))) (* (* ry 2.0) (.sy (canvas)))))))
   (host/paper_path_ink (.path (scene/scene)) 0xa4663e)
   0)
+
+(defn blossom [(x f64) (y f64) (radius f64) (rotation f64) (aspect f64) (z f64)] (-> i64)
+  (blossom-with-engraving x y radius rotation aspect z (cast (ptr i8) 0)))
 
 (defstruct BarkArt [(paths (array (ptr i8) 4))])
 (defn bark-art [] (-> (ptr BarkArt)) (p/alloc-static BarkArt))
@@ -432,6 +466,15 @@
     (flower 129.0 39.0 7.0 0.7 0.65)]]
     (get poses i)))
 
+(defstruct BlossomArt [(engraving (array (ptr i8) 26))])
+(defn blossom-art [] (-> (ptr BlossomArt)) (p/alloc-static BlossomArt))
+(defn blossom-engraving [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (blossom-art) engraving) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (let [pose (blossom-pose which)]
+        (store! slot (petal-engraving-source 0.0 0.0 (.radius pose) (.rotation pose) (.aspect pose)))))
+    (load slot)))
+
 (defn branch-stock [] (-> i64)
   (stroke 2.0 324.0 30.0 205.0 -5.0 57.0 160.0 -12.0 12.0 27.0 0x41382c)
   (print-bark 0 27.1)
@@ -454,12 +497,8 @@
               (.dx pose) (.dy pose) (.width pose) 29.0 0x5a4734)))
   (for [i 0 26]
     (let [pose (blossom-pose i) n (cast f64 i)]
-      (blossom (+ (.x pose) (* motion (* 0.025 (sin n)))) (.y pose)
-               (.radius pose) (.rotation pose) (.aspect pose) 31.0)))
-  (for [i 0 14]
-    (let [n (cast f64 i) x (+ 23.0 (* 195.0 (/ n 14.0))) y (+ 19.0 (* 25.0 (sin (* n 1.3))))]
-      (disc x y 2.3 3.2 33.0 0xca8e74)
-      (stroke x (+ y 2.0) (- x 1.0) (+ y 3.0) (- x 2.0) (+ y 5.0) (- x 4.0) (+ y 8.0) 0.8 32.0 0x624b35)))
+      (blossom-with-engraving (+ (.x pose) (* motion (* 0.025 (sin n)))) (.y pose)
+               (.radius pose) (.rotation pose) (.aspect pose) 31.0 (blossom-engraving i))))
   0)
 
 ;;; Keep canonical engraved surf paths and transform copies for the viewport.

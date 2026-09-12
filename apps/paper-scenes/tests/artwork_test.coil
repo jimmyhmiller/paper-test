@@ -78,6 +78,27 @@
     (assert (> (stock-height-at 730.0 146.5) front)))
   (scene/clear 0xffffff))
 
+(deftest cherry-engraving-stays-on-all-authored-flower-faces
+  (scene/init)
+  (set! (.sx (ukiyo/canvas)) 1.0) (set! (.sy (ukiyo/canvas)) 1.0)
+  (let [(mut stock) (CGPathCreateMutable) ink (CGPathCreateMutable)]
+    (for [which 0 26]
+      (scene/clear 0xffffff)
+      (let [pose (ukiyo/blossom-pose which)
+            x (+ 40.0 (* 110.0 (cast f64 (% which 7))))
+            y (+ 40.0 (* 110.0 (cast f64 (/ which 7))))]
+        (ukiyo/blossom x y (.radius pose) (.rotation pose) (.aspect pose) 31.0)
+        (for [petal 0 5]
+          (let [sheet (get (.sheets (scene/scene)) (* petal 2))
+                joined (CGPathCreateCopyByUnioningPath (load stock) (.path sheet) true)]
+            (CGPathRelease (load stock)) (set! stock joined)))
+        (let [veins (ukiyo/petal-engraving x y (.radius pose) (.rotation pose) (.aspect pose))]
+          (assert (not (CGPathIsEmpty veins)))
+          (CGPathAddPath ink (cast (ptr CGAffine) 0) veins) (CGPathRelease veins))))
+    (assert-supported-stock 24 (load stock) ink)
+    (CGPathRelease ink) (CGPathRelease (load stock)))
+  (scene/clear 0xffffff))
+
 (deftest cherry-petal-folds-have-supporting-stock-at-authored-proportions
   (scene/init)
   (for [scale 1 4]
