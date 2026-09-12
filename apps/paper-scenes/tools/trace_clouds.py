@@ -8,6 +8,29 @@ import cv2
 import numpy as np
 
 
+def header_under_branches(mask):
+    """Reconstruct the paper edge obscured by flowers, not their silhouettes.
+
+    The visible edge enters at (57, 84), rounds under the cherry branch,
+    and joins the unobscured top edge at (192, 49). Keep the rest of the
+    reference-derived ribbon untouched. These are authored Bezier controls,
+    not a color-based guess at the material behind an occluder.
+    """
+    result = mask.copy()
+    result[:85, :193] = 0
+    segments = [((57, 84), (57, 66), (76, 51), (96, 49)),
+                ((96, 49), (123, 47), (164, 50), (192, 49))]
+    points = []
+    for a, b, c, d in segments:
+        for t in np.linspace(0, 1, 65):
+            u = 1 - t
+            points.append(u**3 * np.array(a) + 3*u*u*t * np.array(b) +
+                          3*u*t*t * np.array(c) + t**3 * np.array(d))
+    points.extend([(192, 84), (57, 84)])
+    cv2.fillPoly(result, [np.rint(points).astype(np.int32)], 255)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("reference")
@@ -53,6 +76,8 @@ def main():
             if relationship[3] >= 0:
                 if cv2.contourArea(contour) < 12 or which == 3:
                     cv2.drawContours(mask, [contour], -1, 255, cv2.FILLED)
+        if which == 3:
+            mask = header_under_branches(mask)
         level = (cv2.resize(mask, None, fx=4, fy=4, interpolation=cv2.INTER_LINEAR) > 127).astype(np.uint8) * 255
         contours, _ = cv2.findContours(level, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         values = []

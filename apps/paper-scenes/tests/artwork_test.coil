@@ -5,6 +5,16 @@
 (extern printf :cc c [(ptr i8) ...] (-> i32))
 (extern fflush :cc c [(ptr i8)] (-> i32))
 
+(deftest header-stock-continues-under-cherry-occluders
+  (scene/init)
+  (let [path (ukiyo/cloud-path 3)
+        paper [(CGPoint :x 70.0 :y 75.0) (CGPoint :x 95.0 :y 60.0)
+               (CGPoint :x 130.0 :y 55.0) (CGPoint :x 180.0 :y 55.0)]]
+    (for [i 0 4]
+      (assert (CGPathContainsPoint path (cast (ptr CGAffine) 0) (get paper i) true)))
+    (assert (not (CGPathContainsPoint path (cast (ptr CGAffine) 0)
+                   (CGPoint :x 91.0 :y 43.0) true)))))
+
 (deftest surf-stock-keeps-the-central-navy-opening-and-caches-ink-tones
   (scene/init)
   (for [which 0 6]
