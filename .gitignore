@@ -3,4 +3,7 @@
 /build/
 /.coil/
 /.nrepl-port
+.nrepl-port
 /.worktrees/
+/.coil-live/
+.coil-live/
