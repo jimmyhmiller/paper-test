@@ -3,6 +3,7 @@
 (import "paper-scenes.artwork-test" :use [coverage])
 (import "paper-scenes.ukiyo" :as ukiyo)
 (import "paper-scenes.navy-paths" :as navy)
+(import "paper-scenes.folds" :as folds)
 (import "paper.surface" :use [begin-sheet])
 (import "paper.scene" :as scene)
 (import "paper.ffi" :use *)
@@ -11,9 +12,14 @@
 
 (defn compare-clipping [(source (ptr i8)) (occluder (ptr i8))] (-> i64)
   (let [reference (CGPathCreateCopyBySubtractingPath source occluder true)
-        actual (clipping/subtract-contours source occluder)]
+        actual (clipping/subtract-contours source occluder)
+        intersection-reference (CGPathCreateCopyByIntersectingPath source occluder true)
+        intersection-actual (clipping/intersect-contours source occluder)]
     (printf c"whole-path equality %lld\n" (if (CGPathEqualToPath actual reference) 1 0))
-    (for [scale 1 4] (assert-same-fill actual reference scale))
+    (for [scale 1 4]
+      (assert-same-fill actual reference scale)
+      (assert-same-fill intersection-actual intersection-reference scale))
+    (CGPathRelease intersection-actual) (CGPathRelease intersection-reference)
     (CGPathRelease actual) (CGPathRelease reference))
   0)
 
@@ -37,9 +43,13 @@
   (let [empty (CGPathCreateMutable) source (CGPathCreateMutable)]
     (CGPathAddEllipseInRect source (cast (ptr CGAffine) 0) (cgrect 10.0 10.0 30.0 30.0))
     (let [kept (clipping/subtract-contours source empty)
-          absent (clipping/subtract-contours empty source)]
+          absent (clipping/subtract-contours empty source)
+          empty-boundary (clipping/intersect-contours source empty)
+          empty-source (clipping/intersect-contours empty source)]
       (assert (CGPathEqualToPath kept source))
       (assert (CGPathIsEmpty absent))
+      (assert (CGPathIsEmpty empty-boundary)) (assert (CGPathIsEmpty empty-source))
+      (CGPathRelease empty-boundary) (CGPathRelease empty-source)
       (CGPathRelease kept) (CGPathRelease absent))
     (CGPathRelease source) (CGPathRelease empty)))
 
@@ -69,3 +79,29 @@
             actual (ukiyo/navy-grain tone)]
         (for [scale 1 4] (assert-same-fill actual reference scale))
         (CGPathRelease reference) (CGPathRelease clear-sky) (CGPathRelease source)))))
+
+(deftest ridge-grain-bounded-intersection-matches-original-operand-order
+  (scene/init)
+  (for [ridge 0 2]
+    (let [reference (CGPathCreateCopyByIntersectingPath (ukiyo/ridge-path ridge) (ukiyo/mountain-path 2) true)
+          actual (ukiyo/ridge-grain ridge)]
+      (for [scale 1 4] (assert-same-fill actual reference scale))
+      (CGPathRelease reference))))
+
+(deftest red-folds-share-immutable-borders-without-changing-coverage
+  (scene/init)
+  (for [pane 1 4]
+    (let [reference (CGPathCreateCopyBySubtractingPath (ukiyo/pane-path pane 1) (ukiyo/pane-path pane 2) true)
+          cached (ukiyo/fold-border pane)]
+      (assert (= cached (ukiyo/fold-border pane)))
+      (assert (CGPathEqualToPath cached reference))
+      (CGPathRelease reference)))
+  (for [face 0 8]
+    (let [pane (ukiyo/fold-pane face)
+          border (CGPathCreateCopyBySubtractingPath (ukiyo/pane-path pane 1) (ukiyo/pane-path pane 2) true)]
+      (begin-sheet) (folds/outline face)
+      (let [reference (CGPathCreateCopyByIntersectingPath (.path (scene/scene)) border true)
+            actual (ukiyo/fold-path face)]
+        (for [scale 1 4] (assert-same-fill actual reference scale))
+        (CGPathRelease reference))
+      (CGPathRelease border))))

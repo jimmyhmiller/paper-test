@@ -112,7 +112,7 @@
 (defn ridge-grain [(which i64)] (-> (ptr i8))
   (let [slot (index (field (ridge-art) grain) which)]
     (when (= (load slot) (cast (ptr i8) 0))
-      (store! slot (CGPathCreateCopyByIntersectingPath (ridge-path which) (mountain-path 2) true)))
+      (store! slot (clipping/intersect-contours (mountain-path 2) (ridge-path which))))
     (load slot)))
 
 (defn mountain [] (-> i64)
@@ -191,17 +191,22 @@
     (load slot)))
 
 (defstruct FoldArt [(faces (array (ptr i8) 8)) (backs (array (ptr i8) 8))
+                    (borders (array (ptr i8) 4))
                     (navy (array (ptr i8) 6))])
 (defn fold-art [] (-> (ptr FoldArt)) (p/alloc-static FoldArt))
 (defn fold-pane [(which i64)] (-> i64) (if (< which 4) 1 (if (< which 6) 2 3)))
+(defn fold-border [(pane i64)] (-> (ptr i8))
+  (let [slot (index (field (fold-art) borders) pane)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (store! slot (CGPathCreateCopyBySubtractingPath (pane-path pane 1) (pane-path pane 2) true)))
+    (load slot)))
 (defn fold-path [(which i64)] (-> (ptr i8))
   (let [slot (index (field (fold-art) faces) which)]
     (when (= (load slot) (cast (ptr i8) 0))
       (let [pane (fold-pane which)
-            border (CGPathCreateCopyBySubtractingPath (pane-path pane 1) (pane-path pane 2) true)]
+            border (fold-border pane)]
         (begin-sheet) (folds/outline which)
-        (store! slot (CGPathCreateCopyByIntersectingPath (.path (scene/scene)) border true))
-        (CGPathRelease border) 0))
+        (store! slot (CGPathCreateCopyByIntersectingPath (.path (scene/scene)) border true))))
     (load slot)))
 (defn pane-backing [(which i64) (layer i64)] (-> (ptr i8))
   (let [slot (index (field (fold-art) backs) (+ (* which 2) layer))]

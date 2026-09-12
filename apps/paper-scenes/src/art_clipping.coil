@@ -36,6 +36,16 @@
       (CGPathCloseSubpath (.part state))))
   0)
 
+(defn partition-contours [(state (ptr ClipState)) (source (ptr i8)) (boundary (ptr i8))] (-> i64)
+  (set! (.result state) (CGPathCreateMutable))
+  (set! (.affected state) (CGPathCreateMutable))
+  (set! (.part state) (CGPathCreateMutable))
+  (set! (.bounds state) (CGPathGetPathBoundingBox boundary))
+  (CGPathApply source (cast (ptr i8) state) (fnptr-of clip-element))
+  (flush-contour state)
+  (CGPathRelease (.part state))
+  0)
+
 ;;; Subtraction distributes over the XOR of contours used by even-odd fill.
 ;;; Keep disjoint contours verbatim and batch all possibly affected contours
 ;;; into one Boolean operation. Clipping every mark separately repeats the
@@ -43,13 +53,7 @@
 ;;; This is for filled artwork, not stroke geometry or nonzero winding fill.
 (defn subtract-contours [(source (ptr i8)) (occluder (ptr i8))] (-> (ptr i8))
   (let [state (p/alloc-stack ClipState)]
-    (set! (.result state) (CGPathCreateMutable))
-    (set! (.affected state) (CGPathCreateMutable))
-    (set! (.part state) (CGPathCreateMutable))
-    (set! (.bounds state) (CGPathGetPathBoundingBox occluder))
-    (CGPathApply source (cast (ptr i8) state) (fnptr-of clip-element))
-    (flush-contour state)
-    (CGPathRelease (.part state))
+    (partition-contours state source occluder)
     (cond
       (CGPathIsEmpty (.affected state))
         (do (CGPathRelease (.result state)) (set! (.result state) (CGPathCreateCopy source)))
@@ -62,3 +66,16 @@
           (CGPathRelease clipped) 0))
     (CGPathRelease (.affected state))
     (.result state)))
+
+;;; For intersection, disjoint contours cannot contribute to the result.
+;;; Batch possible contributors once, preserving even-odd holes and overlaps.
+(defn intersect-contours [(source (ptr i8)) (boundary (ptr i8))] (-> (ptr i8))
+  (let [state (p/alloc-stack ClipState)]
+    (partition-contours state source boundary)
+    (let [result (if (CGPathIsEmpty (.affected state))
+                    (CGPathCreateMutable)
+                    (CGPathCreateCopyByIntersectingPath
+                      (if (CGPathIsEmpty (.result state)) source (.affected state)) boundary true))]
+      (CGPathRelease (.result state))
+      (CGPathRelease (.affected state))
+      result)))
