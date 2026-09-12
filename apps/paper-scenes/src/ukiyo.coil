@@ -190,7 +190,8 @@
                         (CGPathCreateCopyByUnioningPath (.path (scene/scene)) inner true)))))
     (load slot)))
 
-(defstruct FoldArt [(faces (array (ptr i8) 8)) (backs (array (ptr i8) 8))])
+(defstruct FoldArt [(faces (array (ptr i8) 8)) (backs (array (ptr i8) 8))
+                    (navy (array (ptr i8) 6))])
 (defn fold-art [] (-> (ptr FoldArt)) (p/alloc-static FoldArt))
 (defn fold-pane [(which i64)] (-> i64) (if (< which 4) 1 (if (< which 6) 2 3)))
 (defn fold-path [(which i64)] (-> (ptr i8))
@@ -205,8 +206,21 @@
 (defn pane-backing [(which i64) (layer i64)] (-> (ptr i8))
   (let [slot (index (field (fold-art) backs) (+ (* which 2) layer))]
     (when (= (load slot) (cast (ptr i8) 0))
-      (begin-sheet) (panes/backing-path which layer 1.0 1.0)
-      (store! slot (CGPathCreateCopy (.path (scene/scene)))))
+      (let [inner (if (= layer 0) (pane-backing which 1) (pane-path which 0))]
+        (begin-sheet) (folds/backing-outline which layer)
+        (store! slot (CGPathCreateCopyByUnioningPath (.path (scene/scene)) inner true))))
+    (load slot)))
+(defn navy-crease-pane [(which i64)] (-> i64)
+  (if (< which 2) 0 (if (< which 4) 1 (if (= which 4) 2 3))))
+(defn navy-crease-path [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (fold-art) navy) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (let [stock (pane-backing (navy-crease-pane which) 0)
+            accent (branch-accent-path 0)]
+        (begin-sheet) (folds/navy-crease which)
+        (let [supported (CGPathCreateCopyByIntersectingPath (.path (scene/scene)) stock true)]
+          (store! slot (CGPathCreateCopyBySubtractingPath supported accent true))
+          (CGPathRelease supported) 0)))
     (load slot)))
 (defn path-stock [(source (ptr i8)) (height f64) (color u32) (seed f64)] (-> i64)
   (let [path (CGPathCreateCopyByTransformingPath source
@@ -232,6 +246,10 @@
     (for [layer 0 2]
       (path-stock (pane-backing which layer) (+ 16.0 (* (cast f64 layer) 1.5))
                   (if (= layer 0) 0x1d3643 0x2a4958) (+ 0.23 (* (cast f64 layer) 0.17)))))
+  (for [face 0 6]
+    (path-stock (navy-crease-path face) (+ 18.0 (* 0.2 (cast f64 (% face 2))))
+                (if (= (% face 2) 0) 0x345464 0x294b5b)
+                (+ 0.12 (* 0.13 (cast f64 face)))))
   (for [which 0 4]
     (for [layer 0 4]
       (let [colors [0x8c3427 0xb94f32 0xc99a69 0xe5d0a8]

@@ -177,6 +177,41 @@
       (CGPathRelease shape))
     context))
 
+(defn assert-supported-stock [(label i64) (outer (ptr i8)) (inner (ptr i8))] (-> i64)
+  (for [resolution 1 4]
+    (let [a (coverage outer (cast f64 resolution) 0.05)
+          raw (coverage outer (cast f64 resolution) 0.0)
+          b (coverage inner (cast f64 resolution) 0.0)
+          outer-pixels (CGBitmapContextGetData a) inner-pixels (CGBitmapContextGetData b)
+          raw-pixels (CGBitmapContextGetData raw)
+          (mut maximum) 0 (mut raw-maximum) 0 (mut location) 0]
+      (for [i 0 (* (* 768 512) (* resolution resolution))]
+        (let [difference (- (cast i64 (load (index inner-pixels (* i 4))))
+                            (cast i64 (load (index outer-pixels (* i 4)))))]
+          (when (> difference (load maximum))
+            (set! maximum difference) (set! location i)))
+        (let [difference (- (cast i64 (load (index inner-pixels (* i 4))))
+                            (cast i64 (load (index raw-pixels (* i 4)))))]
+          (when (> difference (load raw-maximum)) (set! raw-maximum difference))))
+      (printf c"stock %lld scale %lld raw excess %lld expanded excess %lld at pixel %lld,%lld\n"
+              label resolution (load raw-maximum) (load maximum)
+              (% (load location) (* 768 resolution)) (/ (load location) (* 768 resolution)))
+      (fflush (cast (ptr i8) 0))
+      (assert (or (<= (load raw-maximum) 1) (<= (load maximum) 1)))
+      (CGContextRelease a) (CGContextRelease raw) (CGContextRelease b)))
+  0)
+
+(deftest authored-navy-wraps-and-creases-retain-support-at-three-scales
+  (scene/init)
+  (for [pane 0 4]
+    (assert-supported-stock (* pane 2) (ukiyo/pane-backing pane 0) (ukiyo/pane-backing pane 1))
+    (assert-supported-stock (+ (* pane 2) 1) (ukiyo/pane-backing pane 1) (ukiyo/pane-path pane 0)))
+  (for [face 0 6]
+    (let [path (ukiyo/navy-crease-path face)]
+      (assert (= path (ukiyo/navy-crease-path face)))
+      (assert (not (CGPathIsEmpty path)))
+      (assert-supported-stock (+ face 8) (ukiyo/pane-backing (ukiyo/navy-crease-pane face) 0) path))))
+
 (deftest cloud-faces-stay-on-their-stock-at-three-scales
   (scene/init)
   (for [layer 0 2]
