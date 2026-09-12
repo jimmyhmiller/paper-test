@@ -2,6 +2,7 @@
 (import "paper.material" :as material)
 (import "paper.relief" :as relief)
 (import "paper.distance" :as distance)
+(import "paper.mask-pack" :as packing)
 (import "paper.profile" :as profile)
 (import "paper.workers" :as workers)
 (import "coil.primitive" :as p)
@@ -26,17 +27,41 @@
    (kind i64)])
 
 (defstruct Entry
-  [(key Key) (texture (ptr i8)) (width i64) (height i64) (used i64)])
+  [(key Key)
+   (texture (ptr i8))
+   (width i64)
+   (height i64)
+   (used i64)
+   (bytes i64)
+   (tiled bool)
+   (fingerprint i64)
+   (next i64)
+   (queued i64)
+   (older i64)
+   (newer i64)])
+
+(defstruct FrameMask
+  [(texture (ptr i8)) (bounds CGRect) (logical-bounds CGRect) (tiled bool) (valid bool)])
 
 (defstruct Masks
   [(entries (al/ArrayList Entry))
+   (buckets (al/ArrayList i64))
+   (pending (al/ArrayList i64))
+   (oldest i64)
+   (newest i64)
    (ready bool)
    (pipeline (ptr i8))
    (serial i64)
    (bytes i64)
    (preparing bool)
    (records (al/ArrayList i64))
-   (last-entry i64)])
+   (frame-masks (al/ArrayList FrameMask))
+   (frame-ready bool)
+   (frame-reference bool)
+   (last-entry i64)
+   (last-tiled bool)
+   (frame-start i64)
+   (dense-reference bool)])
 
 (defstruct Visibility
   [(texture (ptr i8))
@@ -108,7 +133,11 @@
    (finish-specular f32)
    (finish-metallic f32)
    (finish-sheen f32)
-   (finish-pad1 f32)])
+   (finish-pad1 f32)
+   (mask-tiled f32)
+   (mask-pad0 f32)
+   (mask-pad1 f32)
+   (mask-pad2 f32)])
 
 (defstruct ClearColor [(r f64) (g f64) (b f64) (a f64)])
 
@@ -125,6 +154,7 @@
    (bytes i64)
    (serial i64)
    (pipeline (ptr i8))
+   (prepared-pixels i64)
    (last-x f32)
    (last-y f32)
    (reference bool)])
@@ -173,6 +203,37 @@
                     (- (* (.pattern-y b) (.backing-scale b)) by))
          (p/fcmp-eq (.backing-scale a) (.backing-scale b))
          (p/fcmp-eq (.pattern-seed a) (.pattern-seed b)))))
+
+;;; Request only samples that this composition can touch. Keep pattern origin,
+;;; phase, seed and scale unchanged; cached supersets remain reusable. The draw
+;;; itself retains its original bounds and reads this texture using last-x/y.
+(defn micro-region-lookup [(params Draw)] (-> (ptr i8))
+  (if (or (<= (.pattern-kind params) 0.0) (.reference (micro-cache)))
+      (nil)
+      (let [region (gpu/pixel-region (load (composition-region)) 0.0)
+            rx (cast f32 (.x region))
+            ry (cast f32 (.y region))
+            rr (+ rx (cast f32 (.width region)))
+            rb (+ ry (cast f32 (.height region)))
+            x (if (> (.x params) rx) (.x params) rx)
+            y (if (> (.y params) ry) (.y params) ry)
+            right
+              (if (< (+ (.x params) (.width params)) rr)
+                  (+ (.x params) (.width params))
+                  rr)
+            bottom
+              (if (< (+ (.y params) (.height params)) rb)
+                  (+ (.y params) (.height params))
+                  rb)
+            (mut request) (load params)]
+        (if (and (> right x) (> bottom y))
+            (do
+              (set! (.x request) x)
+              (set! (.y request) y)
+              (set! (.width request) (- right x))
+              (set! (.height request) (- bottom y))
+              (micro-lookup (load request)))
+            (nil)))))
 
 (defn micro-lookup [(params Draw)] (-> (ptr i8))
   (let [c (micro-cache)
@@ -265,9 +326,14 @@
 (defn prepare-micro [] (-> i64)
   (let [c (micro-cache)
         (mut encoder) (nil)]
+    (set! (.prepared-pixels c) 0)
     (for [i 0 (al/al-len [MicroEntry] (.entries c))]
       (let [e (al/al-elem [MicroEntry] (field c entries) i)]
         (when (not (.ready e))
+          (set! (.prepared-pixels c)
+                (+ (.prepared-pixels c)
+                   (* (cast i64 (.width (.params e)))
+                      (cast i64 (.height (.params e))))))
           (when (= (load encoder) (nil))
             (when (= (.pipeline c) (nil))
               (set! (.pipeline c)
@@ -326,6 +392,7 @@
   0)
 
 (defn reset [] (-> i64)
+  (release-frame)
   (micro-reset)
   (release (.texture (visibility)))
   (set! (.texture (visibility)) (nil))
@@ -335,14 +402,57 @@
           (for [i 0 (al/al-len [Entry] (.entries c))]
             (release-entry (al/al-get [Entry] (.entries c) i)))
           (al/al-clear! [Entry] (mut (.entries c)))
+          (al/al-clear! [i64] (mut (.buckets c)))
+          (al/al-clear! [i64] (mut (.pending c)))
           0)
         (do
           (set! (.entries c) (al/al-new [Entry] (alloc/malloc-allocator)))
+          (set! (.buckets c) (al/al-new [i64] (alloc/malloc-allocator)))
+          (set! (.pending c) (al/al-new [i64] (alloc/malloc-allocator)))
           (set! (.records c) (al/al-new [i64] (alloc/malloc-allocator)))
+          (set! (.frame-masks c) (al/al-new [FrameMask] (alloc/malloc-allocator)))
           (set! (.ready c) true)
           0))
-    (set! (.bytes c) 0))
+    (set! (.bytes c) 0)
+    (set! (.oldest c) -1)
+    (set! (.newest c) -1))
   0)
+
+;;; Snapshot resources belong to one synchronous composition. Retain textures
+;;; before cache trimming can move/evict slots; release after command encoding.
+;;; Metal's command buffer then owns its encoded resource references.
+(defn release-frame [] (-> i64)
+  (let [c (cache)]
+    (when (.ready c)
+      (for [i 0 (len (.frame-masks c))]
+        (let [frame (get (.frame-masks c) i)]
+          (release (.texture frame))))
+      (al/al-clear! [FrameMask] (mut (.frame-masks c))))
+    (set! (.frame-ready c) false))
+  0)
+
+(defn reserve-frame-bounds [(order i64) (bounds CGRect) (logical CGRect)] (-> i64)
+  (when (.preparing (cache))
+    (al/al-set! [FrameMask] (mut (.frame-masks (cache))) order
+      (FrameMask :texture (nil) :bounds bounds :logical-bounds logical :tiled false :valid true)))
+  0)
+
+(defn capture-frame [] (-> i64)
+  (let [c (cache)]
+    (for [i 0 (len (.frame-masks c))]
+      (let [frame (al/al-elem [FrameMask] (field c frame-masks) i)]
+        (when (.valid frame)
+          (let [slot (get (.records c) i)]
+            (assert (and (>= slot 0) (< slot (len (.entries c)))))
+            (let [entry (get (.entries c) slot)]
+              (assert (!= (.texture entry) (nil)))
+              (set! (.texture frame) (retain (.texture entry)))
+              (set! (.tiled frame) (.tiled entry)))))))
+    (set! (.frame-ready c) true))
+  0)
+
+(defn frame-encoding [] (-> bool)
+  (and (.frame-ready (cache)) (not (.frame-reference (cache))) (not (.preparing (cache)))))
 
 (defn equal [(a Key) (b Key)] (-> bool)
   (and (= (.kind a) (.kind b))
@@ -356,6 +466,137 @@
            (msg bool (.text a) (sel c"isEqualToString:") [(ptr i8)] (.text b)))
        (CGPathEqualToPath (.path a) (.path b))))
 
+; CGPath equality compares the sequence of elements, not allocation identity.
+; Hash the same sequence; still verify full equality on every hash match.
+(defstruct PathElement [(kind i32) (points (ptr CGPoint))])
+
+(extern CGPathApply
+        :cc
+        c
+        [(ptr i8) (ptr i8) (fnptr c [(ptr i8) (ptr PathElement)] void)]
+        (-> void))
+
+(defn hash-part [(state i64) (value i64)] (-> i64)
+  (p/imul (p/ixor state value) 1099511628211))
+
+(defn hash-final [(value i64)] (-> i64)
+  ; Avalanche high coordinate bits into bucket bits. Binary fractions often
+  ; share many low zero bits, which a word-wise multiply alone cannot mix.
+  (let [a (cast u64 value)
+        b
+          (p/imul (p/ixor a (p/ishr a (cast u64 33)))
+                  (cast u64 0xff51afd7ed558ccd))
+        c
+          (p/imul (p/ixor b (p/ishr b (cast u64 33)))
+                  (cast u64 0xc4ceb9fe1a85ec53))]
+    (cast i64 (p/ixor c (p/ishr c (cast u64 33))))))
+
+(defn float-bits [(value f64)] (-> i64)
+  ; Numeric equality treats positive and negative zero identically.
+  (let [bits (p/alloc-stack f64)]
+    (set! bits (if (p/fcmp-eq value 0.0) 0.0 value))
+    (load (cast (ptr i64) bits))))
+
+(defn hash-path-element [(context (ptr i8)) (element (ptr PathElement))] (-> void)
+  (let [state (cast (ptr i64) context)
+        count (case (.kind element) 0 1 1 1 2 2 3 3 0)]
+    (set! state (hash-part (load state) (cast i64 (.kind element))))
+    (for [i 0 count]
+      (let [point (index (.points element) i)]
+        (set! state (hash-part (load state) (float-bits (.x point))))
+        (set! state (hash-part (load state) (float-bits (.y point)))))))
+  0)
+
+(defn key-hash [(key Key) (width i64) (height i64)] (-> i64)
+  (let [hash (p/alloc-stack i64)]
+    (set! hash (hash-part (hash-part 1469598103934665603 width) height))
+    (set! hash (hash-part (load hash) (.kind key)))
+    (set! hash (hash-part (load hash) (.font key)))
+    (set! hash (hash-part (load hash) (float-bits (.x key))))
+    (set! hash (hash-part (load hash) (float-bits (.y key))))
+    (set! hash (hash-part (load hash) (float-bits (.width key))))
+    (set! hash (hash-part (load hash) (float-bits (.height key))))
+    (set! hash (hash-part (load hash) (float-bits (.size key))))
+    (set! hash (hash-part (load hash) (msg i64 (.text key) (sel c"hash") [])))
+    (when (!= (.path key) (nil))
+      (CGPathApply (.path key)
+                   (cast (ptr i8) hash)
+                   (fnptr-of hash-path-element))
+      0)
+    (hash-final (load hash))))
+
+(defn index-entry [(slot i64)] (-> i64)
+  (let [c (cache)
+        entry (al/al-elem [Entry] (field c entries) slot)
+        bucket (& (.fingerprint entry) (- (len (.buckets c)) 1))]
+    (set! (.next entry) (get (.buckets c) bucket))
+    (set! (mut (.buckets c)) bucket slot))
+  0)
+
+(defn rebuild-index [(capacity i64)] (-> i64)
+  (let [c (cache)]
+    (al/al-clear! [i64] (mut (.buckets c)))
+    (for [i 0 capacity] (push! (mut (.buckets c)) -1))
+    (for [i 0 (len (.entries c))] (index-entry i)))
+  0)
+
+(defn queue-mask [(slot i64)] (-> i64)
+  (let [c (cache)
+        entry (al/al-elem [Entry] (field c entries) slot)]
+    (when (and (.preparing c)
+               (= (.texture entry) (nil))
+               (!= (.queued entry) (.frame-start c)))
+      (set! (.queued entry) (.frame-start c))
+      (push! (mut (.pending c)) slot)))
+  0)
+
+(defn unlink-recent [(slot i64)] (-> i64)
+  (let [c (cache)
+        entry (al/al-elem [Entry] (field c entries) slot)
+        older (.older entry)
+        newer (.newer entry)]
+    (if (>= older 0)
+        (set! (.newer (al/al-elem [Entry] (field c entries) older)) newer)
+        (set! (.oldest c) newer))
+    (if (>= newer 0)
+        (set! (.older (al/al-elem [Entry] (field c entries) newer)) older)
+        (set! (.newest c) older)))
+  0)
+
+(defn link-newest [(slot i64)] (-> i64)
+  (let [c (cache)
+        entry (al/al-elem [Entry] (field c entries) slot)]
+    (set! (.older entry) (.newest c))
+    (set! (.newer entry) -1)
+    (if (>= (.newest c) 0)
+        (set! (.newer (al/al-elem [Entry] (field c entries) (.newest c))) slot)
+        (set! (.oldest c) slot))
+    (set! (.newest c) slot))
+  0)
+
+(defn evict-oldest [] (-> i64)
+  (let [c (cache)
+        slot (.oldest c)
+        last (- (len (.entries c)) 1)
+        entry (al/al-elem [Entry] (field c entries) slot)]
+    (assert (>= slot 0))
+    (set! (.bytes c) (- (.bytes c) (.bytes entry)))
+    (unlink-recent slot)
+    (release-entry entry)
+    (when (!= slot last)
+      (al/al-set! [Entry] (mut (.entries c)) slot (get (.entries c) last))
+      (let [moved (al/al-elem [Entry] (field c entries) slot)]
+        (if (>= (.older moved) 0)
+            (set! (.newer (al/al-elem [Entry] (field c entries) (.older moved)))
+                  slot)
+            (set! (.oldest c) slot))
+        (if (>= (.newer moved) 0)
+            (set! (.older (al/al-elem [Entry] (field c entries) (.newer moved)))
+                  slot)
+            (set! (.newest c) slot))))
+    (al/al-pop! [Entry] (mut (.entries c))))
+  0)
+
 (defn translated [(path (ptr i8)) (x f64) (y f64)] (-> (ptr i8))
   (if (= path (nil))
       (nil)
@@ -368,126 +609,149 @@
                                             :tx (- 0.0 x)
                                             :ty (- 0.0 y)))))
 
-(defn mask-texture [(key Key) (width i64) (height i64)] (-> (ptr i8))
-  (let [start (profile/start)
-        result (make-mask-texture key width height)]
-    (set! (.masks (profile/counters))
-          (+ (.masks (profile/counters)) (profile/elapsed start)))
-    result))
-
-(defn make-mask-texture [(key Key) (width i64) (height i64)] (-> (ptr i8))
-  (let [s (scene)
-        cs (CGColorSpaceCreateDeviceRGB)
-        ctx
-          (CGBitmapContextCreate (nil)
-                                 (cast u64 width)
-                                 (cast u64 height)
-                                 8
-                                 (cast u64 (* width 4))
-                                 cs
-                                 0x4001)
-        descriptor
-          (msg (ptr i8)
-               (class c"MTLTextureDescriptor")
-               (sel c"texture2DDescriptorWithPixelFormat:width:height:mipmapped:")
-               [u64 u64 u64 bool]
-               (if (= (.kind key) -1) (cast u64 55) (cast u64 30))
-               (cast u64 width)
-               (cast u64 height)
-               false)]
-    (CGColorSpaceRelease cs)
-    (assert (!= ctx (nil)))
-    (CGContextTranslateCTM ctx 0.0 (cast f64 height))
-    (CGContextScaleCTM ctx (.scale s) (- 0.0 (.scale s)))
-    (if (<= (.kind key) 0)
-        (do
-          (CGContextSetRGBFillColor ctx 1.0 0.0 0.0 1.0)
-          (CGContextAddPath ctx (.path key))
-          (CGContextEOFillPath ctx)
-          (when (= (.kind key) 0)
+(defn build-mask-texture [(entry (mut Entry))] (-> i64)
+  (let [key (.key entry)
+        width (.width entry)
+        height (.height entry)]
+    (let [s (scene)
+          cs (CGColorSpaceCreateDeviceRGB)
+          ctx
+            (CGBitmapContextCreate (nil)
+                                   (cast u64 width)
+                                   (cast u64 height)
+                                   8
+                                   (cast u64 (* width 4))
+                                   cs
+                                   0x4001)
+          descriptor
+            (msg (ptr i8)
+                 (class c"MTLTextureDescriptor")
+                 (sel c"texture2DDescriptorWithPixelFormat:width:height:mipmapped:")
+                 [u64 u64 u64 bool]
+                 (if (= (.kind key) -1) (cast u64 55) (cast u64 30))
+                 (cast u64 width)
+                 (cast u64 height)
+                 false)]
+      (CGColorSpaceRelease cs)
+      (assert (!= ctx (nil)))
+      (CGContextTranslateCTM ctx 0.0 (cast f64 height))
+      (CGContextScaleCTM ctx (.scale s) (- 0.0 (.scale s)))
+      (if (<= (.kind key) 0)
+          (do
+            (CGContextSetRGBFillColor ctx 1.0 0.0 0.0 1.0)
             (CGContextAddPath ctx (.path key))
-            (CGContextEOClip ctx)
-            (CGContextSetBlendMode ctx 27)
-            (CGContextSetRGBStrokeColor ctx 0.0 1.0 0.0 1.0)
-            (CGContextSetLineWidth ctx 1.2)
-            (CGContextAddPath ctx (.path key))
-            (CGContextStrokePath ctx)
+            (CGContextEOFillPath ctx)
+            (when (= (.kind key) 0)
+              (CGContextAddPath ctx (.path key))
+              (CGContextEOClip ctx)
+              (CGContextSetBlendMode ctx 27)
+              (CGContextSetRGBStrokeColor ctx 0.0 1.0 0.0 1.0)
+              (CGContextSetLineWidth ctx 1.2)
+              (CGContextAddPath ctx (.path key))
+              (CGContextStrokePath ctx)
+              0)
             0)
-          0)
-        (let [ink
-                (Ink
-                  :x (.x key)
-                  :y (.y key)
-                  :width (.width key)
-                  :height (.height key)
-                  :size (.size key)
-                  :color 0xff0000
-                  :font (.font key)
-                  :text (.text key)
-                  :z 0.0
-                  :order 0
-                  :kind (- (.kind key) 1)
-                  :clip (.path key)
-                  :bounds
-                    (cgrect 0.0
-                            0.0
-                            (/ (cast f64 width) (.scale s))
-                            (/ (cast f64 height) (.scale s))))]
-          (msg i64 (class c"NSGraphicsContext") (sel c"saveGraphicsState") [])
+          (let [ink
+                  (Ink
+                    :x (.x key)
+                    :y (.y key)
+                    :width (.width key)
+                    :height (.height key)
+                    :size (.size key)
+                    :color 0xff0000
+                    :font (.font key)
+                    :text (.text key)
+                    :z 0.0
+                    :order 0
+                    :kind (- (.kind key) 1)
+                    :clip (.path key)
+                    :bounds
+                      (cgrect 0.0
+                              0.0
+                              (/ (cast f64 width) (.scale s))
+                              (/ (cast f64 height) (.scale s))))]
+            (msg i64 (class c"NSGraphicsContext") (sel c"saveGraphicsState") [])
+            (msg i64
+                 (class c"NSGraphicsContext")
+                 (sel c"setCurrentContext:")
+                 [(ptr i8)]
+                 (msg (ptr i8)
+                      (class c"NSGraphicsContext")
+                      (sel c"graphicsContextWithCGContext:flipped:")
+                      [(ptr i8) bool]
+                      ctx
+                      true))
+            (paint-ink ctx ink)
+            (msg i64
+                 (class c"NSGraphicsContext")
+                 (sel c"restoreGraphicsState")
+                 [])
+            0))
+      (msg i64 descriptor (sel c"setUsage:") [u64] 1)
+      (msg i64 descriptor (sel c"setStorageMode:") [u64] 0)
+      (let [source (cast (ptr u32) (CGBitmapContextGetData ctx))
+            packed
+              (if (and (!= (.kind key) -1)
+                       (>= (* width height) 65536)
+                       (not (.dense-reference (cache))))
+                  (packing/pack source width height)
+                  (load (packing/Packed
+                          :data (cast (ptr u16) 0)
+                          :width width
+                          :height height
+                          :tiled false)))
+            bytes (if (= (.kind key) -1) 4 2)
+            data
+              (if (!= (.data packed) (cast (ptr u16) 0))
+                  (.data packed)
+                  (if (= (.kind key) -1)
+                      (cast (ptr u16)
+                            (distance/from-coverage source width height))
+                      (let [out
+                              (cast (ptr u16)
+                                    (alloc/malloc (cast isize
+                                                        (* (* width height) 2))))]
+                        (assert (!= out (cast (ptr u16) 0)))
+                        (for [i 0 (* width height)]
+                          (set! (index out i)
+                                (cast u16
+                                      (& (load (index source i))
+                                         (cast u32 65535)))))
+                        out)))]
+        (msg i64 descriptor (sel c"setWidth:") [u64] (cast u64 (.width packed)))
+        (msg i64
+             descriptor
+             (sel c"setHeight:")
+             [u64]
+             (cast u64 (.height packed)))
+        (let [texture
+                (gpu/checked-object (msg (ptr i8)
+                                         (.device (gpu/gpu))
+                                         (sel c"newTextureWithDescriptor:")
+                                         [(ptr i8)]
+                                         descriptor)
+                                    (nil))]
+          (assert (!= data (cast (ptr u16) 0)))
           (msg i64
-               (class c"NSGraphicsContext")
-               (sel c"setCurrentContext:")
-               [(ptr i8)]
-               (msg (ptr i8)
-                    (class c"NSGraphicsContext")
-                    (sel c"graphicsContextWithCGContext:flipped:")
-                    [(ptr i8) bool]
-                    ctx
-                    true))
-          (paint-ink ctx ink)
-          (msg i64
-               (class c"NSGraphicsContext")
-               (sel c"restoreGraphicsState")
-               [])
-          0))
-    (msg i64 descriptor (sel c"setUsage:") [u64] 1)
-    (msg i64 descriptor (sel c"setStorageMode:") [u64] 0)
-    (let [texture
-            (gpu/checked-object (msg (ptr i8)
-                                     (.device (gpu/gpu))
-                                     (sel c"newTextureWithDescriptor:")
-                                     [(ptr i8)]
-                                     descriptor)
-                                (nil))
-          source (cast (ptr u32) (CGBitmapContextGetData ctx))
-          bytes (if (= (.kind key) -1) 4 2)
-          data
-            (if (= (.kind key) -1)
-                (cast (ptr u16) (distance/from-coverage source width height))
-                (cast (ptr u16)
-                      (alloc/malloc (cast isize (* (* width height) 2)))))]
-      (assert (!= data (cast (ptr u16) 0)))
-      (when (= bytes 2)
-        (for [i 0 (* width height)]
-          (set! (index data i)
-                (cast u16 (& (load (index source i)) (cast u32 65535))))))
-      (msg i64
-           texture
-           (sel c"replaceRegion:mipmapLevel:withBytes:bytesPerRow:")
-           [gpu/MetalRegion u64 (ptr u16) u64]
-           (gpu/MetalRegion
-             :x 0
-             :y 0
-             :z 0
-             :width (cast u64 width)
-             :height (cast u64 height)
-             :depth 1)
-           0
-           data
-           (cast u64 (* width bytes)))
-      (free (cast (ptr i8) data))
-      (CGContextRelease ctx)
-      texture)))
+               texture
+               (sel c"replaceRegion:mipmapLevel:withBytes:bytesPerRow:")
+               [gpu/MetalRegion u64 (ptr u16) u64]
+               (gpu/MetalRegion
+                 :x 0
+                 :y 0
+                 :z 0
+                 :width (cast u64 (.width packed))
+                 :height (cast u64 (.height packed))
+                 :depth 1)
+               0
+               data
+               (cast u64 (* (.width packed) bytes)))
+          (free (cast (ptr i8) data))
+          (CGContextRelease ctx)
+          (set! (.texture entry) texture)
+          (set! (.tiled entry) (.tiled packed))
+          (set! (.bytes entry) (* (* (.width packed) (.height packed)) bytes))))))
+  0)
 
 ;;; Keys use coordinates relative to integral backing pixels. Integer movement
 ;;; reuses masks without resampling; fractional movement retains its exact phase.
@@ -495,60 +759,80 @@
 ;;; retain their textures until completion even when a cache entry is evicted.
 (defn lookup [(key Key) (width i64) (height i64)] (-> (ptr i8))
   (let [c (cache)
+        fingerprint (key-hash key width height)
         (mut found) -1]
     (set! (.serial c) (+ (.serial c) 1))
-    (for [i 0 (al/al-len [Entry] (.entries c))]
-      (let [entry (al/al-elem [Entry] (field c entries) i)]
-        (when (and (= (.width entry) width)
-                   (= (.height entry) height)
-                   (equal (.key entry) key))
-          (set! found i)
-          (break))))
+    (when (= (len (.buckets c)) 0) (rebuild-index 2048))
+    (let [(mut slot) (get (.buckets c) (& fingerprint (- (len (.buckets c)) 1)))]
+      (while (>= (load slot) 0)
+        (let [entry (al/al-elem [Entry] (field c entries) (load slot))]
+          (when (and (= (.fingerprint entry) fingerprint)
+                     (= (.width entry) width)
+                     (= (.height entry) height)
+                     (equal (.key entry) key))
+            (set! found (load slot))
+            (break))
+          (set! slot (.next entry)))))
     (if (>= (load found) 0)
         (let [entry (al/al-elem [Entry] (field c entries) (load found))]
           (set! (.last-entry c) (load found))
           (set! (.used entry) (.serial c))
+          (when (!= (load found) (.newest c))
+            (unlink-recent (load found))
+            (link-newest (load found)))
+          (queue-mask (load found))
           (CGPathRelease (.path key))
           (when (and (= (.texture entry) (nil)) (not (.preparing c)))
-            (set! (.texture entry) (mask-texture (.key entry) width height)))
+            (build-mask-texture entry)
+            (set! (.bytes c) (+ (.bytes c) (.bytes entry))))
+          (set! (.last-tiled c) (.tiled entry))
           (.texture entry))
-        (let [texture (if (.preparing c) (nil) (mask-texture key width height))
-              bytes (* (* width height) (if (= (.kind key) -1) 4 2))]
-          (while (and (> (+ (.bytes c) bytes) 268435456)
-                      (> (al/al-len [Entry] (.entries c)) 0))
-            (let [(mut oldest) 0]
-              (for [i 1 (al/al-len [Entry] (.entries c))]
-                (when (< (.used (al/al-elem [Entry] (field c entries) i))
-                         (.used (al/al-elem [Entry]
-                                            (field c entries)
-                                            (load oldest))))
-                  (set! oldest i)))
-              (let [entry (al/al-get [Entry] (.entries c) (load oldest))]
-                (set! (.bytes c)
-                      (- (.bytes c)
-                         (* (* (.width entry) (.height entry))
-                            (if (= (.kind (.key entry)) -1) 4 2))))
-                (release-entry entry)
-                (al/al-set! [Entry]
-                            (mut (.entries c))
-                            (load oldest)
-                            (al/al-get [Entry]
-                                       (.entries c)
-                                       (- (al/al-len [Entry] (.entries c)) 1)))
-                (al/al-pop! [Entry] (mut (.entries c)))
-                0)))
+        (let [(mut entry)
+                (load (Entry
+                        :key key
+                        :texture (nil)
+                        :width width
+                        :height height
+                        :used (.serial c)
+                        :bytes 0
+                        :tiled false
+                        :fingerprint fingerprint
+                        :next -1
+                        :queued -1
+                        :older -1
+                        :newer -1))]
+          (when (not (.preparing c))
+            (build-mask-texture (mut entry)))
           (retain (.text key))
           (al/al-push! [Entry]
                        (mut (.entries c))
-                       (Entry
-                         :key key
-                         :texture texture
-                         :width width
-                         :height height
-                         :used (.serial c)))
-          (set! (.bytes c) (+ (.bytes c) bytes))
+                       (load entry))
+          (set! (.bytes c) (+ (.bytes c) (.bytes entry)))
           (set! (.last-entry c) (- (al/al-len [Entry] (.entries c)) 1))
-          texture))))
+          (link-newest (.last-entry c))
+          (if (> (* (len (.entries c)) 2) (len (.buckets c)))
+              (rebuild-index (* (len (.buckets c)) 2))
+              (index-entry (.last-entry c)))
+          (queue-mask (.last-entry c))
+          (set! (.last-tiled c) (.tiled entry))
+          (.texture entry)))))
+
+;;; Never evict a reserved frame resource between preparation and encoding.
+;;; Oversized frames may temporarily exceed the persistent budget; once encoded,
+;;; the command buffer owns their textures and the cache can release its copies.
+(defn trim [(keep-current bool)] (-> i64)
+  (let [c (cache)
+        (mut changed) false]
+    (while (> (.bytes c) 268435456)
+      (when (< (.oldest c) 0) (break))
+      (when (and keep-current
+                 (>= (.used (al/al-elem [Entry] (field c entries) (.oldest c)))
+                     (.frame-start c)))
+        (break))
+      (evict-oldest)
+      (set! changed true))
+    (when (load changed) (rebuild-index (len (.buckets c)))))
+  0)
 
 ;;; Frame-local command indexes avoid repeating an LRU scan during material
 ;;; encoding. Validate the key because budget eviction can move an
@@ -568,6 +852,7 @@
              (!= (.texture (al/al-elem [Entry] (field c entries) slot)) (nil)))
         (let [entry (al/al-elem [Entry] (field c entries) slot)]
           (CGPathRelease (.path key))
+          (set! (.last-tiled c) (.tiled entry))
           (.texture entry))
         (let [texture (lookup key width height)]
           (when (< order (al/al-len [i64] (.records c)))
@@ -587,6 +872,11 @@
 
 ;;; Diagnostic extent of the last material-compositing pass, in backing pixels.
 (defn last-damage [] (-> (ptr CGRect))
+  (p/alloc-static CGRect))
+
+;;; Composition only needs commands touching the scissored raster damage.
+;;; Keep this in logical coordinates; shadow expansion happens after composition.
+(defn composition-region [] (-> (ptr CGRect))
   (p/alloc-static CGRect))
 
 (defn pipeline [] (-> (ptr i8))
@@ -712,7 +1002,11 @@
             :finish-specular (cast f32 (.specular finish))
             :finish-metallic (cast f32 (.metallic finish))
             :finish-sheen (cast f32 (.sheen finish))
-            :finish-pad1 0.0)]
+            :finish-pad1 0.0
+            :mask-tiled 0.0
+            :mask-pad0 0.0
+            :mask-pad1 0.0
+            :mask-pad2 0.0)]
     (load params)))
 
 (defn draw-mask [(encoder (ptr i8))
@@ -725,13 +1019,15 @@
                  (seed f64)
                  (kind f32)
                  (pattern material/Pattern)
-                 (finish material/Finish)] (-> i64)
+                 (finish material/Finish)
+                 (tiled bool)] (-> i64)
   (let [(mut params)
           (draw-params bounds color z rough fiber seed kind pattern finish)
         micro
           (if (or (= texture (nil)) (.prepass (visibility)))
               (nil)
-              (micro-lookup (load params)))]
+              (micro-region-lookup (load params)))]
+    (set! (.mask-tiled params) (if tiled 1.0 0.0))
     (set! (.pad1 params) (if (!= micro (nil)) 1.0 0.0))
     (set! (.finish-pad0 params) (.last-x (micro-cache)))
     (set! (.finish-pad1 params) (.last-y (micro-cache)))
@@ -808,10 +1104,18 @@
     (cgrect x y (- right x) (- bottom y))))
 
 (defn sheet [(encoder (ptr i8)) (item Sheet)] (-> i64)
-  (when (and (not (CGPathIsEmpty (.path item)))
+  (if (and (frame-encoding) (= (.relief item) (cast (ptr relief/Panel) 0)))
+      (let [frame (get (.frame-masks (cache)) (.order item))]
+        (when (and (.valid frame) (intersects (.logical-bounds frame) (load (composition-region))))
+          (draw-mask encoder (.texture frame) (.bounds frame) (.color item) (.z item)
+                     (.rough item) (.fiber item) (.seed item) (if (.continuous item) -1.0 0.0)
+                     (.pattern item) (.finish item) (.tiled frame))))
+      (when (and (not (CGPathIsEmpty (.path item)))
              (intersects (CGPathGetPathBoundingBox (.path item))
-                         (canvas-bounds)))
-    (visible-sheet encoder item))
+                         (canvas-bounds))
+             (intersects (CGPathGetPathBoundingBox (.path item))
+                         (load (composition-region))))
+        (visible-sheet encoder item)))
   0)
 
 (defn visible-sheet [(encoder (ptr i8)) (item Sheet)] (-> i64)
@@ -832,22 +1136,25 @@
           (prepared-lookup key
                            (cast i64 (.w b))
                            (cast i64 (.h b))
-                           (.order item))]
+                           (.order item))
+        tiled (.last-tiled (cache))]
+    (when (= (.relief item) (cast (ptr relief/Panel) 0))
+      (reserve-frame-bounds (.order item) b (CGPathGetPathBoundingBox (.path item))))
     (when (and (.preparing (cache))
                (= (.relief item) (cast (ptr relief/Panel) 0)))
-      (micro-lookup (draw-params b
-                                 (.color item)
-                                 (.z item)
-                                 (.rough item)
-                                 (.fiber item)
-                                 (.seed item)
-                                 0.0
-                                 (.pattern item)
-                                 (.finish item)))
+      (micro-region-lookup (draw-params b
+                                        (.color item)
+                                        (.z item)
+                                        (.rough item)
+                                        (.fiber item)
+                                        (.seed item)
+                                        0.0
+                                        (.pattern item)
+                                        (.finish item)))
       0)
     (if (and (!= (.relief item) (cast (ptr relief/Panel) 0))
              (or (.preparing (cache)) (not (.prepass (visibility)))))
-        (draw-relief encoder texture b item)
+        (draw-relief encoder texture b item tiled)
         (when (not (.preparing (cache)))
           (draw-mask encoder
                      texture
@@ -857,9 +1164,10 @@
                      (.rough item)
                      (.fiber item)
                      (.seed item)
-                     0.0
+                     (if (.continuous item) -1.0 0.0)
                      (.pattern item)
-                     (.finish item)))))
+                     (.finish item)
+                     tiled))))
   0)
 
 ;;; Distance fields are glyph-sized, independent of color, height and lighting.
@@ -916,7 +1224,11 @@
                  (load pattern)
                  (.finish stock))))
 
-(defn draw-relief [(encoder (ptr i8)) (mask (ptr i8)) (b CGRect) (item Sheet)] (-> i64)
+(defn draw-relief [(encoder (ptr i8))
+                   (mask (ptr i8))
+                   (b CGRect)
+                   (item Sheet)
+                   (tiled bool)] (-> i64)
   (let [v (.relief item)
         gb (glyph-bounds v)
         scale (.scale (scene))
@@ -935,10 +1247,10 @@
         r (.bounds v)
         top-params (stock-params b (.top v) (.z v) (.x r) (.y r))
         edge-params (stock-params b (.edge v) (.z v) (.x r) (.y r))
-        top-micro (micro-lookup top-params)
+        top-micro (micro-region-lookup top-params)
         top-x (.last-x (micro-cache))
         top-y (.last-y (micro-cache))
-        edge-micro (micro-lookup edge-params)]
+        edge-micro (micro-region-lookup edge-params)]
     (when (not (.preparing (cache)))
       (let [r (.bounds v)
             outline
@@ -971,6 +1283,7 @@
                       :pad0 0.0
                       :pad1 0.0
                       :pad2 0.0))]
+        (set! (.mask-tiled (.panel params)) (if tiled 1.0 0.0))
         (set! (.pad1 (.panel params)) (if (!= top-micro (nil)) 1.0 0.0))
         (set! (.pad1 (.edge params)) (if (!= edge-micro (nil)) 1.0 0.0))
         (set! (.finish-pad0 (.panel params)) top-x)
@@ -1030,9 +1343,16 @@
   0)
 
 (defn ink [(encoder (ptr i8)) (item Ink)] (-> i64)
-  (when (and (intersects (.bounds item) (canvas-bounds))
+  (if (frame-encoding)
+      (let [frame (get (.frame-masks (cache)) (.order item))]
+        (when (and (.valid frame) (intersects (.logical-bounds frame) (load (composition-region))))
+          (draw-mask encoder (.texture frame) (.bounds frame) (.color item)
+                     0.0 0.0 0.0 0.0 1.0 (material/plain-pattern)
+                     (material/matte-finish) (.tiled frame))))
+      (when (and (intersects (.bounds item) (canvas-bounds))
+             (intersects (.bounds item) (load (composition-region)))
              (or (= (.clip item) (nil)) (not (CGPathIsEmpty (.clip item)))))
-    (visible-ink encoder item))
+        (visible-ink encoder item)))
   0)
 
 (defn visible-ink [(encoder (ptr i8)) (item Ink)] (-> i64)
@@ -1056,6 +1376,7 @@
                            (cast i64 (.w b))
                            (cast i64 (.h b))
                            (.order item))]
+    (reserve-frame-bounds (.order item) b (.bounds item))
     (when (not (.preparing (cache)))
       (draw-mask encoder
                  texture
@@ -1067,7 +1388,8 @@
                  0.0
                  1.0
                  (material/plain-pattern)
-                 (material/matte-finish))))
+                 (material/matte-finish)
+                 (.last-tiled (cache)))))
   0)
 
 (defn render [(region CGRect)] (-> i64)
@@ -1077,40 +1399,133 @@
         (do (store! (last-damage) (cgrect 0.0 0.0 0.0 0.0)) 0))))
 
 (defn prepare-mask-worker [(context (ptr i8)) (index u64)] (-> i64)
-  (let [entry (al/al-elem [Entry] (field (cache) entries) (cast i64 index))]
+  (let [slot (get (.pending (cache)) (cast i64 index))
+        entry (al/al-elem [Entry] (field (cache) entries) slot)]
     (when (= (.texture entry) (nil))
       (let [pool (new c"NSAutoreleasePool")]
-        (set! (.texture entry)
-              (make-mask-texture (.key entry) (.width entry) (.height entry)))
+        (build-mask-texture entry)
         (release pool))))
   0)
 
 ;;; Reserve immutable keys on the UI thread, then raster independent coverage
 ;;; textures in parallel. The array and LRU are not mutated until workers join.
 (defn prepare-masks [] (-> i64)
+  (release-frame)
   (set! (.serial (micro-cache)) (+ (.serial (micro-cache)) 1))
   (let [s (scene)
-        c (cache)]
+        c (cache)
+        reservation-start (profile/start)]
+    (set! (.frame-start c) (+ (.serial c) 1))
+    (al/al-clear! [i64] (mut (.pending c)))
     (al/al-clear! [i64] (mut (.records c)))
     (for [i 0 (+ (.serial s) 1)] (al/al-push! [i64] (mut (.records c)) -1))
+    (for [i 0 (+ (.serial s) 1)]
+      (al/al-push! [FrameMask] (mut (.frame-masks c)) (p/zeroed FrameMask)))
     (set! (.preparing c) true)
     (for [i 0 (al/al-len [Sheet] (.sheets s))]
       (sheet (nil) (al/al-get [Sheet] (.sheets s) i)))
     (for [i 0 (al/al-len [Ink] (.inks s))]
       (ink (nil) (al/al-get [Ink] (.inks s) i)))
+    (set! (.mask-reservation (profile/counters))
+          (+ (.mask-reservation (profile/counters)) (profile/elapsed reservation-start)))
     (let [start (profile/start)]
-      (workers/apply (cast u64 (al/al-len [Entry] (.entries c)))
+      (workers/apply (cast u64 (len (.pending c)))
                      (nil)
                      (p/fnptr-of prepare-mask-worker))
       (set! (.masks (profile/counters))
             (+ (.masks (profile/counters)) (profile/elapsed start))))
-    (set! (.preparing c) false))
+    (set! (.preparing c) false)
+    (for [i 0 (len (.pending c))]
+      (set! (.bytes c)
+            (+ (.bytes c)
+               (.bytes (al/al-elem [Entry]
+                                   (field c entries)
+                                   (get (.pending c) i))))))
+    (capture-frame)
+    (trim true))
+  0)
+
+(defn set-composition-region [(region CGRect)] (-> i64)
+  (let [pixels (gpu/pixel-region region 0.0)
+        scale (.scale (scene))]
+    (store! (composition-region)
+            (cgrect (/ (cast f64 (.x pixels)) scale)
+                    (/ (cast f64 (.y pixels)) scale)
+                    (/ (cast f64 (.width pixels)) scale)
+                    (/ (cast f64 (.height pixels)) scale))))
+  0)
+
+(defn prepare-region [(region CGRect)] (-> i64)
+  (set-composition-region region)
+  (prepare-masks)
+  (let [start (profile/start)]
+    (prepare-micro)
+    (set! (.micro-preparation (profile/counters))
+          (+ (.micro-preparation (profile/counters)) (profile/elapsed start))))
+  (visibility-setup)
   0)
 
 (defn render-region [(region CGRect)] (-> i64)
-  (prepare-masks)
-  (prepare-micro)
-  (visibility-setup)
+  (store! (last-composed-area) 0.0)
+  (prepare-region region)
+  (encode-region region)
+  (release-frame)
+  (trim false)
+  0)
+
+;;; Reserve the complete frame working set once, then compose disjoint damage
+;;; rectangles without composing the unchanged pixels between them. Encoder-owned
+;;; textures remain pinned until all regions have been encoded.
+(defn render-regions [(regions (ptr CGRect)) (count i64) (bounds CGRect)] (-> i64)
+  (store! (last-composed-area) 0.0)
+  (prepare-region bounds)
+  (when (> count 0)
+    (let [start (profile/start)
+          full (and (= count 1) (full-region (load (index regions 0))))
+          encoder (begin-composition full)]
+      (for [i 0 count]
+        (let [region (load (index regions i))
+              pixels (gpu/pixel-region region 0.0)]
+          (when (and (> (.width pixels) (cast u64 0))
+                     (> (.height pixels) (cast u64 0)))
+            (compose-region encoder region full))))
+      (msg i64 encoder (sel c"endEncoding") [])
+      (set! (.composition-encoding (profile/counters))
+            (+ (.composition-encoding (profile/counters)) (profile/elapsed start)))))
+  (let [pixels (gpu/pixel-region bounds 0.0)]
+    (store! (last-damage)
+            (cgrect (cast f64 (.x pixels))
+                    (cast f64 (.y pixels))
+                    (cast f64 (.width pixels))
+                    (cast f64 (.height pixels)))))
+  (release-frame)
+  (trim false)
+  0)
+
+(defn last-composed-area [] (-> (ptr f64))
+  (p/alloc-static f64))
+
+(defn full-region [(region CGRect)] (-> bool)
+  (let [pixels (gpu/pixel-region region 0.0)
+        s (scene)]
+    (and (= (.x pixels) 0)
+         (= (.y pixels) 0)
+         (= (.width pixels) (cast u64 (.width s)))
+         (= (.height pixels) (cast u64 (.height s))))))
+
+(defn encode-region [(region CGRect)] (-> i64)
+  (let [start (profile/start)
+        full (full-region region)
+        encoder (begin-composition full)]
+    (compose-region encoder region full)
+    (msg i64 encoder (sel c"endEncoding") [])
+    (set! (.composition-encoding (profile/counters))
+          (+ (.composition-encoding (profile/counters)) (profile/elapsed start))))
+  0)
+
+;;; Share attachment loads/stores and the visibility depth clear across regions.
+;;; Any overlap from pixel padding redraws the same painter sequence and ranks.
+(defn begin-composition [(full bool)] (-> (ptr i8))
   (let [s (scene)
         g (gpu/gpu)
         command (gpu/command-buffer)
@@ -1119,23 +1534,12 @@
                (class c"MTLRenderPassDescriptor")
                (sel c"renderPassDescriptor")
                [])
-        attachments (msg (ptr i8) descriptor (sel c"colorAttachments") [])
-        pixels (gpu/pixel-region region 0.0)
-        full
-          (and (= (.x pixels) 0)
-               (= (.y pixels) 0)
-               (= (.width pixels) (cast u64 (.width s)))
-               (= (.height pixels) (cast u64 (.height s))))]
+        attachments (msg (ptr i8) descriptor (sel c"colorAttachments") [])]
     (let [depth (msg (ptr i8) descriptor (sel c"depthAttachment") [])]
       (msg i64 depth (sel c"setTexture:") [(ptr i8)] (.texture (visibility)))
       (msg i64 depth (sel c"setLoadAction:") [u64] 2)
       (msg i64 depth (sel c"setStoreAction:") [u64] 0)
       (msg i64 depth (sel c"setClearDepth:") [f64] 1.0))
-    (store! (last-damage)
-            (cgrect (cast f64 (.x pixels))
-                    (cast f64 (.y pixels))
-                    (cast f64 (.width pixels))
-                    (cast f64 (.height pixels))))
     (for [i 0 6]
       (let [color
               (msg (ptr i8)
@@ -1192,13 +1596,25 @@
         (msg i64 color (sel c"setLoadAction:") [u64] (if full 2 1))
         (msg i64 color (sel c"setStoreAction:") [u64] 1)
         (msg i64 color (sel c"setClearColor:") [ClearColor] clear)))
-    (let [encoder
-            (msg (ptr i8)
-                 command
-                 (sel c"renderCommandEncoderWithDescriptor:")
-                 [(ptr i8)]
-                 descriptor)
-          count (al/al-len [Ink] (.inks s))
+    (msg (ptr i8)
+         command
+         (sel c"renderCommandEncoderWithDescriptor:")
+         [(ptr i8)]
+         descriptor)))
+
+(defn compose-region [(encoder (ptr i8)) (region CGRect) (full bool)] (-> i64)
+  (set-composition-region region)
+  (let [s (scene)
+        pixels (gpu/pixel-region region 0.0)]
+    (store! (last-composed-area)
+            (+ (load (last-composed-area))
+               (cast f64 (* (.width pixels) (.height pixels)))))
+    (store! (last-damage)
+            (cgrect (cast f64 (.x pixels))
+                    (cast f64 (.y pixels))
+                    (cast f64 (.width pixels))
+                    (cast f64 (.height pixels))))
+    (let [count (al/al-len [Ink] (.inks s))
           (mut next) 0]
       (msg i64
            encoder
@@ -1233,7 +1649,8 @@
                    0.12
                    0.0
                    (material/plain-pattern)
-                   (material/matte-finish)))
+                   (material/matte-finish)
+                   false))
       (set! (.total (visibility))
             (+ (+ (al/al-len [Sheet] (.sheets s)) count) 1))
       (for [pass (if (.reference (visibility)) 1 0) 2]
@@ -1267,13 +1684,8 @@
           (ink encoder (al/al-get [Ink] (.inks s) (load next)))
           (set! next (+ (load next) 1))
           (set! (.rank (visibility)) (+ (.rank (visibility)) 1))))
-      (set! (.prepass (visibility)) false)
-      (msg i64 encoder (sel c"endEncoding") []))
-    (set! (.pending g)
-          (cgrect 0.0
-                  0.0
-                  (/ (cast f64 (.width s)) (.scale s))
-                  (/ (cast f64 (.height s)) (.scale s)))))
+      (set! (.prepass (visibility)) false))
+    (gpu/include-preparation (load (composition-region))))
   0)
 
 (defn read-inputs [] (-> i64)

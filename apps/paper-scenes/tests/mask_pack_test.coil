@@ -1,0 +1,258 @@
+(module paper-scenes.mask-pack-test)
+(import "paper.mask-pack" :as pack)
+(import "coil.primitive" :as p)
+(import "coil.alloc" :as alloc)
+(import "paper-scenes.workload" :as bench)
+(import "paper.scene" :as scene)
+(import "paper.render" :as render)
+(import "paper.damage" :as damage)
+(import "paper.masks" :as masks)
+(import "paper.gpu" :as gpu)
+(import "paper.platform" :as host)
+(import "paper.workers" :as workers)
+(import "paper.lettering" :as lettering)
+(import "paper.surface" :use *)
+(import "paper.material" :use *)
+(import "paper.geometry" :use [rect])
+(import "paper.objc" :as o)
+(import "paper.ffi" :use [CGBitmapContextGetData])
+
+(extern memcpy :cc c [(ptr u8) (ptr u8) u64] (-> (ptr u8)))
+
+(extern memcmp :cc c [(ptr u8) (ptr u8) u64] (-> i32))
+
+(deftest frame-draw-records-match-key-validated-encoding
+  (let [pool (o/new c"NSAutoreleasePool") bytes (cast u64 (* (* 1031 679) 4))
+        copy (cast (ptr u8) (alloc/malloc (cast isize bytes)))]
+    (scene/init)
+    (set! (.headless (host/host)) true)
+    (set! (.width (scene/scene)) 1031) (set! (.height (scene/scene)) 679)
+    (set! (.scale (scene/scene)) 1.5)
+    (render/setup)
+    (for [theme 0 8]
+      (for [scenario 0 3]
+        (for [mode 0 2]
+          (set! (.frame-reference (masks/cache)) (= mode 1))
+          (masks/reset)
+          (set! (.valid (damage/cache)) false)
+          (bench/draw-case theme scenario 0 4)
+          (render/render-frame true)
+          (bench/draw-case theme scenario 13 4)
+          (render/render-frame true)
+          (assert (not (.frame-ready (masks/cache))))
+          (assert (= (len (.frame-masks (masks/cache))) 0))
+          (if (= mode 0)
+              (do (memcpy copy (CGBitmapContextGetData (.output-context (scene/scene))) bytes) 0)
+              (do (assert (= (memcmp copy (CGBitmapContextGetData (.output-context (scene/scene))) bytes)
+                             (cast i32 0))) 0)))))
+    (set! (.frame-reference (masks/cache)) false)
+    (masks/reset) (p/free (cast (ptr i8) copy)) (workers/stop) (o/release pool)))
+
+(deftest frame-draw-records-own-textures-after-cache-eviction
+  (let [pool (o/new c"NSAutoreleasePool") bytes (cast u64 (* (* 384 256) 4))
+        copy (cast (ptr u8) (alloc/malloc (cast isize bytes)))]
+    (scene/init)
+    (set! (.headless (host/host)) true)
+    (set! (.width (scene/scene)) 384) (set! (.height (scene/scene)) 256)
+    (set! (.scale (scene/scene)) 1.0)
+    (render/setup)
+    (bench/draw-case 5 2 13 4)
+    (scene/sort-commands)
+    (masks/prepare-region (masks/canvas-bounds))
+    (masks/encode-region (masks/canvas-bounds))
+    (gpu/synchronize) (masks/read-inputs)
+    (memcpy copy (CGBitmapContextGetData (.color-context (scene/scene))) bytes)
+    (while (> (len (.entries (masks/cache))) 0) (masks/evict-oldest))
+    (masks/rebuild-index 2048)
+    (assert (.frame-ready (masks/cache)))
+    (masks/encode-region (masks/canvas-bounds))
+    (masks/release-frame)
+    (gpu/synchronize) (masks/read-inputs)
+    (assert (= (memcmp copy (CGBitmapContextGetData (.color-context (scene/scene))) bytes) (cast i32 0)))
+    (assert (= (len (.entries (masks/cache))) 0))
+    (masks/reset) (p/free (cast (ptr i8) copy)) (workers/stop) (o/release pool)))
+
+(defn unpack [(packed pack/Packed) (width i64) (height i64) (x i64) (y i64)] (-> u16)
+  (if (.tiled packed)
+      (let [columns (/ (+ width 63) 64)
+            rows (/ (+ height 63) 64)
+            tile (+ (* (/ y 64) columns) (/ x 64))
+            id (cast i64 (load (index (.data packed) tile)))]
+        (if (< id 2)
+            (cast u16 (* id 255))
+            (load (index (.data packed)
+                         (+ (* (+ (/ (+ (* columns rows) 1023) 1024)
+                                  (+ (* (/ (- id 2) 16) 64) (% y 64)))
+                               1024)
+                            (+ (* (% (- id 2) 16) 64) (% x 64)))))))
+      (load (index (.data packed) (+ (* y width) x)))))
+
+(deftest coverage-atlas-preserves-both-channels-and-partial-boundary-tiles
+         (for [mode 0 4]
+           (let [width 1031
+                 height 779
+                 source (cast (ptr u32) (alloc/malloc (* (* width height) 4)))]
+             (for [y 0 height]
+               (for [x 0 width]
+                 (set! (index source (+ (* y width) x))
+                       (cast u32
+                             (case mode 0
+                                   0 1
+                                   255 2
+                                   (if (and (> x 500) (< x 507))
+                                       (+ (% y 256) (* (% x 256) 256))
+                                       255)
+                                     (% (+ (* x 751) (* y 293)) 65536))))))
+             (let [packed (pack/pack source width height)]
+               (assert (= (.tiled packed) (< mode 3)))
+               (for [y 0 height]
+                 (for [x 0 width]
+                   (assert (= (unpack packed width height x y)
+                              (cast u16 (load (index source (+ (* y width) x))))))))
+               (p/free (cast (ptr i8) (.data packed))))
+             (p/free (cast (ptr i8) source)))))
+
+(deftest packed-scene-rendering-is-byte-identical-to-dense-coverage
+         (let [pool (o/new c"NSAutoreleasePool")
+               width 1280
+               height 840
+               bytes (cast u64 (* (* width height) 4))
+               copy (cast (ptr u8) (alloc/malloc (cast isize bytes)))]
+           (scene/init)
+           (set! (.headless (host/host)) true)
+           (set! (.width (scene/scene)) width)
+           (set! (.height (scene/scene)) height)
+           (set! (.scale (scene/scene)) 1.0)
+           (render/setup)
+           (for [theme 0 8]
+             (set! (.dense-reference (masks/cache)) false)
+             (masks/reset)
+             (set! (.valid (damage/cache)) false)
+             (bench/draw-case theme 1 13 4)
+             (render/render-frame true)
+             (memcpy copy
+                     (CGBitmapContextGetData (.output-context (scene/scene)))
+                     bytes)
+             (set! (.dense-reference (masks/cache)) true)
+             (masks/reset)
+             (set! (.valid (damage/cache)) false)
+             (set! (.geometry-dirty (scene/scene)) true)
+             (render/render-frame true)
+             (assert (= (memcmp copy
+                                (CGBitmapContextGetData (.output-context (scene/scene)))
+                                bytes)
+                        (cast i32 0))))
+           (set! (.dense-reference (masks/cache)) false)
+           (masks/reset)
+           (p/free (cast (ptr i8) copy))
+           (workers/stop)
+           (o/release pool)))
+
+(deftest atlas-decodes-high-byte-tile-addresses-and-bounds-texture-dimensions
+  (for [mode 0 2]
+    (let [width (if (= mode 0) 2055 2048) height (if (= mode 0) 1551 2048)
+          source (cast (ptr u32) (alloc/malloc (* (* width height) 4)))]
+      (for [y 0 height]
+        (for [x 0 width]
+          (set! (index source (+ (* y width) x))
+                (if (and (= (% x 64) 0) (= (% y 64) 0) (= (% (+ (/ x 64) (/ y 64)) 2) 0))
+                    (cast u32 32640) (cast u32 255)))))
+      (let [packed (pack/pack source width height)]
+        (assert (= (.tiled packed) (= mode 0)))
+        (assert (<= (.height packed) width))
+        (for [y 0 height]
+          (for [x 0 width]
+            (assert (= (unpack packed width height x y)
+                       (cast u16 (load (index source (+ (* y width) x))))))))
+        (p/free (cast (ptr i8) (.data packed))))
+      (p/free (cast (ptr i8) source)))))
+
+(deftest oversized-frame-keeps-every-reserved-mask-until-encoding
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (scene/init)
+           (set! (.headless (host/host)) true)
+           (set! (.width (scene/scene)) 2048)
+           (set! (.height (scene/scene)) 2048)
+           (set! (.scale (scene/scene)) 1.0)
+           (render/setup)
+           (set! (.dense-reference (masks/cache)) true)
+           (host/paper_begin 0xeeeeee)
+           (for [i 0 40]
+             (let [n (cast f64 i)]
+               (panel (rect n n (- 2048.0 (* n 2.0)) (- 2048.0 (* n 2.0)))
+                      20.0
+                      (+ n 2.0)
+                      (cream))))
+           (scene/sort-commands)
+           (store! (masks/composition-region) (masks/canvas-bounds))
+           (masks/prepare-masks)
+           (assert (= (len (.entries (masks/cache))) 40))
+           (assert (> (.bytes (masks/cache)) 268435456))
+           (for [i 0 40]
+             (let [entry (get (.entries (masks/cache)) i)]
+               (assert (!= (.texture entry) (o/nil)))))
+           (render/render-frame true)
+           (assert (<= (.bytes (masks/cache)) 268435456))
+           (set! (.dense-reference (masks/cache)) false)
+           (masks/reset)
+           (workers/stop)
+           (o/release pool)))
+
+(deftest packed-relief-masks-preserve-fractional-phase-and-glyph-counters
+         (let [pool (o/new c"NSAutoreleasePool")
+               width 1031
+               height 779
+               bytes (cast u64 (* (* width height) 4))
+               copy (cast (ptr u8) (alloc/malloc (cast isize bytes)))]
+           (scene/init)
+           (set! (.headless (host/host)) true)
+           (set! (.width (scene/scene)) width)
+           (set! (.height (scene/scene)) height)
+           (set! (.scale (scene/scene)) 1.5)
+           (render/setup)
+           (for [frame 0 3]
+             (set! (.dense-reference (masks/cache)) false)
+             (masks/reset)
+             (set! (.valid (damage/cache)) false)
+             (host/paper_begin 0xeeeeee)
+             (lettering/lettered-panel (rect (+ 5.25 (* 0.25 (cast f64 frame)))
+                                             10.5
+                                             640.0
+                                             490.0)
+                                       30.0
+                                       4.0
+                                       2.0
+                                       12.0
+                                       c"B8g"
+                                       126.0
+                                       3
+                                       38.0
+                                       true
+                                       8.0
+                                       2.0
+                                       (pressed-paper 0xe8cfa9)
+                                       (pressed-paper 0xe8cfa9)
+                                       (suede 0x69503b))
+             (render/render-frame true)
+             (let [(mut packed) 0]
+               (for [i 0 (len (.entries (masks/cache)))]
+                 (let [entry (get (.entries (masks/cache)) i)]
+                   (when (.tiled entry) (set! packed (+ (load packed) 1)))))
+               (assert (> (load packed) 0)))
+             (memcpy copy
+                     (CGBitmapContextGetData (.output-context (scene/scene)))
+                     bytes)
+             (set! (.dense-reference (masks/cache)) true)
+             (masks/reset)
+             (set! (.valid (damage/cache)) false)
+             (set! (.geometry-dirty (scene/scene)) true)
+             (render/render-frame true)
+             (assert (= (memcmp copy
+                                (CGBitmapContextGetData (.output-context (scene/scene)))
+                                bytes)
+                        (cast i32 0))))
+           (set! (.dense-reference (masks/cache)) false)
+           (masks/reset)
+           (p/free (cast (ptr i8) copy))
+           (workers/stop)
+           (o/release pool)))

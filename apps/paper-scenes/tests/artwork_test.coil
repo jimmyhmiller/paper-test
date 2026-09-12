@@ -1,0 +1,332 @@
+(module paper-scenes.artwork-test)
+(import "paper-scenes.ukiyo" :as ukiyo)
+(import "paper.scene" :as scene)
+(import "paper.ffi" :use *)
+(extern printf :cc c [(ptr i8) ...] (-> i32))
+(extern fflush :cc c [(ptr i8)] (-> i32))
+
+(deftest sun-creases-have-nested-support-and-continuous-grain
+  (scene/init) (scene/clear 0xffffff)
+  (let [(mut parent) (CGPathCreateCopy (ukiyo/sun-path))]
+    (for [level 0 8]
+      (let [contours (CGPathCreateMutable)]
+        (for [which 0 4]
+          (let [path (ukiyo/sun-crease-path which level)]
+            (assert (= path (ukiyo/sun-crease-path which level)))
+            (assert (not (CGPathIsEmpty path)))
+            (CGPathAddPath contours (cast (ptr CGAffine) 0) path)))
+        (assert-supported-stock (+ 25 level) (load parent) contours)
+        (CGPathRelease (load parent)) (set! parent contours)))
+    (CGPathRelease (load parent)))
+  (for [scale 1 4]
+    (scene/clear 0xffffff)
+    (set! (.sx (ukiyo/canvas)) (cast f64 scale))
+    (set! (.sy (ukiyo/canvas)) (* 0.8 (cast f64 scale)))
+    (ukiyo/sun-relief)
+    (assert (= (len (.sheets (scene/scene))) 32))
+    (for [i 0 32]
+      (let [sheet (get (.sheets (scene/scene)) i)
+            dx (- (.x (.pattern sheet)) (* 546.0 (.sx (ukiyo/canvas))))
+            dy (- (.y (.pattern sheet)) (* 10.0 (.sy (ukiyo/canvas))))]
+        (assert (< (+ (* dx dx) (* dy dy)) 0.000000001))
+        (assert (= (.color sheet) 0xad3e2d))
+        (assert (>= (.z sheet) 17.0)) (assert (<= (.z sheet) 17.85))
+        (when (> (% i 8) 0)
+          (let [previous (get (.sheets (scene/scene)) (- i 1))]
+            (assert (> (.z sheet) (.z previous))))))))
+  (scene/clear 0xffffff))
+
+(deftest cherry-twigs-join-parent-stock-and-bark-print-stays-on-wood
+  (scene/init) (scene/clear 0xffffff)
+  (set! (.sx (ukiyo/canvas)) 1.0) (set! (.sy (ukiyo/canvas)) 1.0)
+  (ukiyo/branch-stock)
+  (assert (= (len (.sheets (scene/scene))) 9))
+  (for [i 0 17]
+    (let [pose (ukiyo/twig-pose i) (mut attached) false
+          flowers [18 23 22 13 21 14 20 12 24 2 3 25 4 5 7 8 10]
+          flower (ukiyo/blossom-pose (get flowers i))
+          dx (- (.dx pose) (.x flower)) dy (- (.dy pose) (.y flower))]
+      (assert (< (+ (* dx dx) (* dy dy)) 0.000001))
+      (for [parent 0 9]
+        (let [sheet (get (.sheets (scene/scene)) parent)]
+          (when (CGPathContainsPoint (.path sheet)
+                   (cast (ptr CGAffine) 0) (CGPoint :x (.ax pose) :y (.ay pose)) true)
+            (set! attached true))))
+      (assert (load attached))))
+  (for [parent 0 2]
+    (let [sheet (get (.sheets (scene/scene)) parent) stock (.path sheet)]
+      (for [tone 0 2]
+        (let [marks (ukiyo/bark-path parent tone stock)]
+          (assert (= marks (ukiyo/bark-path parent tone stock)))
+          (assert (not (CGPathIsEmpty marks)))
+          (assert-supported-stock (+ 20 (+ (* parent 2) tone)) stock marks)))))
+  (scene/clear 0xffffff))
+
+(deftest navy-grain-is-cached-and-excludes-cloud-and-vermilion-stock
+  (scene/init)
+  (for [tone 0 2]
+    (let [grain (ukiyo/navy-grain tone)]
+      (assert (= grain (ukiyo/navy-grain tone)))
+      (assert (not (CGPathIsEmpty grain)))
+      (for [y 0 256]
+        (for [x 0 384]
+          (let [point (CGPoint :x (+ (* (cast f64 x) 2.0) 0.37)
+                                :y (+ (* (cast f64 y) 2.0) 0.37))]
+            (when (CGPathContainsPoint grain (cast (ptr CGAffine) 0) point true)
+              (assert (not (CGPathContainsPoint (ukiyo/cloud-path 5) (cast (ptr CGAffine) 0) point true)))
+              (assert (not (CGPathContainsPoint (ukiyo/branch-accent-path 0) (cast (ptr CGAffine) 0) point true))))))))))
+
+(deftest vermilion-branch-accent-keeps-the-lower-margin-navy
+  (scene/init)
+  (let [stock (ukiyo/branch-accent-path 0) fold (ukiyo/branch-accent-path 1)]
+    (assert (= stock (ukiyo/branch-accent-path 0)))
+    (assert (= fold (ukiyo/branch-accent-path 1)))
+    (assert (not (CGPathIsEmpty fold)))
+    (assert (CGPathContainsPoint stock (cast (ptr CGAffine) 0) (CGPoint :x 45.0 :y 180.0) true))
+    (for [y 230 400]
+      (for [x 0 95]
+        (assert (not (CGPathContainsPoint stock (cast (ptr CGAffine) 0)
+                       (CGPoint :x (cast f64 x) :y (cast f64 y)) true)))))))
+
+(defn stock-height-at [(x f64) (y f64)] (-> f64)
+  (let [(mut height) 0.0]
+    (for [i 0 (len (.sheets (scene/scene)))]
+      (let [stock (get (.sheets (scene/scene)) i)]
+        (when (and (> (.z stock) (load height))
+                   (CGPathContainsPoint (.path stock) (cast (ptr CGAffine) 0) (CGPoint :x x :y y) true))
+          (set! height (.z stock)))))
+    (load height)))
+
+(deftest shoji-leaves-overlap-with-recessed-paper-and-raised-rails
+  (scene/init) (scene/clear 0xffffff)
+  (set! (.sx (ukiyo/canvas)) 1.0) (set! (.sy (ukiyo/canvas)) 1.0)
+  (ukiyo/shoji)
+  (let [back (stock-height-at 766.0 80.0)
+        middle (stock-height-at 757.0 90.0)
+        front (stock-height-at 730.0 125.0)]
+    (assert (> back 25.0)) (assert (> middle back)) (assert (> front middle))
+    (assert (> (stock-height-at 724.5 125.0) front))
+    (assert (> (stock-height-at 730.0 146.5) front)))
+  (scene/clear 0xffffff))
+
+(deftest cherry-engraving-stays-on-all-authored-flower-faces
+  (scene/init)
+  (set! (.sx (ukiyo/canvas)) 1.0) (set! (.sy (ukiyo/canvas)) 1.0)
+  (let [(mut stock) (CGPathCreateMutable) ink (CGPathCreateMutable)]
+    (for [which 0 26]
+      (scene/clear 0xffffff)
+      (let [pose (ukiyo/blossom-pose which)
+            x (+ 40.0 (* 110.0 (cast f64 (% which 7))))
+            y (+ 40.0 (* 110.0 (cast f64 (/ which 7))))]
+        (ukiyo/blossom x y (.radius pose) (.rotation pose) (.aspect pose) 31.0)
+        (for [petal 0 5]
+          (let [sheet (get (.sheets (scene/scene)) (* petal 2))
+                joined (CGPathCreateCopyByUnioningPath (load stock) (.path sheet) true)]
+            (CGPathRelease (load stock)) (set! stock joined)))
+        (let [veins (ukiyo/petal-engraving x y (.radius pose) (.rotation pose) (.aspect pose))]
+          (assert (not (CGPathIsEmpty veins)))
+          (CGPathAddPath ink (cast (ptr CGAffine) 0) veins) (CGPathRelease veins))))
+    (assert-supported-stock 24 (load stock) ink)
+    (CGPathRelease ink) (CGPathRelease (load stock)))
+  (scene/clear 0xffffff))
+
+(deftest cherry-petal-folds-have-supporting-stock-at-authored-proportions
+  (scene/init)
+  (for [scale 1 4]
+    (set! (.sx (ukiyo/canvas)) (cast f64 scale))
+    (set! (.sy (ukiyo/canvas)) (cast f64 scale))
+    (for [which 0 26]
+      (scene/clear 0xffffff)
+      (let [pose (ukiyo/blossom-pose which)]
+        (ukiyo/blossom 40.0 40.0 (.radius pose) (.rotation pose) (.aspect pose) 31.0)
+        (assert (= (len (.sheets (scene/scene))) 10))
+        (for [petal 0 5]
+          (let [stock (get (.sheets (scene/scene)) (* petal 2))
+                fold (get (.sheets (scene/scene)) (+ (* petal 2) 1))
+                bounds (CGPathGetPathBoundingBox (.path fold))]
+            (assert (> (.z fold) (.z stock)))
+            (assert (not (CGPathIsEmpty (.path fold))))
+            (for [y 0 16]
+              (for [x 0 16]
+                (let [point (CGPoint :x (+ (.x bounds) (* (.w bounds) (/ (+ (cast f64 x) 0.37) 16.0)))
+                                      :y (+ (.y bounds) (* (.h bounds) (/ (+ (cast f64 y) 0.37) 16.0))))]
+                  (when (CGPathContainsPoint (.path fold) (cast (ptr CGAffine) 0) point true)
+                    (assert (CGPathContainsPoint (.path stock) (cast (ptr CGAffine) 0) point true)))))))))))
+  (scene/clear 0xffffff))
+
+(deftest header-stock-continues-under-cherry-occluders
+  (scene/init)
+  (let [path (ukiyo/cloud-path 3)
+        paper [(CGPoint :x 70.0 :y 75.0) (CGPoint :x 95.0 :y 60.0)
+               (CGPoint :x 130.0 :y 55.0) (CGPoint :x 180.0 :y 55.0)]]
+    (for [i 0 4]
+      (assert (CGPathContainsPoint path (cast (ptr CGAffine) 0) (get paper i) true)))
+    (assert (not (CGPathContainsPoint path (cast (ptr CGAffine) 0)
+                   (CGPoint :x 91.0 :y 43.0) true)))))
+
+(deftest surf-stock-keeps-the-central-navy-opening-and-caches-ink-tones
+  (scene/init)
+  (for [which 0 6]
+    (let [path (ukiyo/wave-asset which)]
+      (assert (not (CGPathIsEmpty path)))
+      (assert (= path (ukiyo/wave-asset which)))))
+  (let [paper (ukiyo/wave-asset 5)]
+    (assert (CGPathContainsPoint paper (cast (ptr CGAffine) 0) (CGPoint :x 120.0 :y 490.0) true))
+    (assert (CGPathContainsPoint paper (cast (ptr CGAffine) 0) (CGPoint :x 600.0 :y 490.0) true))
+    (for [x 280 380]
+      (for [y 480 512]
+        (assert (not (CGPathContainsPoint paper (cast (ptr CGAffine) 0)
+                      (CGPoint :x (cast f64 x) :y (cast f64 y)) true)))))))
+
+(deftest folded-wrapping-stock-preserves-printable-pane-interiors
+  (scene/init)
+  (for [face 0 8]
+    (let [path (ukiyo/fold-path face) pane (ukiyo/fold-pane face)
+          inner (ukiyo/pane-path pane 3)
+          edge (CGPathCreateCopyByStrokingPath inner (cast (ptr CGAffine) 0) 0.1 1 1 10.0)]
+      (assert (not (CGPathIsEmpty path)))
+      (assert (= path (ukiyo/fold-path face)))
+      (for [y 125 490]
+        (for [x 214 730]
+          (let [point (CGPoint :x (+ (cast f64 x) 0.5) :y (+ (cast f64 y) 0.5))]
+            (when (CGPathContainsPoint path (cast (ptr CGAffine) 0) point true)
+              (assert (CGPathContainsPoint (ukiyo/pane-path pane 1) (cast (ptr CGAffine) 0) point true))
+              ; Quartz classifies some shared boundary points inside both
+              ; Boolean results. Bound this to 0.05 reference units, as in the
+              ; pane containment test; runtime geometry has no expansion.
+              (assert (or (not (CGPathContainsPoint inner (cast (ptr CGAffine) 0) point true))
+                          (CGPathContainsPoint edge (cast (ptr CGAffine) 0) point true)))))))
+      (CGPathRelease edge)))
+  (for [pane 0 4]
+    (for [layer 0 2]
+      (let [path (ukiyo/pane-backing pane layer)]
+        (assert (not (CGPathIsEmpty path)))
+        (assert (= path (ukiyo/pane-backing pane layer)))
+        (for [y 60 245]
+          (for [x 35 370]
+            (let [point (CGPoint :x (cast f64 (* x 2)) :y (cast f64 (* y 2)))]
+              (when (CGPathContainsPoint (ukiyo/pane-path pane 0) (cast (ptr CGAffine) 0) point true)
+                (assert (CGPathContainsPoint path (cast (ptr CGAffine) 0) point true))))))))))
+
+(deftest foothill-stock-and-printed-grain-are-cached-with-cloud-occlusion
+  (scene/init)
+  (let [interiors [(CGPoint :x 470.0 :y 115.0) (CGPoint :x 500.0 :y 130.0)]]
+    (for [ridge 0 2]
+      (let [path (ukiyo/ridge-path ridge) grain (ukiyo/ridge-grain ridge)]
+        (assert (= path (ukiyo/ridge-path ridge)))
+        (assert (= grain (ukiyo/ridge-grain ridge)))
+        (assert (not (CGPathIsEmpty grain)))
+        (assert (CGPathContainsPoint path (cast (ptr CGAffine) 0) (get interiors ridge) true))
+        (for [y 100 175]
+          (for [x 350 710]
+            (let [point (CGPoint :x (+ (cast f64 x) 0.5) :y (+ (cast f64 y) 0.5))]
+              (when (CGPathContainsPoint (ukiyo/cloud-path 3) (cast (ptr CGAffine) 0) point true)
+                (assert (not (CGPathContainsPoint path (cast (ptr CGAffine) 0) point true)))))))))))
+
+(deftest traced-paper-keeps-continuous-printable-interiors
+  (scene/init)
+  (let [regions [(cgrect 96.0 167.0 101.0 230.0)
+                 (cgrect 241.0 190.0 262.0 235.0)
+                 (cgrect 577.0 216.0 98.0 52.0)
+                 (cgrect 568.0 339.0 119.0 49.0)]]
+    (for [pane 0 4]
+      (let [path (ukiyo/pane-path pane 3) area (get regions pane)]
+        (for [y 0 11]
+          (for [x 0 11]
+            (assert (CGPathContainsPoint path (cast (ptr CGAffine) 0)
+                       (CGPoint :x (+ (.x area) (* (.w area) (/ (cast f64 x) 10.0)))
+                                :y (+ (.y area) (* (.h area) (/ (cast f64 y) 10.0))))
+                       true))))))))
+
+(defn coverage [(path (ptr i8)) (scale f64) (edge-tolerance f64)] (-> (ptr i8))
+  (let [color-space (CGColorSpaceCreateDeviceRGB)
+        width (cast u64 (* 768.0 scale)) height (cast u64 (* 512.0 scale))
+        context (CGBitmapContextCreate (cast (ptr i8) 0) width height 8 (* width (cast u64 4)) color-space 0x4001)]
+    (CGColorSpaceRelease color-space)
+    (CGContextScaleCTM context scale scale)
+    (CGContextSetRGBFillColor context 1.0 0.0 0.0 1.0)
+    (let [shape (if (> edge-tolerance 0.0)
+                    (let [stroke (CGPathCreateCopyByStrokingPath path (cast (ptr CGAffine) 0)
+                                    (* edge-tolerance 2.0) 1 1 10.0)
+                          expanded (CGPathCreateCopyByUnioningPath path stroke true)]
+                      (CGPathRelease stroke) expanded)
+                    (CGPathCreateCopy path))]
+      (CGContextAddPath context shape) (CGContextEOFillPath context)
+      (CGPathRelease shape))
+    context))
+
+(defn assert-supported-stock [(label i64) (outer (ptr i8)) (inner (ptr i8))] (-> i64)
+  (for [resolution 1 4]
+    (let [a (coverage outer (cast f64 resolution) 0.05)
+          raw (coverage outer (cast f64 resolution) 0.0)
+          b (coverage inner (cast f64 resolution) 0.0)
+          outer-pixels (CGBitmapContextGetData a) inner-pixels (CGBitmapContextGetData b)
+          raw-pixels (CGBitmapContextGetData raw)
+          (mut maximum) 0 (mut raw-maximum) 0 (mut location) 0]
+      (for [i 0 (* (* 768 512) (* resolution resolution))]
+        (let [difference (- (cast i64 (load (index inner-pixels (* i 4))))
+                            (cast i64 (load (index outer-pixels (* i 4)))))]
+          (when (> difference (load maximum))
+            (set! maximum difference) (set! location i)))
+        (let [difference (- (cast i64 (load (index inner-pixels (* i 4))))
+                            (cast i64 (load (index raw-pixels (* i 4)))))]
+          (when (> difference (load raw-maximum)) (set! raw-maximum difference))))
+      (printf c"stock %lld scale %lld raw excess %lld expanded excess %lld at pixel %lld,%lld\n"
+              label resolution (load raw-maximum) (load maximum)
+              (% (load location) (* 768 resolution)) (/ (load location) (* 768 resolution)))
+      (fflush (cast (ptr i8) 0))
+      (assert (or (<= (load raw-maximum) 1) (<= (load maximum) 1)))
+      (CGContextRelease a) (CGContextRelease raw) (CGContextRelease b)))
+  0)
+
+(deftest authored-navy-wraps-and-creases-retain-support-at-three-scales
+  (scene/init)
+  (for [pane 0 4]
+    (assert-supported-stock (* pane 2) (ukiyo/pane-backing pane 0) (ukiyo/pane-backing pane 1))
+    (assert-supported-stock (+ (* pane 2) 1) (ukiyo/pane-backing pane 1) (ukiyo/pane-path pane 0)))
+  (for [face 0 6]
+    (let [path (ukiyo/navy-crease-path face)]
+      (assert (= path (ukiyo/navy-crease-path face)))
+      (assert (not (CGPathIsEmpty path)))
+      (assert-supported-stock (+ face 8) (ukiyo/pane-backing (ukiyo/navy-crease-pane face) 0) path))))
+
+(deftest cloud-faces-stay-on-their-stock-at-three-scales
+  (scene/init)
+  (for [layer 0 2]
+    (let [outer (ukiyo/cloud-path (if (= layer 0) 0 3))
+          inner (ukiyo/cloud-path (+ layer 6))]
+      (assert (= inner (ukiyo/cloud-path (+ layer 6))))
+      (assert (not (CGPathIsEmpty inner)))
+      (for [resolution 1 4]
+        (let [a (coverage outer (cast f64 resolution) 0.05)
+              b (coverage inner (cast f64 resolution) 0.0)
+              outer-pixels (CGBitmapContextGetData a) inner-pixels (CGBitmapContextGetData b)]
+          (for [i 0 (* (* 768 512) (* resolution resolution))]
+            (assert (<= (- (cast i64 (load (index inner-pixels (* i 4))))
+                           (cast i64 (load (index outer-pixels (* i 4))))) 1)))
+          (CGContextRelease a) (CGContextRelease b))))))
+
+(deftest canonical-paper-layers-cover-inner-stock-with-subpixel-precision
+  (scene/init)
+  (for [pane 0 4]
+    (for [layer 0 3]
+      (let [outer (ukiyo/pane-path pane layer) inner (ukiyo/pane-path pane (+ layer 1))]
+        (for [resolution 1 4]
+          ; Quartz Boolean operations can change Bezier decomposition and its
+          ; antialias coverage. Bound containment error to 0.05 reference units,
+          ; tighter than the author's 0.28-unit contour simplification tolerance.
+          ; This expansion is a test measurement only; runtime paths are unchanged.
+          (let [scale (cast f64 resolution) a (coverage outer scale 0.05) b (coverage inner scale 0.0)
+                outer-pixels (CGBitmapContextGetData a) inner-pixels (CGBitmapContextGetData b)
+                (mut maximum) 0]
+            (for [i 0 (* (* 768 512) (* resolution resolution))]
+              (let [difference (- (cast i64 (load (index inner-pixels (* i 4))))
+                                  (cast i64 (load (index outer-pixels (* i 4)))))]
+                (when (> difference (load maximum)) (set! maximum difference))))
+            (printf c"pane %lld layer %lld scale %lld excess beyond 0.05-unit boundary tolerance %lld\n"
+                    pane layer resolution (load maximum))
+            (fflush (cast (ptr i8) 0))
+            (assert (<= (load maximum) 1))
+            (CGContextRelease a) (CGContextRelease b)))
+        (assert (= outer (ukiyo/pane-path pane layer)))
+        0))))

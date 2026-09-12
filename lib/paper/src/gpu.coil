@@ -40,6 +40,11 @@
    (output (ptr i8))
    (prepared (ptr i8))
    (presentation-time f64)
+   ; Zero preserves absolute-time/immediate presentation. A positive minimum
+   ; display duration takes precedence; callers must choose one timing policy.
+   (presentation-duration f64)
+   ; Borrowed only for the synchronous Metal display-link callback.
+   (scheduled-drawable (ptr i8))
    (command (ptr i8))
    (last-command (ptr i8))
    (last-drawable (ptr i8))
@@ -308,6 +313,46 @@
   (assert (= (msg i64 command (sel c"status") []) 4))
   (* 1000.0 (- (msg f64 command (sel c"GPUEndTime") []) (msg f64 command (sel c"GPUStartTime") []))))
 
+;;; Preparation reads only the current pixel and adjacent height samples. Keep
+;;; all unprepared updates, including several rasterizations before a render;
+;;; render adds the dependency halo and still rebuilds the shadow hierarchy.
+(defn include-preparation [(r CGRect)] (-> i64)
+  (when (and (> (.w r) 0.0) (> (.h r) 0.0))
+    (let [g (gpu)
+          a (.pending g)]
+      (if (<= (.w a) 0.0)
+          (set! (.pending g) r)
+          (let [x (if (< (.x a) (.x r)) (.x a) (.x r))
+                y (if (< (.y a) (.y r)) (.y a) (.y r))
+                right
+                  (if (> (+ (.x a) (.w a)) (+ (.x r) (.w r)))
+                      (+ (.x a) (.w a))
+                      (+ (.x r) (.w r)))
+                bottom
+                  (if (> (+ (.y a) (.h a)) (+ (.y r) (.h r)))
+                      (+ (.y a) (.h a))
+                      (+ (.y r) (.h r)))]
+            (set! (.pending g) (cgrect x y (- right x) (- bottom y)))))))
+  0)
+
+;;; Bound the shader's existing ray reach over the complete viewport. Distance
+;;; from a fixed light is maximal at a rectangle corner. Keep the shader's
+;;; 64-unit height ceiling and 180-unit clamp; this changes dispatch bounds, not
+;;; sample positions, penumbra, or visibility. One extra point covers its 0.6
+;;; sample offset and floating-point rounding, plus two backing pixels for edges.
+(defn shadow-padding [] (-> f64)
+  (let [s (scene) scale (.scale s)
+        w (/ (cast f64 (.width s)) scale)
+        h (/ (cast f64 (.height s)) scale)
+        lx (.light-x s) ly (.light-y s)
+        dx (if (> (fabs lx) (fabs (- w lx))) (fabs lx) (fabs (- w lx)))
+        dy (if (> (fabs ly) (fabs (- h ly))) (fabs ly) (fabs (- h ly)))
+        reach (if (and (> (.elevation s) 0.0) (>= (.depth s) 0.0))
+                  (clamp (/ (* (* 64.0 (.depth s)) (sqrt (+ (+ (* dx dx) (* dy dy)) 0.001)))
+                            (.elevation s)) 1.0 180.0)
+                  180.0)]
+    (+ (* (+ reach 1.0) scale) 2.0)))
+
 (defn render [(bounds CGRect) (all bool) (readback bool)] (-> i64)
   (let [g (gpu)
         s (scene)
@@ -321,7 +366,7 @@
                       :width (cast u64 (.width s))
                       :height (cast u64 (.height s))
                       :depth 1))
-              (pixel-region bounds (+ (* 181.0 (.scale s)) 2.0)))]
+              (pixel-region bounds (shadow-padding)))]
     (when (> (.w (.pending g)) 0.0)
       (encode command (.prepare g) (pixel-region (.pending g) 2.0))
       (encode-maximum command)
@@ -427,9 +472,13 @@
 ;;; The image remains on the GPU through presentation. A fullscreen triangle
 ;;; samples the native-resolution result directly into the drawable; there is
 ;;; no CPU readback or CGImage allocation in the interactive path.
-(defn present [(layer (ptr i8))] (-> bool)
+;;; The optional Objective-C block is borrowed for this call; the drawable
+;;; copies it for asynchronous delivery. Captured state must survive delivery.
+(defn present-with-handler [(layer (ptr i8)) (handler (ptr i8))] (-> bool)
   (let [g (gpu)
-        drawable (msg (ptr i8) layer (sel c"nextDrawable") [])]
+        drawable (if (!= (.scheduled-drawable g) (nil))
+                     (.scheduled-drawable g)
+                     (msg (ptr i8) layer (sel c"nextDrawable") []))]
     (if (= drawable (nil))
         false
         (let [command (command-buffer)
@@ -446,8 +495,18 @@
             (msg i64 encoder (sel c"endEncoding") []))
           (release (.last-drawable g))
           (set! (.last-drawable g) (retain drawable))
-          (if (> (.presentation-time g) 0.0)
+          (when (!= handler (nil))
+            (msg i64 drawable (sel c"addPresentedHandler:") [(ptr i8)] handler))
+          (cond
+            (!= (.scheduled-drawable g) (nil))
+              (msg i64 command (sel c"presentDrawable:") [(ptr i8)] drawable)
+            (> (.presentation-duration g) 0.0)
+              (msg i64 command (sel c"presentDrawable:afterMinimumDuration:") [(ptr i8) f64] drawable (.presentation-duration g))
+            (> (.presentation-time g) 0.0)
               (msg i64 command (sel c"presentDrawable:atTime:") [(ptr i8) f64] drawable (.presentation-time g))
-              (msg i64 command (sel c"presentDrawable:") [(ptr i8)] drawable))
+            true (msg i64 command (sel c"presentDrawable:") [(ptr i8)] drawable))
           (submit)
           true))))
+
+(defn present [(layer (ptr i8))] (-> bool)
+  (present-with-handler layer (nil)))

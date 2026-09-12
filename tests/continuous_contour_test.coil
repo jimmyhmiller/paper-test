@@ -1,0 +1,52 @@
+(module paper.continuous-contour-test)
+(import "paper.scene" :as scene)
+(import "paper.render" :as render)
+(import "paper.platform" :as host)
+(import "paper.damage" :as damage)
+(import "paper.gpu" :as gpu)
+(import "paper.workers" :as workers)
+(import "paper.surface" :use *)
+(import "paper.material" :use *)
+(import "paper.geometry" :use [rect])
+(import "paper.ffi" :use [CGBitmapContextGetData cgrect])
+(import "paper.objc" :as o)
+
+(defn fixture [(continuous bool)] (-> i64)
+  (scene/clear 0xffffff)
+  (panel (rect 2.0 2.0 60.0 60.0) 0.0 10.0 (cream))
+  (begin-sheet) (rounded-path (rect 20.0 10.0 4.0 40.0) 0.0)
+  (if continuous (finish-contour 11.0 (cream)) (finish-sheet 11.0 (cream)))
+  0)
+
+(defn edge-height [] (-> f64)
+  (render/height-at (CGBitmapContextGetData (.height-context (scene/scene))) 20 30 64 64))
+
+(deftest continuous-contour-mode-invalidates-damage-and-preserves-rendered-height
+  (let [pool (o/new c"NSAutoreleasePool")]
+    (scene/init)
+    (set! (.headless (host/host)) true)
+    (set! (.width (scene/scene)) 64) (set! (.height (scene/scene)) 64)
+    (set! (.scale (scene/scene)) 1.0)
+    (render/setup)
+    (assert (.available (gpu/gpu)))
+    (fixture false) (render/rasterize)
+    (let [cut (edge-height)]
+      ; Same path, pigment, height, and order; only the edge treatment changes.
+      (fixture true)
+      (let [region (damage/measure)] (assert (> (.w region) 0.0)))
+      (render/rasterize)
+      (let [continuous (edge-height)]
+        (assert (> continuous (+ cut 0.2)))
+        (assert (> continuous 10.8))
+        (fixture false) (render/rasterize)
+        (let [difference (- (edge-height) cut)]
+          (assert (< (* difference difference) 0.000000001)))))
+    ; Exercise the CPU rasterizer directly, independently of GPU availability.
+    (fixture false) (scene/sort-commands)
+    (render/rasterize-region (cgrect 0.0 0.0 64.0 64.0))
+    (let [cut (edge-height)]
+      (fixture true) (scene/sort-commands)
+      (render/rasterize-region (cgrect 0.0 0.0 64.0 64.0))
+      (assert (> (edge-height) (+ cut 0.2)))
+      (assert (> (edge-height) 10.8)))
+    (scene/clear 0xffffff) (workers/stop) (o/release pool)))

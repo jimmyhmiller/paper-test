@@ -70,6 +70,13 @@
   (host/paper_material_sheet z material)
   0)
 
+;;; Finish an interior height contour of a continuous surface. Unlike a cut
+;;; sheet, its boundary has no cut-edge bevel. Use nested supported contours;
+;;; the underlying sheet still supplies the outer silhouette and edge.
+(defn finish-contour [(z f64) (material Material)] (-> i64)
+  (host/paper_material_contour z material)
+  0)
+
 (defn panel [(r Rect) (radius f64) (z f64) (material Material)] (-> i64)
   (begin-sheet)
   (rounded-path r radius)

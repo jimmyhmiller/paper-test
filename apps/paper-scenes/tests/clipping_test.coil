@@ -1,0 +1,131 @@
+(module paper-scenes.clipping-test)
+(import "paper-scenes.art-clipping" :as clipping)
+(import "paper-scenes.artwork-test" :use [coverage])
+(import "paper-scenes.ukiyo" :as ukiyo)
+(import "paper-scenes.navy-paths" :as navy)
+(import "paper-scenes.folds" :as folds)
+(import "paper.surface" :use [begin-sheet])
+(import "paper.scene" :as scene)
+(import "paper.ffi" :use *)
+(extern printf :cc c [(ptr i8) ...] (-> i32))
+(extern fflush :cc c [(ptr i8)] (-> i32))
+
+(defn compare-clipping [(source (ptr i8)) (occluder (ptr i8))] (-> i64)
+  (let [reference (CGPathCreateCopyBySubtractingPath source occluder true)
+        actual (clipping/subtract-contours source occluder)
+        intersection-reference (CGPathCreateCopyByIntersectingPath source occluder true)
+        intersection-actual (clipping/intersect-contours source occluder)]
+    (printf c"whole-path equality %lld\n" (if (CGPathEqualToPath actual reference) 1 0))
+    (for [scale 1 4]
+      (assert-same-fill actual reference scale)
+      (assert-same-fill intersection-actual intersection-reference scale))
+    (CGPathRelease intersection-actual) (CGPathRelease intersection-reference)
+    (CGPathRelease actual) (CGPathRelease reference))
+  0)
+
+(defn assert-same-fill [(actual (ptr i8)) (reference (ptr i8)) (scale i64)] (-> i64)
+  (let [a (coverage actual (cast f64 scale) 0.0)
+        b (coverage reference (cast f64 scale) 0.0)
+        pixels-a (CGBitmapContextGetData a) pixels-b (CGBitmapContextGetData b)
+        (mut maximum) 0]
+    (for [i 0 (* (* 768 512) (* scale scale))]
+      (let [difference (- (cast i64 (load (index pixels-a (* i 4))))
+                          (cast i64 (load (index pixels-b (* i 4)))))
+            magnitude (if (< difference 0) (- 0 difference) difference)]
+        (when (> magnitude (load maximum)) (set! maximum magnitude))))
+    (printf c"scale %lld raw coverage difference %lld\n" scale (load maximum))
+    (fflush (cast (ptr i8) 0))
+    (assert (= (load maximum) 0))
+    (CGContextRelease a) (CGContextRelease b))
+  0)
+
+(deftest cached-petal-engraving-matches-fresh-paths-after-resize-and-motion
+  (scene/init)
+  (for [viewport 0 2]
+    (set! (.sx (ukiyo/canvas)) (if (= viewport 0) 1.0 1.6))
+    (set! (.sy (ukiyo/canvas)) (if (= viewport 0) 1.0 1.3))
+    (let [actual (CGPathCreateMutable) reference (CGPathCreateMutable)]
+      (for [which 0 26]
+        (let [pose (ukiyo/blossom-pose which)
+              x (+ 30.013 (* 65.0 (cast f64 (% which 7))))
+              y (+ 30.027 (* 65.0 (cast f64 (/ which 7))))
+              cached (ukiyo/blossom-engraving which)
+              fresh (ukiyo/petal-engraving x y (.radius pose) (.rotation pose) (.aspect pose))
+              transform (CGAffine :a (.sx (ukiyo/canvas)) :b 0.0 :c 0.0 :d (.sy (ukiyo/canvas))
+                                   :tx (* x (.sx (ukiyo/canvas))) :ty (* y (.sy (ukiyo/canvas))))]
+          (assert (= cached (ukiyo/blossom-engraving which)))
+          (let [placed (CGPathCreateCopyByTransformingPath cached transform)]
+            (CGPathAddPath actual (cast (ptr CGAffine) 0) placed)
+            (CGPathRelease placed))
+          (CGPathAddPath reference (cast (ptr CGAffine) 0) fresh)
+          (CGPathRelease fresh)))
+      (for [scale 1 4] (assert-same-fill actual reference scale))
+      (CGPathRelease actual) (CGPathRelease reference)))
+  (scene/clear 0xffffff))
+
+(deftest contour-clipping-handles-empty-artwork-and-empty-occluders
+  (let [empty (CGPathCreateMutable) source (CGPathCreateMutable)]
+    (CGPathAddEllipseInRect source (cast (ptr CGAffine) 0) (cgrect 10.0 10.0 30.0 30.0))
+    (let [kept (clipping/subtract-contours source empty)
+          absent (clipping/subtract-contours empty source)
+          empty-boundary (clipping/intersect-contours source empty)
+          empty-source (clipping/intersect-contours empty source)]
+      (assert (CGPathEqualToPath kept source))
+      (assert (CGPathIsEmpty absent))
+      (assert (CGPathIsEmpty empty-boundary)) (assert (CGPathIsEmpty empty-source))
+      (CGPathRelease empty-boundary) (CGPathRelease empty-source)
+      (CGPathRelease kept) (CGPathRelease absent))
+    (CGPathRelease source) (CGPathRelease empty)))
+
+(deftest contour-clipping-preserves-holes-overlaps-and-quadratic-curves
+  (let [source (CGPathCreateMutable) occluder (CGPathCreateMutable) transform (cast (ptr CGAffine) 0)]
+    (CGPathAddEllipseInRect source transform (cgrect 30.0 30.0 100.0 100.0))
+    (CGPathAddEllipseInRect source transform (cgrect 55.0 55.0 50.0 50.0))
+    (CGPathAddEllipseInRect source transform (cgrect 105.0 45.0 50.0 65.0))
+    (CGPathMoveToPoint source transform 250.0 40.0)
+    (clipping/CGPathAddQuadCurveToPoint source transform 325.0 0.0 360.0 100.0)
+    (CGPathAddLineToPoint source transform 250.0 100.0)
+    (CGPathCloseSubpath source)
+    (CGPathAddEllipseInRect occluder transform (cgrect 80.0 20.0 240.0 100.0))
+    (compare-clipping source occluder)
+    (CGPathAddEllipseInRect source transform (cgrect 400.0 30.0 20.0 20.0))
+    (compare-clipping source occluder)
+    (CGPathRelease source) (CGPathRelease occluder)))
+
+(deftest detailed-navy-contour-clipping-matches-whole-path-subtraction
+  (scene/init)
+  (let [cloud (ukiyo/cloud-path 5) accent (ukiyo/branch-accent-path 0)]
+    (for [tone 0 2]
+      (begin-sheet) (navy/grain-path tone 1.0 1.0)
+      (let [source (CGPathCreateCopy (.path (scene/scene)))
+            clear-sky (CGPathCreateCopyBySubtractingPath source cloud true)
+            reference (CGPathCreateCopyBySubtractingPath clear-sky accent true)
+            actual (ukiyo/navy-grain tone)]
+        (for [scale 1 4] (assert-same-fill actual reference scale))
+        (CGPathRelease reference) (CGPathRelease clear-sky) (CGPathRelease source)))))
+
+(deftest ridge-grain-bounded-intersection-matches-original-operand-order
+  (scene/init)
+  (for [ridge 0 2]
+    (let [reference (CGPathCreateCopyByIntersectingPath (ukiyo/ridge-path ridge) (ukiyo/mountain-path 2) true)
+          actual (ukiyo/ridge-grain ridge)]
+      (for [scale 1 4] (assert-same-fill actual reference scale))
+      (CGPathRelease reference))))
+
+(deftest red-folds-share-immutable-borders-without-changing-coverage
+  (scene/init)
+  (for [pane 1 4]
+    (let [reference (CGPathCreateCopyBySubtractingPath (ukiyo/pane-path pane 1) (ukiyo/pane-path pane 2) true)
+          cached (ukiyo/fold-border pane)]
+      (assert (= cached (ukiyo/fold-border pane)))
+      (assert (CGPathEqualToPath cached reference))
+      (CGPathRelease reference)))
+  (for [face 0 8]
+    (let [pane (ukiyo/fold-pane face)
+          border (CGPathCreateCopyBySubtractingPath (ukiyo/pane-path pane 1) (ukiyo/pane-path pane 2) true)]
+      (begin-sheet) (folds/outline face)
+      (let [reference (CGPathCreateCopyByIntersectingPath (.path (scene/scene)) border true)
+            actual (ukiyo/fold-path face)]
+        (for [scale 1 4] (assert-same-fill actual reference scale))
+        (CGPathRelease reference))
+      (CGPathRelease border))))

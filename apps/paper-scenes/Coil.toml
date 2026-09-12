@@ -1,0 +1,15 @@
+[package]
+name = "paper-scenes"
+entry = "src/main.coil"
+source-roots = ["src", "tools", "tests"]
+
+[dependencies]
+paper = { path = "../../lib/paper" }
+
+[link]
+frameworks = ["AppKit", "QuartzCore", "CoreGraphics", "CoreText", "ImageIO", "CoreFoundation", "AVFoundation", "Metal"]
+libs = ["objc"]
+
+[test]
+roots = ["tests"]
+suffixes = ["_test.coil"]

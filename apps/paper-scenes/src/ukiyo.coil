@@ -1,0 +1,736 @@
+(module paper-scenes.ukiyo)
+(import "coil.primitive" :as p)
+(import "paper.surface" :use *)
+(import "paper.material" :use *)
+(import "paper.geometry" :use [Rect rect])
+(import "paper.platform" :as host)
+(import "paper.scene" :as scene)
+(import "paper-scenes.wave-paths" :as waves)
+(import "paper-scenes.mountain-paths" :as fuji)
+(import "paper-scenes.pane-paths" :as panes)
+(import "paper-scenes.cloud-paths" :as clouds)
+(import "paper-scenes.navy-paths" :as navy)
+(import "paper-scenes.bark-paths" :as bark)
+(import "paper-scenes.art-clipping" :as clipping)
+(import "paper-scenes.folds" :as folds)
+(import "paper.ffi" :use [sin cos sqrt CGPathCreateMutable CGPathAddEllipseInRect CGPathRelease CGAffine cgrect
+                           CGPathMoveToPoint CGPathAddLineToPoint CGPathCloseSubpath CGPathAddCurveToPoint
+                           CGPathCreateCopyByStrokingPath
+                           CGPathCreateCopyByTransformingPath CGPathAddPath CGPathCreateCopyByUnioningPath
+                           CGPathCreateCopy CGPathCreateCopyByIntersectingPath CGPathCreateCopyBySubtractingPath])
+(import "paper.ffi" :use [CGPathGetPathBoundingBox])
+
+;;; Reference-sized design coordinates. Geometry and typesetting share the same
+;;; transform, keeping the mountain, panels, branches and surf in composition.
+(defstruct Canvas [(sx f64) (sy f64)])
+(defn canvas [] (-> (ptr Canvas)) (p/alloc-static Canvas))
+(defn move [(x f64) (y f64)] (-> i64)
+  (move-to (* x (.sx (canvas))) (* y (.sy (canvas)))))
+(defn line [(x f64) (y f64)] (-> i64)
+  (line-to (* x (.sx (canvas))) (* y (.sy (canvas)))))
+(defn curve [(a f64) (b f64) (c f64) (d f64) (e f64) (f f64)] (-> i64)
+  (curve-to (* a (.sx (canvas))) (* b (.sy (canvas))) (* c (.sx (canvas)))
+            (* d (.sy (canvas))) (* e (.sx (canvas))) (* f (.sy (canvas)))))
+(defn paper [(color u32) (seed f64)] (-> Material)
+  (let [(mut result) (texture-relief (texture-scale (watercolor color) 0.45) 0.14)]
+    (set! (.seed result) seed)
+    (load result)))
+(defn finish [(z f64) (color u32) (seed f64)] (-> i64) (finish-sheet z (paper color seed)))
+(defn box [(x f64) (y f64) (w f64) (h f64) (r f64) (z f64) (color u32)] (-> i64)
+  (panel (rect (* x (.sx (canvas))) (* y (.sy (canvas))) (* w (.sx (canvas))) (* h (.sy (canvas))))
+         (* r (.sx (canvas))) z (paper color 0.37)))
+(defn disc [(x f64) (y f64) (rx f64) (ry f64) (z f64) (color u32)] (-> i64)
+  (begin-sheet)
+  (oval-path (rect (* (- x rx) (.sx (canvas))) (* (- y ry) (.sy (canvas)))
+                   (* (* rx 2.0) (.sx (canvas))) (* (* ry 2.0) (.sy (canvas)))))
+  (finish z color 0.62))
+(defn text [(x f64) (y f64) (size f64) (color u32) (font i64) (value (ptr i8))] (-> i64)
+  (host/paper_ink (* x (.sx (canvas))) (* y (.sy (canvas))) (* size (.sy (canvas))) color font value))
+
+;;; Cubic tapered strokes are closed paper shapes. Used for wood grain,
+;;; ridgelines, curling surf filaments and cherry stamens.
+(defn stroke [(ax f64) (ay f64) (bx f64) (by f64) (cx f64) (cy f64)
+              (dx f64) (dy f64) (width f64) (z f64) (color u32)] (-> i64)
+  (begin-sheet)
+  (for [side 0 2]
+    (for [i 0 25]
+      (let [t (/ (cast f64 (if (= side 0) i (- 24 i))) 24.0) u (- 1.0 t)
+            x (+ (+ (* (* (* u u) u) ax) (* (* 3.0 (* u u)) (* t bx)))
+                 (+ (* (* 3.0 u) (* (* t t) cx)) (* (* (* t t) t) dx)))
+            y (+ (+ (* (* (* u u) u) ay) (* (* 3.0 (* u u)) (* t by)))
+                 (+ (* (* 3.0 u) (* (* t t) cy)) (* (* (* t t) t) dy)))
+            vx (+ (+ (* (* 3.0 (* u u)) (- bx ax)) (* (* 6.0 (* u t)) (- cx bx)))
+                  (* (* 3.0 (* t t)) (- dx cx)))
+            vy (+ (+ (* (* 3.0 (* u u)) (- by ay)) (* (* 6.0 (* u t)) (- cy by)))
+                  (* (* 3.0 (* t t)) (- dy cy)))
+            length (+ 0.0001 (sqrt (+ (* vx vx) (* vy vy))))
+            radius (* (* width (+ 0.06 (* 0.94 u))) (if (= side 0) 0.5 -0.5))
+            px (- x (* (/ vy length) radius)) py (+ y (* (/ vx length) radius))]
+        (if (and (= side 0) (= i 0)) (move px py) (line px py)))))
+  (close-path) (finish z color 0.48))
+
+(defn sun-bounds [(w f64) (h f64)] (-> Rect)
+  (rect (* (/ 546.0 768.0) w) (* (/ 10.0 512.0) h) (* (/ 72.0 768.0) w) (* (/ 72.0 512.0) h)))
+
+(defn print-path [(source (ptr i8)) (color u32)] (-> i64)
+  (let [path (CGPathCreateCopyByTransformingPath source
+               (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
+    (host/paper_path_ink path color) (CGPathRelease path))
+  0)
+
+(defstruct MountainArt [(paths (array (ptr i8) 3))])
+(defn mountain-art [] (-> (ptr MountainArt)) (p/alloc-static MountainArt))
+(defn mountain-path [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (mountain-art) paths) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (begin-sheet)
+      (case which 0 (fuji/ink-path 1.0 1.0) 1 (fuji/ridge-path 1.0 1.0) (fuji/grain-path 1.0 1.0))
+      (store! slot (CGPathCreateCopy (.path (scene/scene)))))
+    (load slot)))
+
+(defn sun-path [] (-> (ptr i8))
+  (let [slot (p/alloc-static (ptr i8))]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (let [circle (CGPathCreateMutable)]
+        (CGPathAddEllipseInRect circle (cast (ptr CGAffine) 0) (cgrect 546.0 10.0 72.0 72.0))
+        (store! slot (CGPathCreateCopyBySubtractingPath circle (cloud-path 2) true))
+        (CGPathRelease circle) 0))
+    (load slot)))
+
+(defstruct SunCreases [(paths (array (ptr i8) 32))])
+(defn sun-creases [] (-> (ptr SunCreases)) (p/alloc-static SunCreases))
+(defn sun-crease-pose [(which i64)] (-> CubicStroke)
+  (let [creases [
+    (cubic-stroke 556.0 25.0 563.0 28.0 559.0 35.0 568.0 39.0 3.6)
+    (cubic-stroke 580.0 17.0 585.0 21.0 591.0 19.0 597.0 27.0 2.8)
+    (cubic-stroke 566.0 49.0 570.0 54.0 575.0 49.0 582.0 55.0 3.0)
+    (cubic-stroke 587.0 71.0 594.0 64.0 601.0 68.0 607.0 61.0 3.2)]]
+    (get creases which)))
+
+;;; Nested tapered contours make a shallow physical ridge, not painted lighting.
+;;; Both tips meet the original sheet and every contour keeps its grain origin.
+(defn sun-crease-path [(which i64) (level i64)] (-> (ptr i8))
+  (let [slot (index (field (sun-creases) paths) (+ (* which 8) level))]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (let [pose (sun-crease-pose which) stock (sun-path)
+            width (* (.width pose) (- 1.0 (/ (cast f64 level) 8.0)))]
+        (begin-sheet)
+        (for [side 0 2]
+          (for [step 0 33]
+            (let [t (/ (cast f64 (if (= side 0) step (- 32 step))) 32.0) u (- 1.0 t)
+                  x (+ (+ (* (* u u) (* u (.ax pose))) (* 3.0 (* (* u u) (* t (.bx pose)))))
+                       (+ (* 3.0 (* u (* (* t t) (.cx pose)))) (* (* t t) (* t (.dx pose)))))
+                  y (+ (+ (* (* u u) (* u (.ay pose))) (* 3.0 (* (* u u) (* t (.by pose)))))
+                       (+ (* 3.0 (* u (* (* t t) (.cy pose)))) (* (* t t) (* t (.dy pose)))))
+                  vx (+ (+ (* 3.0 (* (* u u) (- (.bx pose) (.ax pose))))
+                            (* 6.0 (* (* u t) (- (.cx pose) (.bx pose)))))
+                         (* 3.0 (* (* t t) (- (.dx pose) (.cx pose)))))
+                  vy (+ (+ (* 3.0 (* (* u u) (- (.by pose) (.ay pose))))
+                            (* 6.0 (* (* u t) (- (.cy pose) (.by pose)))))
+                         (* 3.0 (* (* t t) (- (.dy pose) (.cy pose)))))
+                  length (sqrt (+ (* vx vx) (* vy vy)))
+                  radius (* (* width 0.5) (* (sin (* t 3.141592653589793)) (if (= side 0) 1.0 -1.0)))
+                  px (- x (* (/ vy length) radius)) py (+ y (* (/ vx length) radius))]
+              (if (and (= side 0) (= step 0)) (move-to px py) (line-to px py)))))
+        (close-path)
+        (store! slot (clipping/intersect-contours (.path (scene/scene)) stock))))
+    (load slot)))
+
+(defn sun-crease-height [(level i64)] (-> f64)
+  (let [t (/ (cast f64 level) 7.0)]
+    (+ 17.0 (* 0.85 (- (* 2.0 t) (* t t))))))
+
+(defn sun-relief [] (-> i64)
+  (for [which 0 4]
+    (for [level 0 8]
+      (let [path (CGPathCreateCopyByTransformingPath (sun-crease-path which level)
+                    (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))
+            bounds (CGPathGetPathBoundingBox path)]
+        (begin-sheet) (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) path)
+        (finish-contour (sun-crease-height level)
+          (texture-offset (paper 0xad3e2d 0.62)
+            (- (* 546.0 (.sx (canvas))) (.x bounds))
+            (- (* 10.0 (.sy (canvas))) (.y bounds))))
+        (CGPathRelease path))))
+  0)
+
+;;; Reference-derived cut stock. Cache canonical outlines separately from ink.
+(defstruct RidgeArt [(paths (array (ptr i8) 2)) (grain (array (ptr i8) 2))])
+(defn ridge-art [] (-> (ptr RidgeArt)) (p/alloc-static RidgeArt))
+(defn ridge-path [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (ridge-art) paths) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (begin-sheet)
+      (if (= which 0) (fuji/blue-stock-path 1.0 1.0)
+                       (fuji/charcoal-stock-path 1.0 1.0))
+      (let [outline (CGPathCreateCopy (.path (scene/scene)))]
+        (store! slot (CGPathCreateCopyBySubtractingPath outline (cloud-path 3) true))
+        (CGPathRelease outline) 0))
+    (load slot)))
+
+(defn ridge-grain [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (ridge-art) grain) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (store! slot (clipping/intersect-contours (mountain-path 2) (ridge-path which))))
+    (load slot)))
+
+(defn mountain [] (-> i64)
+  (let [visible (CGPathCreateCopyByTransformingPath (sun-path)
+                   (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
+    (begin-sheet) (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) visible)
+    (finish 17.0 0xad3e2d 0.62)
+    (ink-height 17.0)
+    (host/paper_path_hit 500 visible c"Sun: adjust lighting" 0 0.0)
+    (CGPathRelease visible))
+  (sun-relief)
+  (let [base (CGPathCreateCopyByTransformingPath (mountain-path 0)
+                (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
+    (begin-sheet) (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) base)
+    (finish 17.0 0x1b3e51 0.38) (CGPathRelease base))
+  (ink-height 17.0)
+  (print-path (mountain-path 1) 0x405c65)
+  (print-path (mountain-path 2) 0x385663)
+  (for [ridge 0 2]
+    (let [path (CGPathCreateCopyByTransformingPath (ridge-path ridge)
+                 (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
+      (begin-sheet) (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) path)
+      (finish (+ 18.0 (* (cast f64 ridge) 0.8))
+              (if (= ridge 0) 0x4d6875 0x424c4a)
+              (+ 0.29 (* (cast f64 ridge) 0.17)))
+      (CGPathRelease path)
+      (ink-height (+ 18.0 (* (cast f64 ridge) 0.8)))
+      (print-path (ridge-grain ridge) (if (= ridge 0) 0x556e7a 0x4a534f))))
+  0)
+
+;;; Reference-derived connected cloud stock, cached in design coordinates.
+(defstruct CloudArt [(paths (array (ptr i8) 8))])
+(defn cloud-art [] (-> (ptr CloudArt)) (p/alloc-static CloudArt))
+(defn cloud-path [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (cloud-art) paths) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (if (= which 5)
+          (let [banks (CGPathCreateCopyByUnioningPath (cloud-path 1) (cloud-path 2) true)]
+            (store! slot (CGPathCreateCopyByUnioningPath banks (cloud-path 4) true))
+            (CGPathRelease banks) 0)
+          (if (>= which 6)
+              (let [outer (cloud-path (if (= which 6) 0 3))]
+                (begin-sheet) (clouds/stock-path (- which 1) 1.0 1.0)
+                (store! slot (CGPathCreateCopyByIntersectingPath (.path (scene/scene)) outer true)))
+              (do
+                (begin-sheet) (clouds/stock-path which 1.0 1.0)
+                (store! slot (CGPathCreateCopy (.path (scene/scene))))))))
+    (load slot)))
+
+(defn clouds [] (-> i64)
+  (for [i 0 2]
+    (let [which (if (= i 0) 0 3)
+          source (cloud-path which)
+          path (CGPathCreateCopyByTransformingPath source
+                 (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
+      (begin-sheet)
+      (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) path)
+      (finish (if (= which 0) 18.8 22.4)
+              (if (= which 0) 0xcabb9d 0xcfba95)
+              (case which 0 0.17 3 0.47 0.43))
+      (CGPathRelease path)
+      (path-stock (cloud-path (+ i 6)) (if (= which 0) 19.4 23.0)
+                  (if (= which 0) 0xe5d4b3 0xe7d5b2)
+                  (if (= which 0) 0.17 0.47))))
+  0)
+
+(defstruct PaneArt [(paths (array (ptr i8) 16))])
+(defn pane-art [] (-> (ptr PaneArt)) (p/alloc-static PaneArt))
+(defn pane-path [(which i64) (layer i64)] (-> (ptr i8))
+  (let [slot (index (field (pane-art) paths) (+ (* which 4) layer))]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (let [inner (if (< layer 3) (pane-path which (+ layer 1)) (cast (ptr i8) 0))]
+        (begin-sheet) (panes/pane-path which layer 1.0 1.0)
+        (store! slot (if (= inner (cast (ptr i8) 0))
+                        (CGPathCreateCopy (.path (scene/scene)))
+                        (CGPathCreateCopyByUnioningPath (.path (scene/scene)) inner true)))))
+    (load slot)))
+
+(defstruct FoldArt [(faces (array (ptr i8) 8)) (backs (array (ptr i8) 8))
+                    (borders (array (ptr i8) 4))
+                    (navy (array (ptr i8) 6))])
+(defn fold-art [] (-> (ptr FoldArt)) (p/alloc-static FoldArt))
+(defn fold-pane [(which i64)] (-> i64) (if (< which 4) 1 (if (< which 6) 2 3)))
+(defn fold-border [(pane i64)] (-> (ptr i8))
+  (let [slot (index (field (fold-art) borders) pane)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (store! slot (CGPathCreateCopyBySubtractingPath (pane-path pane 1) (pane-path pane 2) true)))
+    (load slot)))
+(defn fold-path [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (fold-art) faces) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (let [pane (fold-pane which)
+            border (fold-border pane)]
+        (begin-sheet) (folds/outline which)
+        (store! slot (CGPathCreateCopyByIntersectingPath (.path (scene/scene)) border true))))
+    (load slot)))
+(defn pane-backing [(which i64) (layer i64)] (-> (ptr i8))
+  (let [slot (index (field (fold-art) backs) (+ (* which 2) layer))]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (let [inner (if (= layer 0) (pane-backing which 1) (pane-path which 0))]
+        (begin-sheet) (folds/backing-outline which layer)
+        (store! slot (CGPathCreateCopyByUnioningPath (.path (scene/scene)) inner true))))
+    (load slot)))
+(defn navy-crease-pane [(which i64)] (-> i64)
+  (if (< which 2) 0 (if (< which 4) 1 (if (= which 4) 2 3))))
+(defn navy-crease-path [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (fold-art) navy) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (let [stock (pane-backing (navy-crease-pane which) 0)
+            accent (branch-accent-path 0)]
+        (begin-sheet) (folds/navy-crease which)
+        (let [supported (CGPathCreateCopyByIntersectingPath (.path (scene/scene)) stock true)]
+          (store! slot (CGPathCreateCopyBySubtractingPath supported accent true))
+          (CGPathRelease supported) 0)))
+    (load slot)))
+(defn path-stock [(source (ptr i8)) (height f64) (color u32) (seed f64)] (-> i64)
+  (let [path (CGPathCreateCopyByTransformingPath source
+                (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
+    (begin-sheet) (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) path)
+    (finish height color seed) (CGPathRelease path))
+  0)
+
+(defstruct NavyArt [(paths (array (ptr i8) 2))])
+(defn navy-art [] (-> (ptr NavyArt)) (p/alloc-static NavyArt))
+(defn navy-grain [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (navy-art) paths) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (let [cloud (cloud-path 5) accent (branch-accent-path 0)]
+        (begin-sheet) (navy/grain-path which 1.0 1.0)
+        (let [clear-sky (clipping/subtract-contours (.path (scene/scene)) cloud)]
+          (store! slot (clipping/subtract-contours clear-sky accent))
+          (CGPathRelease clear-sky) 0)))
+    (load slot)))
+
+(defn panels [] (-> i64)
+  (for [which 0 4]
+    (for [layer 0 2]
+      (path-stock (pane-backing which layer) (+ 16.0 (* (cast f64 layer) 1.5))
+                  (if (= layer 0) 0x1d3643 0x2a4958) (+ 0.23 (* (cast f64 layer) 0.17)))))
+  (for [face 0 6]
+    (path-stock (navy-crease-path face) (+ 18.0 (* 0.2 (cast f64 (% face 2))))
+                (if (= (% face 2) 0) 0x345464 0x294b5b)
+                (+ 0.12 (* 0.13 (cast f64 face)))))
+  (for [which 0 4]
+    (for [layer 0 4]
+      (let [colors [0x8c3427 0xb94f32 0xc99a69 0xe5d0a8]
+            sidebar [0xab906b 0xc5ac80 0xd8bf94 0xe5d0a8]
+            heights [20.0 21.5 24.0 25.25]
+            source (pane-path which layer)
+            path (CGPathCreateCopyByTransformingPath source
+                   (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
+        (begin-sheet) (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) path)
+        (finish (get heights layer) (cast u32 (if (= which 0) (get sidebar layer) (get colors layer)))
+                (+ 0.1 (* (cast f64 layer) 0.21)))
+        (CGPathRelease path))))
+  (for [face 0 8]
+    (path-stock (fold-path face) (+ 22.0 (* (cast f64 (% face 2)) 0.7))
+                (if (= (% face 2) 0) 0xc26443 0xa84430)
+                (+ 0.18 (* (cast f64 face) 0.09))))
+  0)
+
+
+;;; Five notched cherry petals, independent overlapping sheets, a warm calyx,
+;;; fine radial filaments and individual anthers. No circular-dot flower stand-in.
+(defn petal-angle [(rotation f64) (i i64)] (-> f64)
+  (+ rotation (+ (* (cast f64 i) 1.256637061)
+                  (* 0.12 (sin (+ (* rotation 1.7) (* (cast f64 i) 2.3)))))))
+(defn petal-radius [(radius f64) (rotation f64) (i i64)] (-> f64)
+  (* radius (+ 0.88 (* 0.16 (sin (+ (* (cast f64 i) 2.1) rotation))))))
+
+(defn petal-engraving-source [(x f64) (y f64) (radius f64) (rotation f64) (aspect f64)] (-> (ptr i8))
+  ; Curved secondary veins branch from the central fold. Construct these in the
+  ; same petal basis as the paper, including its unequal face widths.
+  (begin-sheet)
+  (for [i 0 5]
+    (let [angle (petal-angle rotation i) dx (cos angle) dy (* aspect (sin angle))
+          r (petal-radius radius rotation i)
+          width (+ 0.85 (* 0.23 (cos (+ rotation (* (cast f64 i) 1.9)))))
+          nx (* width (- 0.0 (sin angle))) ny (* width (* aspect dx))]
+      (move-to x y)
+      (curve-to (+ x (* dx (* r 0.30))) (+ y (* dy (* r 0.30)))
+             (+ x (* r (+ (* dx 0.58) (* nx 0.025))))
+             (+ y (* r (+ (* dy 0.58) (* ny 0.025))))
+             (+ x (* dx (* r 0.80))) (+ y (* dy (* r 0.80))))
+      (for [side 0 2]
+        (for [branch 0 3]
+          (let [n (cast f64 branch) sign (if (= side 0) -1.0 1.0)
+                start (+ 0.13 (* n 0.16)) end (+ 0.43 (* n 0.14))
+                spread (* sign (+ 0.20 (* 0.035 (sin (+ rotation n)))))]
+            (move-to (+ x (* dx (* r start))) (+ y (* dy (* r start))))
+            (curve-to (+ x (* r (+ (* dx (+ start 0.09)) (* nx (* spread 0.22)))))
+                   (+ y (* r (+ (* dy (+ start 0.09)) (* ny (* spread 0.22)))))
+                   (+ x (* r (+ (* dx (- end 0.06)) (* nx (* spread 0.81)))))
+                   (+ y (* r (+ (* dy (- end 0.06)) (* ny (* spread 0.81)))))
+                   (+ x (* r (+ (* dx end) (* nx spread))))
+                   (+ y (* r (+ (* dy end) (* ny spread))))))))))
+  (CGPathCreateCopyByStrokingPath (.path (scene/scene)) (cast (ptr CGAffine) 0)
+    0.13 1 1 10.0))
+
+(defn petal-engraving [(x f64) (y f64) (radius f64) (rotation f64) (aspect f64)] (-> (ptr i8))
+  (let [source (petal-engraving-source x y radius rotation aspect)
+        path (CGPathCreateCopyByTransformingPath source
+               (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
+    (CGPathRelease source) path))
+
+(defn blossom-with-engraving [(x f64) (y f64) (radius f64) (rotation f64) (aspect f64)
+                              (z f64) (engraving (ptr i8))] (-> i64)
+  (for [i 0 5]
+    (let [angle (petal-angle rotation i) dx (cos angle) dy (* aspect (sin angle))
+          r (petal-radius radius rotation i)
+          width (+ 0.85 (* 0.23 (cos (+ rotation (* (cast f64 i) 1.9)))))
+          px (+ x (* dx r)) py (+ y (* dy r))
+          nx (* width (- 0.0 (sin angle))) ny (* width (* aspect dx))]
+      (begin-sheet) (move x y)
+      (curve (+ x (* nx (* r 0.50))) (+ y (* ny (* r 0.50)))
+             (+ px (* nx (* r 0.58))) (+ py (* ny (* r 0.58)))
+             (+ px (* nx (* r 0.21))) (+ py (* ny (* r 0.21))))
+      (line (- px (* dx (* r 0.14))) (- py (* dy (* r 0.14))))
+      (line (- px (* nx (* r 0.18))) (- py (* ny (* r 0.18))))
+      (curve (- px (* nx (* r 0.59))) (- py (* ny (* r 0.59)))
+             (- x (* nx (* r 0.47))) (- y (* ny (* r 0.47))) x y)
+      (close-path) (finish (+ z (* (cast f64 i) 0.13)) (if (= (% i 2) 0) 0xe9c6a3 0xd9a78c) (+ 0.1 (* (cast f64 i) 0.17)))
+      ; A narrow raised fold follows one side of the petal's central vein.
+      ; Its tip stays inside the notched outer edge, so it has supporting stock.
+      (begin-sheet) (move x y)
+      (curve (+ x (* r (+ (* dx 0.26) (* nx 0.08))))
+             (+ y (* r (+ (* dy 0.26) (* ny 0.08))))
+             (+ x (* r (+ (* dx 0.60) (* nx 0.06))))
+             (+ y (* r (+ (* dy 0.60) (* ny 0.06))))
+             (+ x (* dx (* r 0.77))) (+ y (* dy (* r 0.77))))
+      (curve (+ x (* dx (* r 0.52))) (+ y (* dy (* r 0.52)))
+             (+ x (* dx (* r 0.19))) (+ y (* dy (* r 0.19))) x y)
+      (close-path)
+      (finish (+ z (+ (* (cast f64 i) 0.13) 0.055))
+              (if (= (% i 2) 0) 0xeed0ad 0xe2b899) (+ 0.13 (* (cast f64 i) 0.17)))))
+  ; The woodblock print lies on the petals; these marks have no paper thickness.
+  (ink-height (+ z 0.8))
+  (let [veins (if (= engraving (cast (ptr i8) 0))
+                 (petal-engraving x y radius rotation aspect)
+                 (CGPathCreateCopyByTransformingPath engraving
+                   (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas))
+                             :tx (* x (.sx (canvas))) :ty (* y (.sy (canvas))))))]
+    (host/paper_path_ink veins 0xb99173) (CGPathRelease veins))
+  (begin-sheet)
+  (for [i 0 11]
+    (let [a (+ rotation (* (cast f64 i) 0.5711986)) r (* radius (+ 0.28 (* 0.13 (sin (cast f64 i)))))
+          dx (* r (cos a)) dy (* aspect (* r (sin a)))]
+      (move x y)
+      (curve (+ x (* dx 0.4)) (+ y (* dy 0.3)) (+ x dx) (+ y (* dy 0.8))
+             (+ x dx) (+ y dy))))
+  (let [filaments (CGPathCreateCopyByStrokingPath (.path (scene/scene)) (cast (ptr CGAffine) 0)
+                    (* 0.22 (.sx (canvas))) 1 1 10.0)]
+    (host/paper_path_ink filaments 0x965436) (CGPathRelease filaments))
+  (begin-sheet)
+  (for [i 0 12]
+    (let [a (+ rotation (* (cast f64 i) 0.5711986))
+          r (if (= i 11) 0.0 (* radius (+ 0.28 (* 0.13 (sin (cast f64 i))))))
+          rx (if (= i 11) (* radius 0.12) 0.55) ry (* aspect (if (= i 11) rx 0.48))
+          px (+ x (* r (cos a))) py (+ y (* aspect (* r (sin a))))]
+      (oval-path (rect (* (- px rx) (.sx (canvas))) (* (- py ry) (.sy (canvas)))
+                       (* (* rx 2.0) (.sx (canvas))) (* (* ry 2.0) (.sy (canvas)))))))
+  (host/paper_path_ink (.path (scene/scene)) 0xa4663e)
+  0)
+
+(defn blossom [(x f64) (y f64) (radius f64) (rotation f64) (aspect f64) (z f64)] (-> i64)
+  (blossom-with-engraving x y radius rotation aspect z (cast (ptr i8) 0)))
+
+(defstruct BarkArt [(paths (array (ptr i8) 4))])
+(defn bark-art [] (-> (ptr BarkArt)) (p/alloc-static BarkArt))
+(defn bark-path [(which i64) (tone i64) (branch (ptr i8))] (-> (ptr i8))
+  (let [slot (index (field (bark-art) paths) (+ (* which 2) tone))]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (let [clip (CGPathCreateCopyByTransformingPath branch
+                   (CGAffine :a (/ 1.0 (.sx (canvas))) :b 0.0 :c 0.0
+                             :d (/ 1.0 (.sy (canvas))) :tx 0.0 :ty 0.0))]
+        (begin-sheet) (bark/marks tone)
+        (store! slot (clipping/intersect-contours (.path (scene/scene)) clip))
+        (CGPathRelease clip) 0))
+    (load slot)))
+
+(defn print-bark [(which i64) (height f64)] (-> i64)
+  ; Initializing either cached ink path changes the current construction path.
+  ; Retain the original branch while preparing both tones.
+  (let [branch (CGPathCreateCopy (.path (scene/scene)))]
+    (ink-height height)
+    (print-path (bark-path which 0 branch) 0x67533f)
+    (print-path (bark-path which 1 branch) 0x302d27)
+    (CGPathRelease branch))
+  0)
+
+(defstruct CubicStroke [(ax f64) (ay f64) (bx f64) (by f64) (cx f64) (cy f64)
+                (dx f64) (dy f64) (width f64)])
+(defn cubic-stroke [(ax f64) (ay f64) (bx f64) (by f64) (cx f64) (cy f64)
+             (dx f64) (dy f64) (width f64)] (-> CubicStroke)
+  (CubicStroke :ax ax :ay ay :bx bx :by by :cx cx :cy cy :dx dx :dy dy :width width))
+(defn twig-pose [(i i64)] (-> CubicStroke)
+  ; Branch junctions lead into the authored flower clusters, not evenly spaced
+  ; side shoots. Hidden tips continue beneath the petals during their motion.
+  (let [twigs [
+    (cubic-stroke 9.0 286.2 8.0 276.0 11.0 266.0 12.0 258.0 1.5)
+    (cubic-stroke 19.0 253.3 15.0 239.0 10.0 231.0 9.0 224.0 1.1)
+    (cubic-stroke 16.6 218.4 19.0 202.0 22.0 192.0 25.0 184.0 1.1)
+    (cubic-stroke 20.4 186.4 29.0 173.0 31.0 161.0 32.0 154.0 1.7)
+    (cubic-stroke 25.0 158.2 26.0 146.0 26.0 138.0 28.0 131.0 0.8)
+    (cubic-stroke 30.0 135.6 36.0 132.0 39.0 129.0 40.0 126.0 1.2)
+    (cubic-stroke 38.8 107.9 40.0 99.0 34.0 93.0 32.0 87.0 1.2)
+    (cubic-stroke 47.1 88.5 49.0 81.0 49.0 76.0 47.0 72.0 1.4)
+    (cubic-stroke 60.5 65.3 65.0 59.0 72.0 54.0 77.0 48.0 0.9)
+    (cubic-stroke 82.7 41.3 92.0 40.0 99.0 34.0 108.0 33.0 1.5)
+    (cubic-stroke 98.9 33.9 104.0 27.0 108.0 21.0 111.0 14.0 1.1)
+    (cubic-stroke 116.1 26.7 121.0 31.0 126.0 35.0 129.0 39.0 0.9)
+    (cubic-stroke 132.1 23.3 131.0 15.0 133.0 8.0 138.0 6.0 1.4)
+    (cubic-stroke 151.0 20.3 155.0 23.0 154.0 27.0 151.0 29.0 1.3)
+    (cubic-stroke 175.1 19.5 173.0 28.0 175.0 36.0 178.0 42.0 1.2)
+    (cubic-stroke 197.0 17.4 205.0 17.0 207.0 26.0 208.0 34.0 1.2)
+    (cubic-stroke 204.1 -1.3 216.0 4.0 224.0 5.0 230.0 9.0 0.8)]]
+    (get twigs i)))
+
+;;; Authored blossom centers and face proportions follow the reference clusters.
+;;; Keep the broad flowers at branch junctions and small flowers on their tips.
+(defstruct BlossomPose [(x f64) (y f64) (radius f64) (rotation f64) (aspect f64)])
+(defn flower [(x f64) (y f64) (r f64) (rotation f64) (aspect f64)] (-> BlossomPose)
+  (BlossomPose :x x :y y :radius r :rotation rotation :aspect aspect))
+(defn blossom-pose [(i i64)] (-> BlossomPose)
+  (let [poses [
+    (flower 16.0 38.0 21.0 0.15 0.83)
+    (flower 63.0 12.0 24.0 -0.42 0.72)
+    (flower 108.0 33.0 23.0 0.65 0.94)
+    (flower 111.0 14.0 10.0 1.7 0.68)
+    (flower 138.0 6.0 12.0 0.3 0.82)
+    (flower 151.0 29.0 19.0 1.1 0.79)
+    (flower 175.0 20.0 14.0 2.0 0.91)
+    (flower 178.0 42.0 15.0 0.4 0.73)
+    (flower 208.0 34.0 12.0 1.9 0.90)
+    (flower 211.0 9.0 11.0 0.8 0.67)
+    (flower 230.0 9.0 8.0 1.5 0.88)
+    (flower 17.0 103.0 25.0 0.5 0.94)
+    (flower 47.0 72.0 13.0 1.3 0.72)
+    (flower 32.0 154.0 24.0 0.1 0.95)
+    (flower 40.0 126.0 10.0 1.0 0.68)
+    (flower 25.0 210.0 19.0 1.8 0.91)
+    (flower 43.0 192.0 13.0 0.8 0.77)
+    (flower 52.0 235.0 24.0 0.2 0.78)
+    (flower 12.0 258.0 17.0 1.4 0.92)
+    (flower 46.0 280.0 17.0 0.65 0.69)
+    (flower 32.0 87.0 7.0 2.1 0.68)
+    (flower 28.0 131.0 6.0 0.4 0.81)
+    (flower 25.0 184.0 6.0 1.1 0.65)
+    (flower 9.0 224.0 6.0 0.3 0.73)
+    (flower 77.0 48.0 6.0 1.8 0.84)
+    (flower 129.0 39.0 7.0 0.7 0.65)]]
+    (get poses i)))
+
+(defstruct BlossomArt [(engraving (array (ptr i8) 26))])
+(defn blossom-art [] (-> (ptr BlossomArt)) (p/alloc-static BlossomArt))
+(defn blossom-engraving [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (blossom-art) engraving) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (let [pose (blossom-pose which)]
+        (store! slot (petal-engraving-source 0.0 0.0 (.radius pose) (.rotation pose) (.aspect pose)))))
+    (load slot)))
+
+(defn branch-stock [] (-> i64)
+  (stroke 2.0 324.0 30.0 205.0 -5.0 57.0 160.0 -12.0 12.0 27.0 0x41382c)
+  (print-bark 0 27.1)
+  (stroke 5.0 96.0 39.0 54.0 126.0 16.0 228.0 -7.0 10.0 28.0 0x44352a)
+  (print-bark 1 28.1)
+  (stroke 9.0 281.0 37.0 206.0 37.0 185.0 60.0 155.0 6.5 28.0 0x51412f)
+  (stroke 11.0 203.0 30.0 163.0 46.0 141.0 63.0 116.0 4.5 28.0 0x46382c)
+  (stroke 68.0 58.0 76.0 30.0 59.0 8.0 85.0 -5.0 5.0 28.0 0x54432e)
+  (stroke 127.0 25.0 156.0 14.0 191.0 27.0 223.0 8.0 4.0 28.0 0x584530)
+  (stroke 14.0 300.0 25.0 284.0 32.0 276.0 46.0 280.0 2.0 29.0 0x5a4734)
+  (stroke 22.0 268.0 39.0 251.0 40.0 240.0 52.0 235.0 2.2 29.0 0x5a4734)
+  (stroke 39.0 62.0 28.0 54.0 23.0 48.0 16.0 38.0 1.8 29.0 0x5a4734)
+  0)
+
+(defn branches [(motion f64)] (-> i64)
+  (branch-stock)
+  (for [i 0 17]
+    (let [pose (twig-pose i)]
+      (stroke (.ax pose) (.ay pose) (.bx pose) (.by pose) (.cx pose) (.cy pose)
+              (.dx pose) (.dy pose) (.width pose) 29.0 0x5a4734)))
+  (for [i 0 26]
+    (let [pose (blossom-pose i) n (cast f64 i)]
+      (blossom-with-engraving (+ (.x pose) (* motion (* 0.025 (sin n)))) (.y pose)
+               (.radius pose) (.rotation pose) (.aspect pose) 31.0 (blossom-engraving i))))
+  0)
+
+;;; Keep canonical engraved surf paths and transform copies for the viewport.
+
+(defstruct WaveArt [(paths (array (ptr i8) 6))])
+(defn wave-art [] (-> (ptr WaveArt)) (p/alloc-static WaveArt))
+
+(defn wave-asset [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (wave-art) paths) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (begin-sheet)
+      (case which 0 (waves/ink-path 1.0 1.0) 1 (waves/mid-path 1.0 1.0)
+                  2 (waves/line-path 1.0 1.0) 3 (waves/pale-path 1.0 1.0)
+                  4 (waves/dark-path 1.0 1.0) (waves/paper-path 1.0 1.0))
+      (store! slot (CGPathCreateCopy (.path (scene/scene)))))
+    (load slot)))
+
+(defn print-wave-asset [(which i64) (color u32)] (-> i64)
+  (print-path (wave-asset which) color))
+
+(defn surf [] (-> i64)
+  ; The reference has separate left and right wave stocks, with navy visible
+  ; between them. Do not bridge those openings with a full-width ivory sheet.
+  (path-stock (wave-asset 5) 35.0 0xe1cfab 0.38)
+  (ink-height 35.0)
+  (print-wave-asset 0 0x214b5e)
+  (print-wave-asset 4 0x1a3b4c)
+  (print-wave-asset 1 0x365a68)
+  (print-wave-asset 3 0x55737c)
+  (print-wave-asset 2 0x8e9b92)
+  0)
+
+(defn file-icon [(x f64) (y f64) (folder bool)] (-> i64)
+  (begin-sheet)
+  (if folder
+      (do
+        (move x (+ y 1.0)) (line (+ x 4.0) (+ y 1.0)) (line (+ x 5.0) (+ y 3.0))
+        (line (+ x 10.0) (+ y 3.0)) (line (+ x 10.0) (+ y 10.0)) (line x (+ y 10.0)) (close-path)
+        (move (+ x 1.2) (+ y 3.0)) (line (+ x 3.3) (+ y 3.0)) (line (+ x 4.4) (+ y 4.3))
+        (line (+ x 8.8) (+ y 4.3)) (line (+ x 8.8) (+ y 8.8)) (line (+ x 1.2) (+ y 8.8)) (close-path))
+      (do
+        (move x y) (line (+ x 5.0) y) (line (+ x 8.0) (+ y 3.0))
+        (line (+ x 8.0) (+ y 10.0)) (line x (+ y 10.0)) (close-path)
+        (move (+ x 1.1) (+ y 1.1)) (line (+ x 4.0) (+ y 1.1)) (line (+ x 4.0) (+ y 4.0))
+        (line (+ x 6.9) (+ y 4.0)) (line (+ x 6.9) (+ y 8.9)) (line (+ x 1.1) (+ y 8.9)) (close-path)))
+  (host/paper_path_ink (.path (scene/scene)) 0x26353a)
+  0)
+
+(defn contents [(selected i64) (cursor bool)] (-> i64)
+  (let [ink (cast u32 0x26353a) names [c"main.bea" c"vm.bea" c"gc.bea" c"value.bea"]
+        lines [c"fn main() {" c"  let msg = \"Hello, Beagle\"" c"  println(msg)" c"}" c""
+               c"// A small example" c"fn fib(n) {" c"  if n <= 1 {" c"    n" c"  } else {"
+               c"    fib(n - 1) + fib(n - 2)" c"  }" c"}"]
+        numbers [c"1" c"2" c"3" c"4" c"5" c"6" c"7" c"8" c"9" c"10" c"11" c"12" c"13"]]
+    (ink-height 27.0)
+    (file-icon 94.0 162.0 true) (text 109.0 161.0 12.0 ink 0 c"Workspace")
+    (text 96.0 183.0 11.5 ink 0 c"⌄") (file-icon 109.0 184.0 true) (text 124.0 183.0 11.5 ink 0 c"beagle")
+    (text 108.0 204.0 11.5 ink 0 c"⌄") (file-icon 121.0 205.0 true) (text 136.0 204.0 11.5 ink 0 c"src")
+    (for [i 0 4]
+      (let [y (+ 226.0 (* (cast f64 i) 22.0))]
+        (when (= i selected) (box 121.0 (- y 3.0) 84.0 19.0 2.0 27.3 0xc27651))
+        (ink-height 28.0) (file-icon 127.0 (+ y 1.0) false) (text 140.0 y 10.5 ink 2 (get names i))
+        (host/paper_hit (+ 100 i) (* 121.0 (.sx (canvas))) (* (- y 3.0) (.sy (canvas)))
+                        (* 84.0 (.sx (canvas))) (* 19.0 (.sy (canvas))) (get names i) 0 0.0)))
+    (for [i 0 4]
+      (file-icon 107.0 (+ 319.0 (* (cast f64 i) 23.0)) true)
+      (text 123.0 (+ 318.0 (* (cast f64 i) 23.0)) 11.5 ink 0
+            (case i 0 c"tests" 1 c"docs" 2 c"notes" c"scratch")))
+    (file-icon 240.0 156.0 false) (text 255.0 155.0 12.0 ink 0 (get names selected))
+    (disc 330.0 162.0 4.0 4.0 28.0 0x956d40)
+    (for [i 0 13]
+      (let [y (+ 193.0 (* (cast f64 i) 19.5))]
+        (ink-height 28.0) (text 239.0 y 10.0 0x9b947b 2 (get numbers i))
+        (text 268.0 y 11.2 (case i 1 0x9f422c 5 0x898a75 ink) 2 (get lines i))))
+    (box 260.0 191.0 0.45 253.0 0.0 27.0 0xd0bea0)
+    (ink-height 28.0)
+    (text 570.0 203.0 12.0 ink 0 c"Outline")
+    (text 565.0 232.0 12.0 ink 2 c"›  main()")
+    (text 565.0 256.0 12.0 ink 2 c"›  ƒ fib(n)")
+    (text 570.0 327.0 12.0 ink 0 c"Terminal")
+    (text 566.0 357.0 11.2 ink 2 c"beagle > cargo run")
+    (text 566.0 377.0 11.2 ink 2 c"Hello, Beagle")
+    (text 566.0 397.0 11.2 ink 2 c"beagle >")
+    (when cursor
+      (box 638.0 398.0 6.0 12.0 0.0 28.0 ink)
+      (box 269.0 427.0 1.0 14.0 0.0 28.0 ink))
+    (ink-height 29.0)
+    (text 75.0 59.0 55.0 0x162e37 1 c"jim")
+    (text 181.0 80.0 15.0 0x34362d 0 c"静かに作る")
+    (text 183.0 102.0 8.0 0x34362d 0 c"A  C A L M E R  E D I T O R")
+    (box 15.0 295.0 60.0 181.0 9.0 36.0 0xe7d1a9)
+    (ink-height 38.0)
+    (text 27.0 311.0 17.0 0x36392e 1 c"良 良")
+    (text 27.0 334.0 17.0 0x36392e 1 c"い い")
+    (text 27.0 357.0 17.0 0x36392e 1 c"思 道")
+    (text 27.0 380.0 17.0 0x36392e 1 c"考 具")
+    (box 31.0 411.0 29.0 43.0 2.0 38.0 0xa54930)
+    (box 33.0 413.0 25.0 39.0 1.0 38.1 0xe7d1a9)
+    (ink-height 39.0) (text 35.0 412.0 22.0 0xa54930 1 c"思")
+    (text 35.0 432.0 20.0 0xa54930 1 c"松"))
+  0)
+
+;;; The reference's vermilion accent ends behind the upper branch cluster.
+;;; Reconstruct the continuous stock behind those occluders; the lower branch
+;;; and hanging inscription sit over navy, not a full-height red ribbon.
+(defstruct BranchAccentArt [(paths (array (ptr i8) 2))])
+(defn branch-accent-art [] (-> (ptr BranchAccentArt)) (p/alloc-static BranchAccentArt))
+(defn branch-accent-path [(which i64)] (-> (ptr i8))
+  (let [slot (index (field (branch-accent-art) paths) which)]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (begin-sheet)
+      (if (= which 0)
+          (do
+            (move-to 5.0 119.0)
+            (curve-to 25.0 123.0 53.0 133.0 84.0 138.0)
+            (curve-to 69.0 156.0 64.0 172.0 64.0 190.0)
+            (curve-to 64.0 201.0 65.0 208.0 58.0 216.0)
+            (curve-to 43.0 219.0 29.0 204.0 15.0 188.0)
+            (curve-to 5.0 181.0 5.0 173.0 5.0 161.0)
+            (line-to 5.0 119.0))
+          (do
+            (move-to 82.0 139.0)
+            (curve-to 68.0 158.0 64.0 177.0 64.0 193.0)
+            (curve-to 64.0 203.0 64.0 209.0 58.0 214.0)
+            (curve-to 61.0 203.0 60.0 194.0 61.0 183.0)
+            (curve-to 62.0 165.0 67.0 149.0 77.0 140.0)))
+      (close-path)
+      (store! slot (if (= which 0)
+                      (CGPathCreateCopy (.path (scene/scene)))
+                      (let [fold (CGPathCreateCopy (.path (scene/scene)))
+                            stock (branch-accent-path 0)
+                            clipped (CGPathCreateCopyByIntersectingPath fold stock true)]
+                        (CGPathRelease fold) clipped))))
+    (load slot)))
+
+;;; Overlapping shoji leaves share rail heights but have stepped top edges.
+;;; Paper sits inside the raised wooden stiles and crossbars.
+(defn shoji-leaf [(x f64) (y f64) (w f64) (h f64) (z f64)] (-> i64)
+  (box x y w h 0.4 z 0x643d2d)
+  (box (+ x 2.0) (+ y 3.0) (- w 4.0) (- h 6.0) 0.0 (+ z 0.2) 0xdac7a5)
+  (box x y 2.2 h 0.2 (+ z 0.7) 0x925138)
+  (box (- (+ x w) 2.2) y 2.2 h 0.2 (+ z 0.7) 0x814b35)
+  (box x y w 2.5 0.2 (+ z 0.7) 0x9c5b3f)
+  (box x (- (+ y h) 2.5) w 2.5 0.2 (+ z 0.7) 0x784530)
+  (box (+ x (* w 0.54)) (+ y 2.0) 0.9 (- h 4.0) 0.1 (+ z 0.8) 0x885139)
+  (for [i 0 5]
+    (let [rail (+ 94.0 (* (cast f64 i) 52.0))]
+      (when (and (> rail (+ y 4.0)) (< rail (- (+ y h) 4.0)))
+        (box (+ x 1.5) rail (- w 3.0) 1.4 0.1 (+ z 0.8) 0x87503a))))
+  (box (+ x 0.35) (+ y 0.4) 0.45 (- h 0.8) 0.0 (+ z 0.75) 0xb27a53)
+  0)
+
+(defn shoji [] (-> i64)
+  (shoji-leaf 752.0 73.0 20.0 267.0 25.0)
+  (shoji-leaf 739.0 83.0 23.0 247.0 26.0)
+  (shoji-leaf 724.0 105.0 29.0 211.0 27.0)
+  0)
+
+(defn draw [(w f64) (h f64) (motion f64) (selected i64) (cursor bool)] (-> i64)
+  (set! (.sx (canvas)) (/ w 768.0)) (set! (.sy (canvas)) (/ h 512.0))
+  (box 0.0 0.0 768.0 512.0 0.0 2.0 0xdfc9a3)
+  (box 7.0 6.0 755.0 500.0 12.0 3.0 0x244959)
+  (let [sky (CGPathCreateCopyByTransformingPath (cloud-path 5)
+               (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
+    (begin-sheet) (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) sky)
+    (finish 17.0 0xe1cead 0.43) (CGPathRelease sky))
+  (mountain) (panels)
+  (ink-height 19.0)
+  (print-path (navy-grain 0) 0x2b4e5e)
+  (print-path (navy-grain 1) 0x224555)
+  (clouds)
+  (path-stock (branch-accent-path 0) 18.0 0xa8412c 0.64)
+  (path-stock (branch-accent-path 1) 18.4 0xb66b45 0.29)
+  (shoji)
+  (branches motion) (contents selected cursor) (surf)
+  0)

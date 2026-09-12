@@ -324,6 +324,12 @@
   (paper_material_sheet z (material/stock color rough fiber seed)))
 
 (defn paper_material_sheet [(z f64) (stock material/Material)] (-> i64)
+  (paper_material_surface z stock false))
+
+(defn paper_material_contour [(z f64) (stock material/Material)] (-> i64)
+  (paper_material_surface z stock true))
+
+(defn paper_material_surface [(z f64) (stock material/Material) (continuous bool)] (-> i64)
   (set! (.paint-z (scene)) (clamp (+ z (.offset (scene))) 0.0 64.0))
   (let [bounds (CGPathGetPathBoundingBox (.path (scene)))
         (mut pattern) (.pattern stock)]
@@ -338,6 +344,7 @@
                  :rough (clamp (.roughness stock) 0.0 1.0)
                  :fiber (clamp (.fiber stock) 0.0 1.0)
                  :seed (clamp (.seed stock) 0.0 1.0)
+                 :continuous continuous
                  :pattern (load pattern)
                  :finish (.finish stock)
                  :relief (cast (ptr relief/Panel) 0)))))
@@ -462,6 +469,19 @@
                 :clip (nil)
                 :bounds (cgrect 0.0 0.0 0.0 0.0))))
 
+;;; Print a borrowed vector path onto the current ink plane, preserving the
+;;; underlying paper height and material. Holes use the same even-odd rule as cuts.
+(defn paper_path_ink [(path (ptr i8)) (color u32)] (-> i64)
+  (let [visible (clipped-path path)]
+    (if (CGPathIsEmpty visible)
+        (do (CGPathRelease visible) 0)
+        (let [b (CGPathGetPathBoundingBox visible)]
+          (add-ink (Ink :x (.x b) :y (.y b) :width (.w b) :height (.h b)
+                         :size 0.0 :color color :font 0 :text (nil)
+                         :z (.paint-z (scene)) :order (next-order) :kind 1
+                         :clip visible :bounds b)))))
+  0)
+
 ;;; Set the depth where subsequent text is printed, relative to the current layer.
 (defn paper_ink_height [(z f64)] (-> i64)
   (set! (.paint-z (scene)) (+ z (.offset (scene))))
@@ -487,8 +507,16 @@
                  (value f64)] (-> i64)
   (let [path (CGPathCreateMutable)]
     (CGPathAddRoundedRect path (cast (ptr CGAffine) 0) (cgrect x y w h) 0.0 0.0)
+    (paper_path_hit id path name role value)
+    (CGPathRelease path))
+  0)
+
+;;; Register a borrowed geometric control shape. Keep exact path containment for
+;;; mouse input while exposing its bounds to keyboard focus and accessibility.
+(defn paper_path_hit [(id i64) (path (ptr i8)) (name (ptr i8)) (role i64) (value f64)] (-> i64)
+  (let [bounds (CGPathGetPathBoundingBox path)
+        x (.x bounds) y (.y bounds) w (.w bounds) h (.h bounds)]
     (let [visible (clipped-path path)]
-      (CGPathRelease path)
       (if (CGPathIsEmpty visible)
           (do (CGPathRelease visible) 0)
           (do
@@ -504,9 +532,9 @@
                            :z (.paint-z (scene))
                            :path visible
                            :enabled (.enabled (scene))
-                           :group 0))))))
+                           :group 0)))))
   (when (and (.enabled (scene)) (.keyboard-focus (host)) (= id (.focus (host))))
-    (paper_focus_outline (rect x y w h)))
+    (paper_focus_outline (rect x y w h))))
   0)
 
 (defn paper_enabled [] (-> bool)
@@ -1764,6 +1792,7 @@
                    :rough 0.7
                    :fiber 0.0
                    :seed 0.0
+                   :continuous false
                    :pattern (material/plain-pattern)
                    :finish (material/matte-finish)
                    :relief (cast (ptr relief/Panel) 0)))

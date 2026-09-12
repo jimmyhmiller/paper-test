@@ -224,7 +224,21 @@
     (set! (.bounds (damage/cache)) bounds)
     (when (> (.w bounds) 0.0)
       (if (.available (gpu/gpu))
-          (do (masks/render bounds) 0)
+          (do
+            (let [c (damage/cache)]
+              (for [i 0 (.region-count c)]
+                (let [r (index (field c regions) i)
+                      pixels (masks/pixel-bounds (load r))
+                      scale (.scale (scene))]
+                  (store! r
+                          (cgrect (/ (.x pixels) scale)
+                                  (/ (.y pixels) scale)
+                                  (/ (.w pixels) scale)
+                                  (/ (.h pixels) scale)))))
+              (masks/render-regions (index (field c regions) 0)
+                                    (.region-count c)
+                                    bounds))
+            0)
           (do
             (workers/apply (cast u64
                                  (al/al-len [RasterBand]
@@ -306,18 +320,19 @@
           (CGContextSetGrayFillColor h (/ (clamp (.z sheet) 0.0 64.0) 64.0) 1.0)
           (CGContextAddPath h (.path sheet))
           (CGContextEOFillPath h)
-          (CGContextSaveGState h)
-          (CGContextClipToRect h (CGPathGetPathBoundingBox (.path sheet)))
-          (CGContextAddPath h (.path sheet))
-          (CGContextEOClip h)
-          (CGContextSetGrayStrokeColor h
-                                       (/ (clamp (- (.z sheet) 0.7) 0.0 64.0)
-                                          64.0)
-                                       1.0)
-          (CGContextSetLineWidth h 1.2)
-          (CGContextAddPath h (.path sheet))
-          (CGContextStrokePath h)
-          (CGContextRestoreGState h)
+          (when (not (.continuous sheet))
+            (CGContextSaveGState h)
+            (CGContextClipToRect h (CGPathGetPathBoundingBox (.path sheet)))
+            (CGContextAddPath h (.path sheet))
+            (CGContextEOClip h)
+            (CGContextSetGrayStrokeColor h
+                                         (/ (clamp (- (.z sheet) 0.7) 0.0 64.0)
+                                            64.0)
+                                         1.0)
+            (CGContextSetLineWidth h 1.2)
+            (CGContextAddPath h (.path sheet))
+            (CGContextStrokePath h)
+            (CGContextRestoreGState h) 0)
           (CGContextSetRGBFillColor m
                                     (.rough sheet)
                                     (.fiber sheet)

@@ -1,0 +1,231 @@
+(module paper-scenes.native-benchmark)
+(import "coil.primitive" :as p)
+(import "coil.atomic" :as atomic)
+(import "paper-scenes.workload" :use [setting draw-case])
+(import "paper.scene" :as scene)
+(import "paper.render" :as render)
+(import "paper.gpu" :as gpu)
+(import "paper.masks" :as masks)
+(import "paper.frame-clock" :as clock)
+(import "paper.platform" :as host)
+(import "paper.workers" :as workers)
+(import "paper.objc" :use *)
+(import "paper.ffi" :use *)
+
+(extern printf :cc c [(ptr i8) ...] (-> i32))
+
+(extern fflush :cc c [(ptr i8)] (-> i32))
+
+(defstruct Sample
+  [(drawable (ptr i8))
+   (command (ptr i8))
+   (theme i64)
+   (scenario i64)
+   (frame i64)
+   (cpu f64)
+   (start f64)
+   (target f64)
+   (requested f64)
+   (duration f64)
+   (minimum-duration f64)
+   (metal-clock i64)
+   (presentation-done i64)
+   (presented f64)
+   (sheets i64)
+   (bytes i64)])
+
+(defstruct Run
+  [(first i64)
+   (count i64)
+   (frames i64)
+   (next i64)
+   (received i64)
+   (layer (ptr i8))
+   (samples (array Sample 6))])
+
+(defn run [] (-> (ptr Run))
+  (p/alloc-static Run))
+
+; Apple Blocks ABI: https://clang.llvm.org/docs/Block-ABI-Apple.html
+; Metal copies this stack block. Only a raw pointer to a static Sample is
+; captured; the slot is not reused until both GPU and presentation complete.
+(defstruct PresentationDescriptor [(reserved u64) (size u64) (signature (ptr i8))])
+(defstruct PresentationBlock
+  [(isa (ptr i8)) (flags i32) (reserved i32)
+   (invoke (fnptr c [(ptr PresentationBlock) (ptr i8)] void))
+   (descriptor (ptr PresentationDescriptor)) (sample (ptr Sample))])
+
+(defn presentation-finished [(closure (ptr PresentationBlock)) (drawable (ptr i8))] (-> void)
+  (let [sample (.sample closure)]
+    (set! (.presented sample) (msg f64 drawable (sel c"presentedTime") []))
+    (atomic/atomic-store (field sample presentation-done) 1)))
+
+(defn present-sample [(layer (ptr i8)) (sample (ptr Sample))] (-> bool)
+  (let [descriptor (p/alloc-static PresentationDescriptor)]
+    (when (= (.size descriptor) (cast u64 0))
+      (set! (.size descriptor) (cast u64 (sizeof PresentationBlock)))
+      (set! (.signature descriptor) c"v16@?0@8"))
+    (atomic/atomic-store (field sample presentation-done) 0)
+    (let [closure (p/alloc-stack PresentationBlock)]
+      (store! closure (PresentationBlock
+                    :isa (dlsym (cast (ptr i8) -2) c"_NSConcreteStackBlock")
+                    :flags 0x40000000 :reserved 0
+                    :invoke (fnptr-of presentation-finished)
+                    :descriptor descriptor :sample sample))
+      (assert (!= (.isa closure) (nil)))
+      (gpu/present-with-handler layer (cast (ptr i8) closure)))))
+
+;;; Keep source frame IDs with each in-flight submission. Emit only completed
+;;; command buffers and final presentation outcomes, including dropped/cold rows.
+;;; Drain every last sample before closing the window; never silently drop tails.
+(defn collect [] (-> i64)
+  (for [i 0 6]
+    (let [s (index (field (run) samples) i)]
+      (when (!= (.drawable s) (nil))
+        (let [status (msg i64 (.command s) (sel c"status") [])]
+          (assert (!= status 5))
+          (assert (< (- (CACurrentMediaTime) (.start s)) 10.0))
+          (when (and (= status 4) (= (atomic/atomic-load (field s presentation-done)) 1))
+            (printf c"%lld,%lld,%lld,%lld,%lld,%lld,%lld,%.4f,%.4f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%lld\n"
+                    (.theme s)
+                    (.scenario s)
+                    (.frame s)
+                    (.width (scene/scene))
+                    (.height (scene/scene))
+                    (.sheets s)
+                    (.bytes s)
+                    (.cpu s)
+                    (* 1000.0
+                       (- (msg f64 (.command s) (sel c"GPUEndTime") [])
+                          (msg f64 (.command s) (sel c"GPUStartTime") [])))
+                    (.presented s)
+                    (.start s)
+                    (.target s)
+                    (.requested s)
+                    (.duration s)
+                    (msg f64 (.command s) (sel c"GPUStartTime") [])
+                    (msg f64 (.command s) (sel c"GPUEndTime") [])
+                    (.minimum-duration s)
+                    (.metal-clock s))
+            (set! (.received (run)) (+ (.received (run)) 1))
+            (release (.drawable s))
+            (release (.command s))
+            (set! (.drawable s) (nil))
+            (set! (.command s) (nil)))))))
+  0)
+
+(defn frame [] (-> i64)
+  (let [pool (new c"NSAutoreleasePool")
+        r (run)]
+    (collect)
+    (when (< (.next r) (* (* (.frames r) 3) (.count r)))
+      (let [slot (index (field r samples) (% (.next r) 6))]
+        (when (= (.drawable slot) (nil))
+          (let [theme (+ (.first r) (/ (.next r) (* 3 (.frames r))))
+                scenario (% (/ (.next r) (.frames r)) 3)
+                frame (% (.next r) (.frames r))
+                start (CACurrentMediaTime)]
+            (draw-case theme scenario frame 4)
+            (render/render-frame false)
+            (set! (.minimum-duration slot) (.presentation-duration (gpu/gpu)))
+            (set! (.metal-clock slot) (if (= (.scheduled-drawable (gpu/gpu)) (nil)) 0 1))
+            (set! (.requested slot) (if (> (.minimum-duration slot) 0.0) 0.0 (.presentation-time (gpu/gpu))))
+            (set! (.duration slot) (.duration (clock/clock)))
+            (assert (present-sample (.layer r) slot))
+            (set! (.drawable slot) (retain (.last-drawable (gpu/gpu))))
+            (set! (.command slot) (retain (.last-command (gpu/gpu))))
+            (set! (.theme slot) theme)
+            (set! (.scenario slot) scenario)
+            (set! (.frame slot) frame)
+            (set! (.cpu slot) (* 1000.0 (- (CACurrentMediaTime) start)))
+            (set! (.start slot) start)
+            (set! (.target slot) (.timestamp (clock/clock)))
+            (set! (.sheets slot) (len (.sheets (scene/scene))))
+            (set! (.bytes slot) (.bytes (masks/cache)))
+            (set! (.next r) (+ (.next r) 1))))))
+    (release pool))
+  0)
+
+(defn main [] (-> i64)
+  (let [pool (new c"NSAutoreleasePool")
+        r (run)
+        width (setting c"PAPER_BENCH_WIDTH" 2560)
+        height (setting c"PAPER_BENCH_HEIGHT" 1680)
+        app
+          (msg (ptr i8) (class c"NSApplication") (sel c"sharedApplication") [])
+        window
+          (msg (ptr i8)
+               (msg (ptr i8) (class c"NSWindow") (sel c"alloc") [])
+               (sel c"initWithContentRect:styleMask:backing:defer:")
+               [CGRect u64 u64 bool]
+               (cgrect 40.0 60.0 1280.0 840.0)
+               15
+               2
+               false)
+        view (msg (ptr i8) window (sel c"contentView") [])]
+    (set! (.first r) (setting c"PAPER_BENCH_THEME" 0))
+    (set! (.count r) (setting c"PAPER_BENCH_THEMES" 1))
+    (set! (.frames r) (setting c"PAPER_BENCH_FRAMES" 180))
+    (assert (and (> width 0)
+                 (> height 0)
+                 (>= (.frames r) 60)
+                 (<= (.frames r) 10000)
+                 (>= (.first r) 0)
+                 (> (.count r) 0)
+                 (<= (+ (.first r) (.count r)) 8)))
+    (scene/init)
+    (set! (.headless (host/host)) true)
+    (set! (.width (scene/scene)) width)
+    (set! (.height (scene/scene)) height)
+    (render/setup)
+    (assert (.available (gpu/gpu)))
+    (msg i64 window (sel c"setReleasedWhenClosed:") [bool] false)
+    (msg i64
+         window
+         (sel c"setTitle:")
+         [(ptr i8)]
+         (ns c"Paper — reference scene frame benchmark"))
+    (msg i64 view (sel c"setWantsLayer:") [bool] true)
+    (set! (.layer r)
+          (gpu/create-layer view
+                            1280.0
+                            840.0
+                            (msg f64 window (sel c"backingScaleFactor") [])))
+    (msg i64 app (sel c"setActivationPolicy:") [i64] 0)
+    (msg i64 app (sel c"finishLaunching") [])
+    (msg i64 window (sel c"makeKeyAndOrderFront:") [(ptr i8)] (nil))
+    (msg i64 app (sel c"activateIgnoringOtherApps:") [bool] true)
+    (printf c"theme,scenario,frame,width,height,sheets,mask_bytes,cpu_ms,gpu_ms,presented_s,start_s,target_s,requested_s,clock_duration_s,gpu_start_s,gpu_end_s,min_duration_s,metal_clock\n")
+    (assert (not (and (= (setting c"PAPER_BENCH_METAL_CLOCK" 0) 1)
+                       (= (setting c"PAPER_BENCH_MIN_DURATION" 0) 1))))
+    (set! (.presentation-duration (gpu/gpu))
+          (if (= (setting c"PAPER_BENCH_MIN_DURATION" 0) 1) (/ 1.0 60.0) 0.0))
+    (msg i64 app (sel c"updateWindows") [])
+    (msg i64 (class c"CATransaction") (sel c"flush") [])
+    (if (= (setting c"PAPER_BENCH_METAL_CLOCK" 0) 1)
+        (clock/start-metal (.layer r) (fnptr-of frame) 60.0)
+        (clock/start view (fnptr-of frame) 60.0))
+    (while (< (.received r) (* (* (.frames r) 3) (.count r)))
+      (let [event
+              (msg (ptr i8)
+                   app
+                   (sel c"nextEventMatchingMask:untilDate:inMode:dequeue:")
+                   [u64 (ptr i8) (ptr i8) bool]
+                   (cast u64 -1)
+                   (msg (ptr i8)
+                        (class c"NSDate")
+                        (sel c"dateWithTimeIntervalSinceNow:")
+                        [f64]
+                        0.1)
+                   (ns c"kCFRunLoopDefaultMode")
+                   true)]
+        (when (!= event (nil))
+          (msg i64 app (sel c"sendEvent:") [(ptr i8)] event))))
+    (clock/stop)
+    (gpu/synchronize)
+    (fflush (nil))
+    (msg i64 window (sel c"close") [])
+    (release window)
+    (workers/stop)
+    (release pool))
+  0)
