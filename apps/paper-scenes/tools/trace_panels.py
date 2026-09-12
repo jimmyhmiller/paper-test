@@ -71,6 +71,26 @@ def main():
             for start in range(0, len(values), 28):
                 print('    ' + ' '.join(map(str, values[start:start + 28])))
             print('  ]] (append-contours data sx sy)))')
+        # Author offset backing silhouettes at quarter-pixel resolution. The
+        # output is one simple native contour, avoiding nested stroke/Boolean
+        # decomposition and near-coincident curves in the runtime edge stroke.
+        whole = np.zeros((512, 768), np.uint8)
+        whole[y0:y1, x0:x1] = inside
+        enlarged = cv2.resize(whole, None, fx=4, fy=4, interpolation=cv2.INTER_NEAREST)
+        for layer, radius in enumerate([8, 4]):
+            diameter = radius * 8 + 1
+            offset = cv2.dilate(enlarged, cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                                                 (diameter, diameter)))
+            contours, _ = cv2.findContours(offset, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            points = cv2.approxPolyDP(max(contours, key=cv2.contourArea), .28 * 4, True).reshape(-1, 2)
+            values = [len(points)]
+            for x, y in points:
+                values.extend([round((float(x) + .5) * 25), round((float(y) + .5) * 25)])
+            print(f'(defn backing-{pane}-{layer} [(sx f64) (sy f64)] (-> i64)')
+            print('  (let [data [')
+            for start in range(0, len(values), 28):
+                print('    ' + ' '.join(map(str, values[start:start + 28])))
+            print('  ]] (append-contours data sx sy)))')
     print('(defn pane-path [(pane i64) (layer i64) (sx f64) (sy f64)] (-> i64)')
     print('  (case (+ (* pane 4) layer)')
     for pane in range(4):
@@ -78,6 +98,14 @@ def main():
             index = pane * 4 + layer
             prefix = f'{index} ' if index != 15 else ''
             print(f'    {prefix}(pane-{pane}-{layer} sx sy)')
+    print('  ))')
+    print('(defn backing-path [(pane i64) (layer i64) (sx f64) (sy f64)] (-> i64)')
+    print('  (case (+ (* pane 2) layer)')
+    for pane in range(4):
+        for layer in range(2):
+            index = pane * 2 + layer
+            prefix = f'{index} ' if index != 7 else ''
+            print(f'    {prefix}(backing-{pane}-{layer} sx sy)')
     print('  ))')
 
 

@@ -5,6 +5,36 @@
 (extern printf :cc c [(ptr i8) ...] (-> i32))
 (extern fflush :cc c [(ptr i8)] (-> i32))
 
+(deftest folded-wrapping-stock-preserves-printable-pane-interiors
+  (scene/init)
+  (for [face 0 8]
+    (let [path (ukiyo/fold-path face) pane (ukiyo/fold-pane face)
+          inner (ukiyo/pane-path pane 3)
+          edge (CGPathCreateCopyByStrokingPath inner (cast (ptr CGAffine) 0) 0.1 1 1 10.0)]
+      (assert (not (CGPathIsEmpty path)))
+      (assert (= path (ukiyo/fold-path face)))
+      (for [y 125 490]
+        (for [x 214 730]
+          (let [point (CGPoint :x (+ (cast f64 x) 0.5) :y (+ (cast f64 y) 0.5))]
+            (when (CGPathContainsPoint path (cast (ptr CGAffine) 0) point true)
+              (assert (CGPathContainsPoint (ukiyo/pane-path pane 1) (cast (ptr CGAffine) 0) point true))
+              ; Quartz classifies some shared boundary points inside both
+              ; Boolean results. Bound this to 0.05 reference units, as in the
+              ; pane containment test; runtime geometry has no expansion.
+              (assert (or (not (CGPathContainsPoint inner (cast (ptr CGAffine) 0) point true))
+                          (CGPathContainsPoint edge (cast (ptr CGAffine) 0) point true)))))))
+      (CGPathRelease edge)))
+  (for [pane 0 4]
+    (for [layer 0 2]
+      (let [path (ukiyo/pane-backing pane layer)]
+        (assert (not (CGPathIsEmpty path)))
+        (assert (= path (ukiyo/pane-backing pane layer)))
+        (for [y 60 245]
+          (for [x 35 370]
+            (let [point (CGPoint :x (cast f64 (* x 2)) :y (cast f64 (* y 2)))]
+              (when (CGPathContainsPoint (ukiyo/pane-path pane 0) (cast (ptr CGAffine) 0) point true)
+                (assert (CGPathContainsPoint path (cast (ptr CGAffine) 0) point true))))))))))
+
 (deftest foothill-stock-and-printed-grain-are-cached-with-cloud-occlusion
   (scene/init)
   (let [interiors [(CGPoint :x 470.0 :y 115.0) (CGPoint :x 500.0 :y 130.0)]]

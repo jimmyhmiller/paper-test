@@ -1,0 +1,29 @@
+(module paper-scenes.fold-raster)
+(import "paper-scenes.ukiyo" :as ukiyo)
+(import "paper.scene" :as scene)
+(import "paper.ffi" :use *)
+(extern printf :cc c [(ptr i8) ...] (-> i32))
+(extern fflush :cc c [(ptr i8)] (-> i32))
+
+;;; Print progress before each Quartz phase so a slow authored path is identifiable.
+(defn main [] (-> i64)
+  (scene/init)
+  (for [kind 0 2]
+    (for [which 0 8]
+      (let [path (if (= kind 0) (ukiyo/pane-backing (/ which 2) (% which 2)) (ukiyo/fold-path which))
+            cs (CGColorSpaceCreateDeviceRGB)
+            ctx (CGBitmapContextCreate (cast (ptr i8) 0) 2560 1680 8 10240 cs 0x4001)]
+        (CGColorSpaceRelease cs)
+        (CGContextScaleCTM ctx (/ 2560.0 768.0) (/ 1680.0 512.0))
+        (printf c"kind %lld path %lld fill\n" kind which) (fflush (cast (ptr i8) 0))
+        (CGContextSetRGBFillColor ctx 1.0 0.0 0.0 1.0)
+        (CGContextAddPath ctx path) (CGContextEOFillPath ctx)
+        (printf c"kind %lld path %lld stroke\n" kind which) (fflush (cast (ptr i8) 0))
+        (CGContextAddPath ctx path) (CGContextEOClip ctx)
+        (CGContextSetBlendMode ctx 27)
+        (CGContextSetRGBStrokeColor ctx 0.0 1.0 0.0 1.0)
+        (CGContextSetLineWidth ctx 0.72)
+        (CGContextAddPath ctx path) (CGContextStrokePath ctx)
+        (CGContextRelease ctx))))
+  (printf c"all fold and backing rasters complete\n")
+  0)
