@@ -586,7 +586,8 @@ inline float3 material_micro(float2 xy, constant MaskDraw& d, texture2d<float, a
 [[early_fragment_tests]]
 fragment MaskOutput mask_fragment(MaskVertex v [[stage_in]], constant MaskDraw& d [[buffer(0)]], texture2d<float, access::read> mask [[texture(0)]], texture2d<float, access::read> micro [[texture(2)]]) {
     float2 coverage = mask_coverage(v.uv, d, mask);
-    float a = coverage.r, b = coverage.g;
+    // Draw kinds: -1 continuous height contour, 0 cut sheet, 1 printed ink.
+    float a = coverage.r, b = d.material_kind.w < -0.5f ? 0.0f : coverage.g;
     if (a == 0.0f && b == 0.0f) { discard_fragment(); return {}; }
     float z = clamp(d.pigment_height.w,0.0f,64.0f) / 64.0f;
     float edge = clamp(d.pigment_height.w - 0.7f,0.0f,64.0f) / 64.0f;

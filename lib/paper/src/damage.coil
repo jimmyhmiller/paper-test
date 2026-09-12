@@ -131,6 +131,7 @@
 
 (defn sheet-equal [(a Sheet) (b Sheet)] (-> bool)
   (and (p/fcmp-eq (.z a) (.z b))
+       (= (.continuous a) (.continuous b))
        (= (.color a) (.color b))
        (p/fcmp-eq (.rough a) (.rough b))
        (p/fcmp-eq (.fiber a) (.fiber b))

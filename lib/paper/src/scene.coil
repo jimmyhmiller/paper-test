@@ -15,6 +15,7 @@
    (rough f64)
    (fiber f64)
    (seed f64)
+   (continuous bool)
    (pattern Pattern)
    (finish Finish)
    (relief (ptr relief/Panel))])

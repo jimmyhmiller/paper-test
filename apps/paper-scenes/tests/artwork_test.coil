@@ -5,6 +5,37 @@
 (extern printf :cc c [(ptr i8) ...] (-> i32))
 (extern fflush :cc c [(ptr i8)] (-> i32))
 
+(deftest sun-creases-have-nested-support-and-continuous-grain
+  (scene/init) (scene/clear 0xffffff)
+  (let [(mut parent) (CGPathCreateCopy (ukiyo/sun-path))]
+    (for [level 0 8]
+      (let [contours (CGPathCreateMutable)]
+        (for [which 0 4]
+          (let [path (ukiyo/sun-crease-path which level)]
+            (assert (= path (ukiyo/sun-crease-path which level)))
+            (assert (not (CGPathIsEmpty path)))
+            (CGPathAddPath contours (cast (ptr CGAffine) 0) path)))
+        (assert-supported-stock (+ 25 level) (load parent) contours)
+        (CGPathRelease (load parent)) (set! parent contours)))
+    (CGPathRelease (load parent)))
+  (for [scale 1 4]
+    (scene/clear 0xffffff)
+    (set! (.sx (ukiyo/canvas)) (cast f64 scale))
+    (set! (.sy (ukiyo/canvas)) (* 0.8 (cast f64 scale)))
+    (ukiyo/sun-relief)
+    (assert (= (len (.sheets (scene/scene))) 32))
+    (for [i 0 32]
+      (let [sheet (get (.sheets (scene/scene)) i)
+            dx (- (.x (.pattern sheet)) (* 546.0 (.sx (ukiyo/canvas))))
+            dy (- (.y (.pattern sheet)) (* 10.0 (.sy (ukiyo/canvas))))]
+        (assert (< (+ (* dx dx) (* dy dy)) 0.000000001))
+        (assert (= (.color sheet) 0xad3e2d))
+        (assert (>= (.z sheet) 17.0)) (assert (<= (.z sheet) 17.85))
+        (when (> (% i 8) 0)
+          (let [previous (get (.sheets (scene/scene)) (- i 1))]
+            (assert (> (.z sheet) (.z previous))))))))
+  (scene/clear 0xffffff))
+
 (deftest cherry-twigs-join-parent-stock-and-bark-print-stays-on-wood
   (scene/init) (scene/clear 0xffffff)
   (set! (.sx (ukiyo/canvas)) 1.0) (set! (.sy (ukiyo/canvas)) 1.0)

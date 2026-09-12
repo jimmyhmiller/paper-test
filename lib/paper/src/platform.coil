@@ -324,6 +324,12 @@
   (paper_material_sheet z (material/stock color rough fiber seed)))
 
 (defn paper_material_sheet [(z f64) (stock material/Material)] (-> i64)
+  (paper_material_surface z stock false))
+
+(defn paper_material_contour [(z f64) (stock material/Material)] (-> i64)
+  (paper_material_surface z stock true))
+
+(defn paper_material_surface [(z f64) (stock material/Material) (continuous bool)] (-> i64)
   (set! (.paint-z (scene)) (clamp (+ z (.offset (scene))) 0.0 64.0))
   (let [bounds (CGPathGetPathBoundingBox (.path (scene)))
         (mut pattern) (.pattern stock)]
@@ -338,6 +344,7 @@
                  :rough (clamp (.roughness stock) 0.0 1.0)
                  :fiber (clamp (.fiber stock) 0.0 1.0)
                  :seed (clamp (.seed stock) 0.0 1.0)
+                 :continuous continuous
                  :pattern (load pattern)
                  :finish (.finish stock)
                  :relief (cast (ptr relief/Panel) 0)))))
@@ -1785,6 +1792,7 @@
                    :rough 0.7
                    :fiber 0.0
                    :seed 0.0
+                   :continuous false
                    :pattern (material/plain-pattern)
                    :finish (material/matte-finish)
                    :relief (cast (ptr relief/Panel) 0)))

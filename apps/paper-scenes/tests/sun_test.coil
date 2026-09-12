@@ -6,6 +6,39 @@
 (import "paper.lighting" :as light)
 (import "paper.objc" :as o)
 (import "paper.geometry" :use [rect])
+(import "paper.render" :as render)
+(import "paper.ffi" :use [CGBitmapContextGetData])
+(extern printf :cc c [(ptr i8) ...] (-> i32))
+(extern fflush :cc c [(ptr i8)] (-> i32))
+
+(deftest sun-creases-reach-the-rendered-height-field
+  (let [pool (o/new c"NSAutoreleasePool")]
+    (scene/init) (scene/clear 0xffffff)
+    ; Inspect at 3x canonical scale, near the gallery screenshot density. The
+    ; narrow crest is subpixel at 1x and the CPU height field is only 8-bit.
+    (set! (.width (scene/scene)) 2304) (set! (.height (scene/scene)) 384)
+    (set! (.scale (scene/scene)) 1.0)
+    (set! (.sx (ukiyo/canvas)) 3.0) (set! (.sy (ukiyo/canvas)) 3.0)
+    (render/setup)
+    (ukiyo/path-stock (ukiyo/sun-path) 17.0 0xad3e2d 0.62)
+    (render/rasterize)
+    (let [data (CGBitmapContextGetData (.height-context (scene/scene)))
+          baseline (render/height-at data 1746 120 2304 384)
+          (mut raised) 0 (mut flat) 0]
+      (assert (and (> baseline 16.8) (< baseline 17.2)))
+      (ukiyo/sun-relief)
+      (render/rasterize)
+      (for [y 45 234]
+        (for [x 1650 1836]
+          (let [height (render/height-at data x y 2304 384) difference (- height baseline)]
+            (when (> difference 0.3) (set! raised (+ (load raised) 1)))
+            (when (< (* difference difference) 0.000000001)
+              (set! flat (+ (load flat) 1))))))
+      (printf c"sun baseline %.6f raised %lld flat %lld\n" baseline (load raised) (load flat))
+      (fflush (cast (ptr i8) 0))
+      (assert (> (load raised) 270))
+      (assert (> (load flat) 13500)))
+    (scene/clear 0xffffff) (o/release pool)))
 
 (deftest red-sun-is-the-shaped-lighting-launcher-and-opens-anchored-popover
   (let [pool (o/new c"NSAutoreleasePool") state (gallery/state)]

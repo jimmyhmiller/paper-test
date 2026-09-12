@@ -18,6 +18,7 @@
                            CGPathCreateCopyByStrokingPath
                            CGPathCreateCopyByTransformingPath CGPathAddPath CGPathCreateCopyByUnioningPath
                            CGPathCreateCopy CGPathCreateCopyByIntersectingPath CGPathCreateCopyBySubtractingPath])
+(import "paper.ffi" :use [CGPathGetPathBoundingBox])
 
 ;;; Reference-sized design coordinates. Geometry and typesetting share the same
 ;;; transform, keeping the mountain, panels, branches and surf in composition.
@@ -96,6 +97,63 @@
         (CGPathRelease circle) 0))
     (load slot)))
 
+(defstruct SunCreases [(paths (array (ptr i8) 32))])
+(defn sun-creases [] (-> (ptr SunCreases)) (p/alloc-static SunCreases))
+(defn sun-crease-pose [(which i64)] (-> CubicStroke)
+  (let [creases [
+    (cubic-stroke 556.0 25.0 563.0 28.0 559.0 35.0 568.0 39.0 3.6)
+    (cubic-stroke 580.0 17.0 585.0 21.0 591.0 19.0 597.0 27.0 2.8)
+    (cubic-stroke 566.0 49.0 570.0 54.0 575.0 49.0 582.0 55.0 3.0)
+    (cubic-stroke 587.0 71.0 594.0 64.0 601.0 68.0 607.0 61.0 3.2)]]
+    (get creases which)))
+
+;;; Nested tapered contours make a shallow physical ridge, not painted lighting.
+;;; Both tips meet the original sheet and every contour keeps its grain origin.
+(defn sun-crease-path [(which i64) (level i64)] (-> (ptr i8))
+  (let [slot (index (field (sun-creases) paths) (+ (* which 8) level))]
+    (when (= (load slot) (cast (ptr i8) 0))
+      (let [pose (sun-crease-pose which) stock (sun-path)
+            width (* (.width pose) (- 1.0 (/ (cast f64 level) 8.0)))]
+        (begin-sheet)
+        (for [side 0 2]
+          (for [step 0 33]
+            (let [t (/ (cast f64 (if (= side 0) step (- 32 step))) 32.0) u (- 1.0 t)
+                  x (+ (+ (* (* u u) (* u (.ax pose))) (* 3.0 (* (* u u) (* t (.bx pose)))))
+                       (+ (* 3.0 (* u (* (* t t) (.cx pose)))) (* (* t t) (* t (.dx pose)))))
+                  y (+ (+ (* (* u u) (* u (.ay pose))) (* 3.0 (* (* u u) (* t (.by pose)))))
+                       (+ (* 3.0 (* u (* (* t t) (.cy pose)))) (* (* t t) (* t (.dy pose)))))
+                  vx (+ (+ (* 3.0 (* (* u u) (- (.bx pose) (.ax pose))))
+                            (* 6.0 (* (* u t) (- (.cx pose) (.bx pose)))))
+                         (* 3.0 (* (* t t) (- (.dx pose) (.cx pose)))))
+                  vy (+ (+ (* 3.0 (* (* u u) (- (.by pose) (.ay pose))))
+                            (* 6.0 (* (* u t) (- (.cy pose) (.by pose)))))
+                         (* 3.0 (* (* t t) (- (.dy pose) (.cy pose)))))
+                  length (sqrt (+ (* vx vx) (* vy vy)))
+                  radius (* (* width 0.5) (* (sin (* t 3.141592653589793)) (if (= side 0) 1.0 -1.0)))
+                  px (- x (* (/ vy length) radius)) py (+ y (* (/ vx length) radius))]
+              (if (and (= side 0) (= step 0)) (move-to px py) (line-to px py)))))
+        (close-path)
+        (store! slot (clipping/intersect-contours (.path (scene/scene)) stock))))
+    (load slot)))
+
+(defn sun-crease-height [(level i64)] (-> f64)
+  (let [t (/ (cast f64 level) 7.0)]
+    (+ 17.0 (* 0.85 (- (* 2.0 t) (* t t))))))
+
+(defn sun-relief [] (-> i64)
+  (for [which 0 4]
+    (for [level 0 8]
+      (let [path (CGPathCreateCopyByTransformingPath (sun-crease-path which level)
+                    (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))
+            bounds (CGPathGetPathBoundingBox path)]
+        (begin-sheet) (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) path)
+        (finish-contour (sun-crease-height level)
+          (texture-offset (paper 0xad3e2d 0.62)
+            (- (* 546.0 (.sx (canvas))) (.x bounds))
+            (- (* 10.0 (.sy (canvas))) (.y bounds))))
+        (CGPathRelease path))))
+  0)
+
 ;;; Reference-derived cut stock. Cache canonical outlines separately from ink.
 (defstruct RidgeArt [(paths (array (ptr i8) 2)) (grain (array (ptr i8) 2))])
 (defn ridge-art [] (-> (ptr RidgeArt)) (p/alloc-static RidgeArt))
@@ -124,6 +182,7 @@
     (ink-height 17.0)
     (host/paper_path_hit 500 visible c"Sun: adjust lighting" 0 0.0)
     (CGPathRelease visible))
+  (sun-relief)
   (let [base (CGPathCreateCopyByTransformingPath (mountain-path 0)
                 (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
     (begin-sheet) (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) base)
@@ -403,32 +462,32 @@
     (CGPathRelease branch))
   0)
 
-(defstruct Twig [(ax f64) (ay f64) (bx f64) (by f64) (cx f64) (cy f64)
+(defstruct CubicStroke [(ax f64) (ay f64) (bx f64) (by f64) (cx f64) (cy f64)
                 (dx f64) (dy f64) (width f64)])
-(defn sprig [(ax f64) (ay f64) (bx f64) (by f64) (cx f64) (cy f64)
-             (dx f64) (dy f64) (width f64)] (-> Twig)
-  (Twig :ax ax :ay ay :bx bx :by by :cx cx :cy cy :dx dx :dy dy :width width))
-(defn twig-pose [(i i64)] (-> Twig)
+(defn cubic-stroke [(ax f64) (ay f64) (bx f64) (by f64) (cx f64) (cy f64)
+             (dx f64) (dy f64) (width f64)] (-> CubicStroke)
+  (CubicStroke :ax ax :ay ay :bx bx :by by :cx cx :cy cy :dx dx :dy dy :width width))
+(defn twig-pose [(i i64)] (-> CubicStroke)
   ; Branch junctions lead into the authored flower clusters, not evenly spaced
   ; side shoots. Hidden tips continue beneath the petals during their motion.
   (let [twigs [
-    (sprig 9.0 286.2 8.0 276.0 11.0 266.0 12.0 258.0 1.5)
-    (sprig 19.0 253.3 15.0 239.0 10.0 231.0 9.0 224.0 1.1)
-    (sprig 16.6 218.4 19.0 202.0 22.0 192.0 25.0 184.0 1.1)
-    (sprig 20.4 186.4 29.0 173.0 31.0 161.0 32.0 154.0 1.7)
-    (sprig 25.0 158.2 26.0 146.0 26.0 138.0 28.0 131.0 0.8)
-    (sprig 30.0 135.6 36.0 132.0 39.0 129.0 40.0 126.0 1.2)
-    (sprig 38.8 107.9 40.0 99.0 34.0 93.0 32.0 87.0 1.2)
-    (sprig 47.1 88.5 49.0 81.0 49.0 76.0 47.0 72.0 1.4)
-    (sprig 60.5 65.3 65.0 59.0 72.0 54.0 77.0 48.0 0.9)
-    (sprig 82.7 41.3 92.0 40.0 99.0 34.0 108.0 33.0 1.5)
-    (sprig 98.9 33.9 104.0 27.0 108.0 21.0 111.0 14.0 1.1)
-    (sprig 116.1 26.7 121.0 31.0 126.0 35.0 129.0 39.0 0.9)
-    (sprig 132.1 23.3 131.0 15.0 133.0 8.0 138.0 6.0 1.4)
-    (sprig 151.0 20.3 155.0 23.0 154.0 27.0 151.0 29.0 1.3)
-    (sprig 175.1 19.5 173.0 28.0 175.0 36.0 178.0 42.0 1.2)
-    (sprig 197.0 17.4 205.0 17.0 207.0 26.0 208.0 34.0 1.2)
-    (sprig 204.1 -1.3 216.0 4.0 224.0 5.0 230.0 9.0 0.8)]]
+    (cubic-stroke 9.0 286.2 8.0 276.0 11.0 266.0 12.0 258.0 1.5)
+    (cubic-stroke 19.0 253.3 15.0 239.0 10.0 231.0 9.0 224.0 1.1)
+    (cubic-stroke 16.6 218.4 19.0 202.0 22.0 192.0 25.0 184.0 1.1)
+    (cubic-stroke 20.4 186.4 29.0 173.0 31.0 161.0 32.0 154.0 1.7)
+    (cubic-stroke 25.0 158.2 26.0 146.0 26.0 138.0 28.0 131.0 0.8)
+    (cubic-stroke 30.0 135.6 36.0 132.0 39.0 129.0 40.0 126.0 1.2)
+    (cubic-stroke 38.8 107.9 40.0 99.0 34.0 93.0 32.0 87.0 1.2)
+    (cubic-stroke 47.1 88.5 49.0 81.0 49.0 76.0 47.0 72.0 1.4)
+    (cubic-stroke 60.5 65.3 65.0 59.0 72.0 54.0 77.0 48.0 0.9)
+    (cubic-stroke 82.7 41.3 92.0 40.0 99.0 34.0 108.0 33.0 1.5)
+    (cubic-stroke 98.9 33.9 104.0 27.0 108.0 21.0 111.0 14.0 1.1)
+    (cubic-stroke 116.1 26.7 121.0 31.0 126.0 35.0 129.0 39.0 0.9)
+    (cubic-stroke 132.1 23.3 131.0 15.0 133.0 8.0 138.0 6.0 1.4)
+    (cubic-stroke 151.0 20.3 155.0 23.0 154.0 27.0 151.0 29.0 1.3)
+    (cubic-stroke 175.1 19.5 173.0 28.0 175.0 36.0 178.0 42.0 1.2)
+    (cubic-stroke 197.0 17.4 205.0 17.0 207.0 26.0 208.0 34.0 1.2)
+    (cubic-stroke 204.1 -1.3 216.0 4.0 224.0 5.0 230.0 9.0 0.8)]]
     (get twigs i)))
 
 ;;; Authored blossom centers and face proportions follow the reference clusters.

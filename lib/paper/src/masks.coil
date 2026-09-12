@@ -1108,7 +1108,7 @@
       (let [frame (get (.frame-masks (cache)) (.order item))]
         (when (and (.valid frame) (intersects (.logical-bounds frame) (load (composition-region))))
           (draw-mask encoder (.texture frame) (.bounds frame) (.color item) (.z item)
-                     (.rough item) (.fiber item) (.seed item) 0.0
+                     (.rough item) (.fiber item) (.seed item) (if (.continuous item) -1.0 0.0)
                      (.pattern item) (.finish item) (.tiled frame))))
       (when (and (not (CGPathIsEmpty (.path item)))
              (intersects (CGPathGetPathBoundingBox (.path item))
@@ -1164,7 +1164,7 @@
                      (.rough item)
                      (.fiber item)
                      (.seed item)
-                     0.0
+                     (if (.continuous item) -1.0 0.0)
                      (.pattern item)
                      (.finish item)
                      tiled))))
