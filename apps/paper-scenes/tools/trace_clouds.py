@@ -8,6 +8,11 @@ import cv2
 import numpy as np
 
 
+def inner_cloud_face(level):
+    """Inset a quarter-pixel stock mask by 0.75 reference pixels."""
+    return cv2.erode(level, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+
+
 def header_under_branches(mask):
     """Reconstruct the paper edge obscured by flowers, not their silhouettes.
 
@@ -47,8 +52,8 @@ def main():
          (658, 28), (625, 24), (600, 17), (549, 14), (511, 14),
          (473, 20), (420, 21), (391, 28), (338, 34), (283, 35),
          (235, 31), (191, 36)],
-        [(189, 24), (285, 19), (359, 25), (391, 39), (390, 68),
-         (365, 88), (316, 100), (279, 78), (221, 60), (189, 46)],
+        [(214, 27), (285, 19), (359, 25), (391, 39), (390, 68),
+         (365, 88), (316, 100), (279, 78), (221, 60), (214, 49)],
         [(603, 43), (655, 39), (705, 43), (736, 52), (767, 64),
          (767, 183), (729, 185), (707, 168), (663, 158), (637, 143),
          (634, 116), (615, 91), (590, 73), (585, 52)],
@@ -65,6 +70,7 @@ def main():
     print('(module paper-scenes.cloud-paths)')
     print('(import "paper-scenes.wave-paths" :use [append-contours])')
     print(';;; Native cloud-paper boundaries; source pixels are authoring input only.')
+    levels = []
     for which, envelope in enumerate(envelopes):
         ownership = np.zeros((512, 768), np.uint8)
         cv2.fillPoly(ownership, [np.array(envelope)], 255)
@@ -79,6 +85,12 @@ def main():
         if which == 3:
             mask = header_under_branches(mask)
         level = (cv2.resize(mask, None, fx=4, fy=4, interpolation=cv2.INTER_LINEAR) > 127).astype(np.uint8) * 255
+        levels.append(level)
+    # A shallow inner face leaves a narrow exposed stock lip on the top band
+    # and the foreground header ribbon. Preserve the original outer silhouettes.
+    for which in (0, 3):
+        levels.append(inner_cloud_face(levels[which]))
+    for which, level in enumerate(levels):
         contours, _ = cv2.findContours(level, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         values = []
         for contour in contours:
@@ -96,7 +108,7 @@ def main():
             print('    ' + ' '.join(map(str, values[start:start + 28])))
         print('  ]] (append-contours data sx sy)))')
     print('(defn stock-path [(which i64) (sx f64) (sy f64)] (-> i64)')
-    print('  (case which 0 (stock-0 sx sy) 1 (stock-1 sx sy) 2 (stock-2 sx sy) 3 (stock-3 sx sy) (stock-4 sx sy)))')
+    print('  (case which 0 (stock-0 sx sy) 1 (stock-1 sx sy) 2 (stock-2 sx sy) 3 (stock-3 sx sy) 4 (stock-4 sx sy) 5 (stock-5 sx sy) (stock-6 sx sy)))')
 
 
 if __name__ == '__main__':

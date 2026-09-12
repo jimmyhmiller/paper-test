@@ -141,7 +141,7 @@
   0)
 
 ;;; Reference-derived connected cloud stock, cached in design coordinates.
-(defstruct CloudArt [(paths (array (ptr i8) 6))])
+(defstruct CloudArt [(paths (array (ptr i8) 8))])
 (defn cloud-art [] (-> (ptr CloudArt)) (p/alloc-static CloudArt))
 (defn cloud-path [(which i64)] (-> (ptr i8))
   (let [slot (index (field (cloud-art) paths) which)]
@@ -150,9 +150,13 @@
           (let [banks (CGPathCreateCopyByUnioningPath (cloud-path 1) (cloud-path 2) true)]
             (store! slot (CGPathCreateCopyByUnioningPath banks (cloud-path 4) true))
             (CGPathRelease banks) 0)
-          (do
-            (begin-sheet) (clouds/stock-path which 1.0 1.0)
-            (store! slot (CGPathCreateCopy (.path (scene/scene)))))))
+          (if (>= which 6)
+              (let [outer (cloud-path (if (= which 6) 0 3))]
+                (begin-sheet) (clouds/stock-path (- which 1) 1.0 1.0)
+                (store! slot (CGPathCreateCopyByIntersectingPath (.path (scene/scene)) outer true)))
+              (do
+                (begin-sheet) (clouds/stock-path which 1.0 1.0)
+                (store! slot (CGPathCreateCopy (.path (scene/scene))))))))
     (load slot)))
 
 (defn clouds [] (-> i64)
@@ -163,10 +167,13 @@
                  (CGAffine :a (.sx (canvas)) :b 0.0 :c 0.0 :d (.sy (canvas)) :tx 0.0 :ty 0.0))]
       (begin-sheet)
       (CGPathAddPath (.path (scene/scene)) (cast (ptr CGAffine) 0) path)
-      (finish (case which 0 19.4 1 17.0 2 17.0 23.0)
-              (case which 0 0xe5d4b3 1 0xe1cead 2 0xe1cead 0xe7d5b2)
+      (finish (if (= which 0) 18.8 22.4)
+              (if (= which 0) 0xcabb9d 0xcfba95)
               (case which 0 0.17 3 0.47 0.43))
-      (CGPathRelease path)))
+      (CGPathRelease path)
+      (path-stock (cloud-path (+ i 6)) (if (= which 0) 19.4 23.0)
+                  (if (= which 0) 0xe5d4b3 0xe7d5b2)
+                  (if (= which 0) 0.17 0.47))))
   0)
 
 (defstruct PaneArt [(paths (array (ptr i8) 16))])

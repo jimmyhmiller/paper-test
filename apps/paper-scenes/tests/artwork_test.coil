@@ -163,6 +163,22 @@
       (CGPathRelease shape))
     context))
 
+(deftest cloud-faces-stay-on-their-stock-at-three-scales
+  (scene/init)
+  (for [layer 0 2]
+    (let [outer (ukiyo/cloud-path (if (= layer 0) 0 3))
+          inner (ukiyo/cloud-path (+ layer 6))]
+      (assert (= inner (ukiyo/cloud-path (+ layer 6))))
+      (assert (not (CGPathIsEmpty inner)))
+      (for [resolution 1 4]
+        (let [a (coverage outer (cast f64 resolution) 0.05)
+              b (coverage inner (cast f64 resolution) 0.0)
+              outer-pixels (CGBitmapContextGetData a) inner-pixels (CGBitmapContextGetData b)]
+          (for [i 0 (* (* 768 512) (* resolution resolution))]
+            (assert (<= (- (cast i64 (load (index inner-pixels (* i 4))))
+                           (cast i64 (load (index outer-pixels (* i 4))))) 1)))
+          (CGContextRelease a) (CGContextRelease b))))))
+
 (deftest canonical-paper-layers-cover-inner-stock-with-subpixel-precision
   (scene/init)
   (for [pane 0 4]
