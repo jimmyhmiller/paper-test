@@ -16,6 +16,29 @@
 (import "paper.geometry" :use [Rect rect clamp contains?])
 (import "layout.core" :as layout)
 
+(defstruct FrameIntegration
+  [(before (fnptr c [] bool)) (present (fnptr c [(ptr i8)] bool))
+   (enabled bool)])
+
+(defn frame-integration [] (-> (ptr FrameIntegration))
+  (primitive/alloc-static FrameIntegration))
+
+;;; Install stable main-thread callbacks before paper_run. before runs on each
+;;; display frame, even when no redraw is pending; false defers scene rebuilding.
+;;; present submits this frame to the supplied CAMetalLayer and reports success.
+;;; The owner keeps both callbacks alive until paper_run returns, then clears
+;;; the registration. Callbacks must return promptly and preserve thread affinity.
+(defn paper_frame_integration [(before (fnptr c [] bool))
+                               (present (fnptr c [(ptr i8)] bool))] (-> i64)
+  (set! (.before (frame-integration)) before)
+  (set! (.present (frame-integration)) present)
+  (set! (.enabled (frame-integration)) true)
+  0)
+
+(defn paper_clear_frame_integration [] (-> i64)
+  (set! (.enabled (frame-integration)) false)
+  0)
+
 (defstruct Input
   [(container (ptr i8))
    (id i64)
@@ -998,7 +1021,11 @@
         (let [item (al/al-get [Input] (.inputs app) i)]
           (msg i64 (.view item) (sel c"setHidden:") [bool] (not (.live item)))))
       (if (.available (gpu/gpu))
-          (do (when (not (gpu/present (.layer app))) (paper_redraw)) 0)
+          (let [presented
+                  (if (.enabled (frame-integration))
+                      (call-ptr (.present (frame-integration)) (.layer app))
+                      (gpu/present (.layer app)))]
+            (when (not presented) (paper_redraw)) 0)
           (let [image (CGBitmapContextCreateImage (.output-context (scene)))]
             (msg i64 (class c"CATransaction") (sel c"begin") [])
             (msg i64
@@ -1960,7 +1987,9 @@
   (poll-inputs)
   (poll-pointer)
   (tick-if-due (CACurrentMediaTime) (* 0.5 (.duration (frame-clock/clock))))
-  (when (.dirty (scene)) (refresh))
+  (let [ready (if (.enabled (frame-integration))
+                 (call-ptr (.before (frame-integration))) true)]
+    (when (and ready (.dirty (scene))) (refresh)))
   0)
 
 ;;; Normalize gestures against the last submitted control, so layout and event
