@@ -39,6 +39,20 @@
   (set! (.enabled (frame-integration)) false)
   0)
 
+(defstruct DrawAdmission [(enter (fnptr c [] bool)) (leave (fnptr c [] i64)) (enabled bool)])
+(defn draw-admission [] (-> (ptr DrawAdmission)) (primitive/alloc-static DrawAdmission))
+;;; Admission runs before refresh mutates controls or scene state, including
+;;; initial, resize and display-driven refreshes. A successful enter is paired
+;;; with leave immediately after the application draw callback.
+(defn paper_draw_admission [(enter (fnptr c [] bool)) (leave (fnptr c [] i64))] (-> i64)
+  (set! (.enter (draw-admission)) enter)
+  (set! (.leave (draw-admission)) leave)
+  (set! (.enabled (draw-admission)) true)
+  0)
+(defn paper_clear_draw_admission [] (-> i64)
+  (set! (.enabled (draw-admission)) false)
+  0)
+
 (defstruct Input
   [(container (ptr i8))
    (id i64)
@@ -992,20 +1006,28 @@
     (for [i 0 100000]
       (set! (.ticks app) (+ (.ticks app) 1))
       (dispatch 6 0 (CACurrentMediaTime) 0.0)
-      (for [k 0 (len (.inputs app))]
-        (set! (.live (al/al-elem [Input] (field app inputs) k)) false))
-      (call-ptr (.draw app))
-      (render/render-frame false)
-      (gpu/synchronize)
-      (set! (.gpu (gpu/present-cost)) (.gpu-ms (gpu/gpu)))))
+      (let [ready (if (.enabled (draw-admission))
+                     (call-ptr (.enter (draw-admission))) true)]
+        (when ready
+          (for [k 0 (len (.inputs app))]
+            (set! (.live (al/al-elem [Input] (field app inputs) k)) false))
+          (call-ptr (.draw app))
+          (when (.enabled (draw-admission)) (call-ptr (.leave (draw-admission))) 0)
+          (render/render-frame false)
+          (gpu/synchronize)
+          (set! (.gpu (gpu/present-cost)) (.gpu-ms (gpu/gpu)))))))
   0)
 
 (defn refresh [] (-> i64)
+  (block :refresh
+    (when (.enabled (draw-admission))
+      (unless (call-ptr (.enter (draw-admission))) (break :refresh 0)) 0)
   (let [app (host)
         editor (editing-input)]
     (for [i 0 (al/al-len [Input] (.inputs app))]
       (set! (.live (al/al-elem [Input] (field app inputs) i)) false))
     (call-ptr (.draw app))
+    (when (.enabled (draw-admission)) (call-ptr (.leave (draw-admission))) 0)
     (when (or (and (> (.focus app) 0) (< (focus-index (.focus app)) 0))
               (and (> editor 0) (< (focus-index editor) 0)))
       (set! (.focus app) 0)
@@ -1038,7 +1060,7 @@
             (CGImageRelease image)
             0))
       (accessibility-refresh)))
-  0)
+  0))
 
 (defn hit-test [(x f64) (y f64)] (-> i64)
   (let [(mut result) 0
