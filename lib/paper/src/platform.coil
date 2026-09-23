@@ -747,6 +747,14 @@
   (set! (.dirty (scene)) true)
   0)
 
+;;; Leave the AppKit loop after an attached REPL requests shutdown.
+(defn paper_repl_close [] (-> i64)
+  (let [window (.window (host))]
+    (when (!= window (nil))
+      (msg i64 window (sel c"close") [])
+      0))
+  0)
+
 ;;; Request focus for a control submitted by the next draw, such as a new dialog.
 (defn paper_focus [(id i64)] (-> i64)
   (set! (.requested-focus (host)) id)

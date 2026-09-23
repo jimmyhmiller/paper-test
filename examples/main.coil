@@ -9,6 +9,9 @@
 (import "papercut.listening" :as music)
 (import "papercut.atlas" :as atlas)
 (import "paper.lighting" :as light)
+(import "papercut.live-colors" :as live-colors)
+
+(export repl-launch repl-stop redraw)
 
 (defn lighting [] (-> (ptr light/Lighting))
   (primitive/alloc-static light/Lighting))
@@ -22,7 +25,7 @@
             [space (box (grow 1.0) (grow 1.0))]
             [tabs (box (fixed 646.0) (fixed 40.0))]
             [end-space (box (grow 1.0) (grow 1.0))]]
-           (caption brand 25.0 0xe8dfca 1 c"papercut")
+           (caption brand 25.0 (live-colors/brand-color) 1 c"papercut")
            (caption edition 10.0 0x9eaa98 2 c"STUDIO / 01")
            (let [(mut style) (selection-style (linen 0x424a40) (cream) (moss))]
              (set! (.treatment style) 1)
@@ -278,6 +281,10 @@
 
 (defn main [] (-> i64)
   (host/paper_run (primitive/fnptr-of draw) (primitive/fnptr-of event)))
+
+(defn repl-launch [] (-> i64) (main))
+
+(defn repl-stop [] (-> i64) (host/paper_repl_close))
 
 (defn redraw [] (-> i64)
   (host/paper_redraw))
