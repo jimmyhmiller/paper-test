@@ -110,8 +110,15 @@
              (masks/micro-reset)
              (render/rasterize-frame false)
              (when (.available (gpu/gpu))
-               (assert (> (.prepared-pixels (masks/micro-cache)) 0))
-               (assert (< (.prepared-pixels (masks/micro-cache)) 3000))
+               ;; The cache was just emptied, so the stocks under the damage bake
+               ;; their tiles again: whole tiles, and only for those few stocks.
+               (let [tile
+                       (* (cast i64 masks/MICRO-TILE)
+                          (cast i64 masks/MICRO-TILE))
+                     prepared (.prepared-pixels (masks/micro-cache))]
+                 (assert (> prepared 0))
+                 (assert (= (% prepared tile) 0))
+                 (assert (<= prepared (* 4 tile))))
                (assert (> (.w (.pending (gpu/gpu))) 0.0))
                (assert (< (.w (.pending (gpu/gpu))) 45.0)))
              (render/render-frame true)

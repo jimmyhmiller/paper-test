@@ -29,16 +29,16 @@
   (let [bounds (CGPathGetPathBoundingBox aperture)
         (mut oldest) 0
         (mut found) -1]
-    (store! (serial) (+ (load (serial)) 1))
+    (set! (serial) (+ (load (serial)) 1))
     (for [i 0 4096]
       (let [entry (index (entries) i)]
         (when (< (.used entry) (.used (index (entries) (load oldest))))
           (set! oldest i))
         (when (and (!= (.source entry) (cast (ptr i8) 0))
-                   (p/fcmp-eq (.x (.bounds entry)) (.x bounds))
-                   (p/fcmp-eq (.y (.bounds entry)) (.y bounds))
-                   (p/fcmp-eq (.w (.bounds entry)) (.w bounds))
-                   (p/fcmp-eq (.h (.bounds entry)) (.h bounds))
+                   (= (.x (.bounds entry)) (.x bounds))
+                   (= (.y (.bounds entry)) (.y bounds))
+                   (= (.w (.bounds entry)) (.w bounds))
+                   (= (.h (.bounds entry)) (.h bounds))
                    (CGPathEqualToPath (.source entry) source)
                    (CGPathEqualToPath (.aperture entry) aperture))
           (set! found i)

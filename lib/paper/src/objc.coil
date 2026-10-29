@@ -1,24 +1,45 @@
 (module paper.objc)
+(import "coil.cc" :as cc)
 (import "coil.primitive" :as primitive)
 
 ;; Direct message-send pattern from jim-coil-rewrite/src/objc.coil.
 ;; Argument and value-return ABIs are explicit. Void messages follow Jim's
 ;; unit-message convention: the return register is ignored. Coil currently
 ;; rejects void-returning fnptr casts (recorded in the coil-bugs pad).
-(extern objc_getClass :cc c [(ptr i8)] (-> (ptr i8)))
+(extern objc_getClass :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
 
-(extern sel_registerName :cc c [(ptr i8)] (-> (ptr i8)))
+(extern sel_registerName :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
 
-(extern objc_msgSend :cc c [(ptr i8) (ptr i8)] (-> (ptr i8)))
+(extern objc_msgSend :cc (cc/C) [(ptr i8) (ptr i8)] (-> (ptr i8)))
 
 (defn class [(name (ptr i8))] (-> (ptr i8))
   (objc_getClass name))
 
-(defn sel [(name (ptr i8))] (-> (ptr i8))
-  (sel_registerName name))
+;;; A selector written as a literal is registered once and kept in a cell of its
+;;; own call site. `sel_registerName` takes the runtime's lock and hashes the
+;;; name on every call, and a frame sends tens of thousands of messages, nearly
+;;; all of them to selectors spelled out in the source. A selector chosen at
+;;; run time is an expression rather than a literal and is looked up each time.
+;;; The cell is one word and every writer stores the same value, so threads
+;;; racing to fill it agree.
+(defn sel [(name Code)] (-> Code)
+  (if (or (primitive/code-list? name) (primitive/code-sym? name))
+      `(sel_registerName ~name)
+      (let [cell (primitive/fresh-identifier "selector-cell")
+            cached (primitive/fresh-identifier "selector")
+            registered (primitive/fresh-identifier "registered")]
+        `(let [~cell (primitive/alloc-static (ptr i8))
+               ~cached (primitive/load ~cell)]
+           (if (= ~cached (primitive/cast (ptr i8) 0))
+               (let [~registered (sel_registerName ~name)]
+                 (primitive/store! ~cell ~registered)
+                 ~registered)
+               ~cached)))))
 
 (defn msg [(ret Code) (recv Code) (selector Code) (argtypes Code) & (args Code)] (-> Code)
-  `(primitive/call-ptr (primitive/cast (fnptr c [(ptr i8) (ptr i8) ~@argtypes] ~ret)
+  `(primitive/call-ptr (primitive/cast (fnptr (cc/C)
+                                              [(ptr i8) (ptr i8) ~@argtypes]
+                                              ~ret)
                                        (primitive/fnptr-of objc_msgSend))
                        ~recv
                        ~selector
@@ -28,7 +49,11 @@
   (cast (ptr i8) 0))
 
 (defn ns [(text (ptr i8))] (-> (ptr i8))
-  (msg (ptr i8) (class c"NSString") (sel c"stringWithUTF8String:") [(ptr i8)] text))
+  (msg (ptr i8)
+       (class c"NSString")
+       (sel c"stringWithUTF8String:")
+       [(ptr i8)]
+       text))
 
 (defn new [(name (ptr i8))] (-> (ptr i8))
   (msg (ptr i8) (class name) (sel c"new") []))
@@ -43,7 +68,7 @@
 (defn utf8 [(obj (ptr i8))] (-> (ptr i8))
   (msg (ptr i8) obj (sel c"UTF8String") []))
 
-(extern dlsym :cc c [(ptr i8) (ptr i8)] (-> (ptr i8)))
+(extern dlsym :cc (cc/C) [(ptr i8) (ptr i8)] (-> (ptr i8)))
 
 ;;; Some Cocoa constants, particularly common run-loop modes, are identity
 ;;; tokens. Resolve their exported object instead of recreating an equal string.

@@ -1395,32 +1395,12 @@
 (defn draw-chrome [(header Rect) (footer Rect)] (-> i64)
   (let [s (model/session)]
     (ink-height 2.0)
-    (label (.x header)
-           (+ (.y header) 2.0)
-           26.0
-           0xd8d2c0
-           (t/serif)
-           c"paper transcript")
-    (d/tracked (rect (+ (.x header) 230.0) (+ (.y header) 13.0) 150.0 14.0)
-               c"STUDIO / 05"
-               10.0
-               2.5
-               0xd8d2c0)
-    (text-box (rect (.x footer) (.y footer) (* (.w footer) 0.65) (.h footer))
-              12.0
-              0xd8d2c0
-              (t/serif)
-              (if (.status-notice s)
-                  (model/status s)
-                  c"Cut the words. The audio follows."))
-    (let [credit c"WHISPER · FORCED ALIGNMENT · NON-DESTRUCTIVE"
-          w (text-width credit 10.0 (t/mono))]
-      (label (- (+ (.x footer) (.w footer)) w)
-             (+ (.y footer) 1.0)
-             10.0
-             0xb1b4a3
-             (t/mono)
-             credit))
+    (when (.status-notice s)
+      (text-box (rect (.x footer) (.y footer) (* (.w footer) 0.65) (.h footer))
+                12.0
+                0xd8d2c0
+                (t/serif)
+                (model/status s)))
     (when (.transcribing s)
       (progress (rect (+ (.x header) 360.0) (+ (.y header) 12.0) 180.0 8.0)
                 (/ (cast f64 (.progress s)) 100.0)
@@ -1496,23 +1476,24 @@
 (defn draw-diagnostics [(viewport Rect)] (-> i64)
   (let [s (model/session)
         d (diag/diagnostics)
-        w 640.0
-        h 224.0
+        w 700.0
+        h 243.0
         r (rect (- (.w viewport) (+ w 24.0)) 58.0 w h)]
     (panel r 10.0 (t/z-raised) (cotton 0x20261f))
     (ink-height (t/z-raised))
     (overlay-line r 0 0xe0c98a (diag/line-frames d))
-    (overlay-line r 10 0xe0c98a (diag/line-display d))
-    (overlay-line r 1 0x9fb094 (diag/line-phases d))
-    (overlay-line r 2 0x9fb094 (diag/line-renderer d))
-    (overlay-line r 9 0x9fb094 (diag/line-scene d))
-    (overlay-line r 3 0xc2b79c (diag/line-take d s))
-    (overlay-line r 4 0xc2b79c (diag/line-counts d s))
-    (overlay-line r 5 0xc2b79c (diag/line-audio d s))
-    (overlay-line r 6 0xc2b79c (diag/line-wave d s))
-    (overlay-line r 7 0xc2b79c (diag/line-text d s))
+    (overlay-line r 11 0xe0c98a (diag/line-display d))
+    (overlay-line r 1 0xe0c98a (diag/line-callback d))
+    (overlay-line r 2 0x9fb094 (diag/line-phases d))
+    (overlay-line r 3 0x9fb094 (diag/line-renderer d))
+    (overlay-line r 10 0x9fb094 (diag/line-scene d))
+    (overlay-line r 4 0xc2b79c (diag/line-take d s))
+    (overlay-line r 5 0xc2b79c (diag/line-counts d s))
+    (overlay-line r 6 0xc2b79c (diag/line-audio d s))
+    (overlay-line r 7 0xc2b79c (diag/line-wave d s))
+    (overlay-line r 8 0xc2b79c (diag/line-text d s))
     (overlay-line r
-                  8
+                  9
                   0x8b9683
                   c"⇧⌘D closes this   ⇧⌘T writes a trace to /tmp/paper-transcript-trace.txt"))
   0)

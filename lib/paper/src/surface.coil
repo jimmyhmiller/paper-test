@@ -163,12 +163,14 @@
           (+ (.bevel (profile/counters)) (profile/elapsed start)))
     result))
 
-(defn cached-bevel-contours [(outline (ptr i8)) (width f64)] (-> (ptr BevelContours))
+(defn cached-bevel-contours [(outline (ptr i8)) (width f64)]
+  (-> (ptr BevelContours))
   (let [entry (prepare-bevel-contours outline width)]
     (when (= (.outer entry) (cast (ptr i8) 0)) (build-bevel-contours entry))
     entry))
 
-(defn prepare-bevel-contours [(outline (ptr i8)) (width f64)] (-> (ptr BevelContours))
+(defn prepare-bevel-contours [(outline (ptr i8)) (width f64)]
+  (-> (ptr BevelContours))
   (let [cache (bevel-cache)
         (mut oldest) 0
         (mut found) -1]
@@ -178,7 +180,7 @@
         (when (< (.used entry) (.used (index (bevel-entries) (load oldest))))
           (set! oldest i))
         (when (and (!= (.outline entry) (cast (ptr i8) 0))
-                   (p/fcmp-eq (.width entry) width)
+                   (= (.width entry) width)
                    (CGPathEqualToPath (.outline entry) outline))
           (set! found i)
           (break))))
@@ -221,7 +223,7 @@
 ;;; constructs one immutable contour set. No scene submission occurs off-thread.
 (defn complete-bevel-preparation [] (-> i64)
   (let [start (profile/start)]
-    (workers/apply 256 (cast (ptr i8) 0) (p/fnptr-of prepare-bevel-worker))
+    (workers/apply 256 (cast (ptr i8) 0) (fnptr-of prepare-bevel-worker))
     (set! (.bevel (profile/counters))
           (+ (.bevel (profile/counters)) (profile/elapsed start))))
   0)
@@ -280,11 +282,12 @@
     (for [i 0 4]
       (assert (CGPathContainsPoint (.path (scene))
                                    (cast (ptr CGAffine) 0)
-                                   (CGPoint :x
-                                              (+ (.x bounds)
-                                                 (if (= (% i 2) 0)
-                                                     0.0
-                                                     (.w bounds)))
+                                   (CGPoint
+                                     :x
+                                       (+ (.x bounds)
+                                          (if (= (% i 2) 0)
+                                              0.0
+                                              (.w bounds)))
                                      :y
                                        (+ (.y bounds)
                                           (if (< i 2) 0.0 (.h bounds))))
@@ -309,7 +312,8 @@
   (finish-sheet z material))
 
 ;;; A frame is a sheet with a rounded hole. It casts shadows onto any lower sheet.
-(defn frame [(r Rect) (radius f64) (border f64) (z f64) (material Material)] (-> i64)
+(defn frame [(r Rect) (radius f64) (border f64) (z f64) (material Material)]
+  (-> i64)
   (begin-sheet)
   (rounded-path r radius)
   (rounded-path (inset r border) (- radius border))
@@ -330,7 +334,8 @@
   (frame r radius 5.0 z top))
 
 ;;; A ring is an elliptical sheet with an elliptical aperture.
-(defn ring [(x f64) (y f64) (d f64) (border f64) (z f64) (material Material)] (-> i64)
+(defn ring [(x f64) (y f64) (d f64) (border f64) (z f64) (material Material)]
+  (-> i64)
   (begin-sheet)
   (oval-path (rect x y d d))
   (oval-path (rect (+ x border)

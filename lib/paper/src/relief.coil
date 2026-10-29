@@ -1,11 +1,11 @@
 (module paper.relief)
-(import "coil.primitive" :as p)
+(import "coil.cc" :as cc)
 (import "coil.alloc" :as alloc)
 (import "paper.ffi" :use *)
 (import "paper.material" :as material)
 (import "paper.geometry" :use [Rect])
 
-(extern free :cc c [(ptr i8)] (-> void))
+(extern free :cc (cc/C) [(ptr i8)] (-> void))
 
 ;;; Immutable, owning description of one rounded panel and its carved aperture.
 ;;; The callback expands it to ordinary sheets when cuts/interleaving require it.
@@ -22,7 +22,7 @@
    (edge material/Material)
    (top material/Material)
    (bottom material/Material)
-   (expand (fnptr c [(ptr i8)] i64))])
+   (expand (fnptr (cc/C) [(ptr i8)] i64))])
 
 (defn retain [(panel (ptr Panel))] (-> (ptr Panel))
   (when (!= panel (cast (ptr Panel) 0))
@@ -40,9 +40,9 @@
 
 (defn stock-equal [(a material/Material) (b material/Material)] (-> bool)
   (and (= (.pigment a) (.pigment b))
-       (p/fcmp-eq (.roughness a) (.roughness b))
-       (p/fcmp-eq (.fiber a) (.fiber b))
-       (p/fcmp-eq (.seed a) (.seed b))
+       (= (.roughness a) (.roughness b))
+       (= (.fiber a) (.fiber b))
+       (= (.seed a) (.seed b))
        (material/pattern-equal (.pattern a) (.pattern b))
        (material/finish-equal (.finish a) (.finish b))))
 
@@ -51,16 +51,16 @@
       true
       (and (!= a (cast (ptr Panel) 0))
            (!= b (cast (ptr Panel) 0))
-           (p/fcmp-eq (.x (.bounds a)) (.x (.bounds b)))
-           (p/fcmp-eq (.y (.bounds a)) (.y (.bounds b)))
-           (p/fcmp-eq (.w (.bounds a)) (.w (.bounds b)))
-           (p/fcmp-eq (.h (.bounds a)) (.h (.bounds b)))
-           (p/fcmp-eq (.radius a) (.radius b))
-           (p/fcmp-eq (.shoulder-width a) (.shoulder-width b))
-           (p/fcmp-eq (.shoulder-depth a) (.shoulder-depth b))
-           (p/fcmp-eq (.depth a) (.depth b))
-           (p/fcmp-eq (.width a) (.width b))
-           (p/fcmp-eq (.z a) (.z b))
+           (= (.x (.bounds a)) (.x (.bounds b)))
+           (= (.y (.bounds a)) (.y (.bounds b)))
+           (= (.w (.bounds a)) (.w (.bounds b)))
+           (= (.h (.bounds a)) (.h (.bounds b)))
+           (= (.radius a) (.radius b))
+           (= (.shoulder-width a) (.shoulder-width b))
+           (= (.shoulder-depth a) (.shoulder-depth b))
+           (= (.depth a) (.depth b))
+           (= (.width a) (.width b))
+           (= (.z a) (.z b))
            (stock-equal (.edge a) (.edge b))
            (stock-equal (.top a) (.top b))
            (stock-equal (.bottom a) (.bottom b))

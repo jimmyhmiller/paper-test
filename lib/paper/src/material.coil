@@ -1,5 +1,4 @@
 (module paper.material)
-(import "coil.primitive" :as p)
 
 ;;; Pigment and microstructure belong to each sheet, independently of the light.
 ;;; roughness and fiber are in [0,1]; seed is a stable per-material grain offset.
@@ -94,7 +93,8 @@
   (linen 0x303936))
 
 ;;; Create an opaque procedural stock. Kind is 1..23; seed is in [0,1].
-(defn textured-stock [(pigment u32) (kind i64) (seed f64) (relief f64)] (-> Material)
+(defn textured-stock [(pigment u32) (kind i64) (seed f64) (relief f64)]
+  (-> Material)
   (assert (and (>= kind 1)
                (<= kind 23)
                (>= seed 0.0)
@@ -150,11 +150,11 @@
 
 (defn pattern-equal [(a Pattern) (b Pattern)] (-> bool)
   (and (= (.kind a) (.kind b))
-       (p/fcmp-eq (.size a) (.size b))
-       (p/fcmp-eq (.angle a) (.angle b))
-       (p/fcmp-eq (.relief a) (.relief b))
-       (p/fcmp-eq (.x a) (.x b))
-       (p/fcmp-eq (.y a) (.y b))))
+       (= (.size a) (.size b))
+       (= (.angle a) (.angle b))
+       (= (.relief a) (.relief b))
+       (= (.x a) (.x b))
+       (= (.y a) (.y b))))
 
 (defn kraft [(pigment u32)] (-> Material)
   (textured-stock pigment 1 0.147 0.25))
@@ -252,11 +252,11 @@
   (or (> (.specular finish) 0.0) (> (.sheen finish) 0.0)))
 
 (defn finish-equal [(a Finish) (b Finish)] (-> bool)
-  (and (p/fcmp-eq (.roughness a) (.roughness b))
-       (p/fcmp-eq (.specular a) (.specular b))
-       (p/fcmp-eq (.metallic a) (.metallic b))
-       (p/fcmp-eq (.sheen a) (.sheen b))
-       (p/fcmp-eq (.anisotropy a) (.anisotropy b))))
+  (and (= (.roughness a) (.roughness b))
+       (= (.specular a) (.specular b))
+       (= (.metallic a) (.metallic b))
+       (= (.sheen a) (.sheen b))
+       (= (.anisotropy a) (.anisotropy b))))
 
 (defn velvet [(pigment u32)] (-> Material)
   (surface-finish (textured-stock pigment 19 0.813 0.12)

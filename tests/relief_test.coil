@@ -149,6 +149,17 @@
                                   (CGBitmapContextGetData (.output-context (scene/scene)))
                                   bytes)
                           (cast i32 0)))
+               ;; A region texture is a memo of the fragment shader's grain and must
+               ;; agree with it. The default tile is a different sample of the
+               ;; same noise by design, so this half compares the region scheme.
+               (masks/micro-reset)
+               (set! (.regions (masks/micro-cache)) true)
+               (set! (.valid (damage/cache)) false)
+               (render/rasterize)
+               (render/render)
+               (memcpy copy
+                       (CGBitmapContextGetData (.output-context (scene/scene)))
+                       bytes)
                (set! (.reference (masks/micro-cache)) true)
                (set! (.valid (damage/cache)) false)
                (render/rasterize)
@@ -171,7 +182,8 @@
                          (load changed))
                  (assert (<= (load maximum) 1)))
                (set! (.reference (masks/visibility)) false)
-               (set! (.reference (masks/micro-cache)) false))
+               (set! (.reference (masks/micro-cache)) false)
+               (masks/micro-reset))
              (render/free (cast (ptr i8) copy)))
            (scene/clear 0)
            (o/release pool)))
@@ -222,6 +234,38 @@
                (set! (.preparing (masks/cache)) false)))
            (o/release pool)))
 
+;;; Grain is one repeating tile per stock. Any number of sheets of that stock,
+;;; wherever they sit, read the same tile, and moving them prepares nothing.
+(deftest sheets-of-one-stock-share-one-grain-tile-and-moving-them-prepares-nothing
+         (let [pool (o/new c"NSAutoreleasePool")]
+           (setup)
+           (render/setup)
+           (when (.available (gpu/gpu))
+             (masks/micro-reset)
+             (for [i 0 3]
+               (let [shift (* 11.5 (cast f64 i))]
+                 (host/paper_begin 0xeeeeee)
+                 (panel (rect (+ 4.0 shift) 6.0 60.0 40.0)
+                        4.0
+                        10.0
+                        (pressed-paper 0xe8cfa9))
+                 (panel (rect (+ 70.0 shift) (+ 50.0 shift) 50.0 30.0)
+                        4.0
+                        12.0
+                        (pressed-paper 0xe8cfa9))
+                 (render/render)
+                 (assert (= (al/al-len [masks/MicroEntry]
+                                       (.entries (masks/micro-cache)))
+                            1))
+                 (assert (= (.prepared-pixels (masks/micro-cache))
+                            (if (= i 0)
+                                (* (cast i64 masks/MICRO-TILE)
+                                   (cast i64 masks/MICRO-TILE))
+                                0)))))
+             (masks/micro-reset))
+           (scene/clear 0)
+           (o/release pool)))
+
 (deftest material-cache-pins-frame-working-set-and-evicts-within-budget
          (let [pool (o/new c"NSAutoreleasePool")]
            (setup)
@@ -233,7 +277,7 @@
                (set! (.serial c) 1)
                (for [i 0 5]
                  (let [params
-                         (masks/stock-params (cgrect 0.0 0.0 2048.0 1024.0)
+                         (masks/stock-params (cgrect 0.0 0.0 4096.0 1024.0)
                                              (texture-angle stock (cast f64 i))
                                              38.0
                                              0.0
@@ -244,7 +288,7 @@
                (set! (.serial c) 2)
                (assert (!= (masks/micro-insert (masks/stock-params (cgrect 0.0
                                                                            0.0
-                                                                           2048.0
+                                                                           4096.0
                                                                            1024.0)
                                                                    (texture-angle stock
                                                                                   15.0)

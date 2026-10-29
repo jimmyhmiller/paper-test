@@ -1,4 +1,5 @@
 (module paper.render)
+(import "coil.cc" :as cc)
 (import "paper.finish-light" :as finish)
 (import "paper.micro-raster" :as micro)
 (import "coil.primitive" :as primitive)
@@ -50,23 +51,25 @@
   (let [b (raster-bands)]
     (if (.ready b)
         (do
-          (for [i 0 (al/al-len [RasterBand] (.items b))]
-            (let [band (al/al-get [RasterBand] (.items b) i)]
+          (for [i 0 (len (.items b))]
+            (let [band (get (.items b) i)]
               (CGContextRelease (.color band))
               (CGContextRelease (.height band))
               (CGContextRelease (.micro-mask band))
               (CGContextRelease (.material band))))
-          (al/al-clear! [RasterBand] (mut (.items b)))
+          (clear! (mut (.items b)))
           0)
         (do
-          (set! (.items b) (al/al-new [RasterBand] (alloc/malloc-allocator)))
+          (set! (.items b)
+                (al/ArrayList::new [RasterBand] (alloc/malloc-allocator)))
           (set! (.ready b) true)
           0)))
   0)
 
 ;;; Each worker owns separate contexts and disjoint complete bitmap rows.
 ;;; Global coordinates are retained, including glyph layout and antialiasing.
-(defn band-context [(parent (ptr i8)) (y i64) (height i64) (gray bool)] (-> (ptr i8))
+(defn band-context [(parent (ptr i8)) (y i64) (height i64) (gray bool)]
+  (-> (ptr i8))
   (let [s (scene)
         stride (* (.width s) (if gray 1 4))
         cs
@@ -92,24 +95,21 @@
     (for [i 0 (/ (+ (.height s) 127) 128)]
       (let [y (* i 128)
             height (if (< (- (.height s) y) 128) (- (.height s) y) 128)]
-        (al/al-push! [RasterBand]
-                     (mut (.items b))
-                     (RasterBand
-                       :color (band-context (.color-context s) y height false)
-                       :height (band-context (.height-context s) y height true)
-                       :material
-                         (band-context (.material-context s) y height false)
-                       :micro-mask
-                         (band-context (.mask (micro/state)) y height true)
-                       :bounds
-                         (cgrect 0.0
-                                 (/ (cast f64 y) (.scale s))
-                                 (/ (cast f64 (.width s)) (.scale s))
-                                 (/ (cast f64 height) (.scale s))))))))
+        (push! (mut (.items b))
+               (RasterBand
+                 :color (band-context (.color-context s) y height false)
+                 :height (band-context (.height-context s) y height true)
+                 :material (band-context (.material-context s) y height false)
+                 :micro-mask (band-context (.mask (micro/state)) y height true)
+                 :bounds
+                   (cgrect 0.0
+                           (/ (cast f64 y) (.scale s))
+                           (/ (cast f64 (.width s)) (.scale s))
+                           (/ (cast f64 height) (.scale s))))))))
   0)
 
 (defn raster-worker [(argument (ptr i8)) (index u64)] (-> i64)
-  (let [band (al/al-get [RasterBand] (.items (raster-bands)) (cast i64 index))
+  (let [band (get (.items (raster-bands)) (cast i64 index))
         region (.bounds (damage/cache))
         b (.bounds band)]
     (when (intersects b region)
@@ -140,7 +140,7 @@
 (defn height-tiles [] (-> (ptr HeightTiles))
   (primitive/alloc-static HeightTiles))
 
-(extern free :cc c [(ptr i8)] (-> void))
+(extern free :cc (cc/C) [(ptr i8)] (-> void))
 
 (defn setup [] (-> i64)
   ;; SIMD ray indices are signed 32-bit. These limits also reject invalid
@@ -247,11 +247,11 @@
                                       (let [r (index (field c regions) i)
                                             pixels (masks/pixel-bounds (load r))
                                             scale (.scale (scene))]
-                                        (store! r
-                                                (cgrect (/ (.x pixels) scale)
-                                                        (/ (.y pixels) scale)
-                                                        (/ (.w pixels) scale)
-                                                        (/ (.h pixels) scale)))))
+                                        (set! r
+                                              (cgrect (/ (.x pixels) scale)
+                                                      (/ (.y pixels) scale)
+                                                      (/ (.w pixels) scale)
+                                                      (/ (.h pixels) scale)))))
                                     (masks/render-regions (index (field c
                                                                         regions)
                                                                  0)
@@ -260,8 +260,7 @@
                                   0)
                                 (do
                                   (workers/apply (cast u64
-                                                       (al/al-len [RasterBand]
-                                                                  (.items (raster-bands))))
+                                                       (len (.items (raster-bands))))
                                                  (nil)
                                                  (fnptr-of raster-worker))
                                   (build-height-tiles)
@@ -298,7 +297,7 @@
                   0.0
                   (/ (cast f64 (.width s)) (.scale s))
                   (/ (cast f64 (.height s)) (.scale s)))
-        ink-count (al/al-len [Ink] (.inks s))
+        ink-count (len (.inks s))
         (mut ink-index) 0]
     (CGContextSaveGState c)
     (CGContextSaveGState h)
@@ -323,19 +322,19 @@
               [(ptr i8) bool]
               c
               true))
-    (for [i 0 (al/al-len [Sheet] (.sheets s))]
-      (let [sheet (al/al-get [Sheet] (.sheets s) i)]
+    (for [i 0 (len (.sheets s))]
+      (let [sheet (get (.sheets s) i)]
         (while (< (load ink-index) ink-count)
-          (let [ink (al/al-elem [Ink] (field s inks) (load ink-index))]
+          (let [ink (elem (field s inks) (load ink-index))]
             (if (or (< (.z ink) (.z sheet))
-                    (and (primitive/fcmp-eq (.z ink) (.z sheet))
+                    (and (= (.z ink) (.z sheet))
                          (< (.order ink) (.order sheet))))
                 (do
                   (when (intersects (.bounds ink) region)
                     (paint-ink c (load ink)))
                   (set! ink-index (+ (load ink-index) 1)))
                 (break))))
-        (when (intersects (CGPathGetPathBoundingBox (.path sheet)) region)
+        (when (intersects (.bounds sheet) region)
           (fill c (.color sheet))
           (CGContextAddPath c (.path sheet))
           (CGContextEOFillPath c)
@@ -344,7 +343,7 @@
           (CGContextEOFillPath h)
           (when (not (.continuous sheet))
             (CGContextSaveGState h)
-            (CGContextClipToRect h (CGPathGetPathBoundingBox (.path sheet)))
+            (CGContextClipToRect h (.bounds sheet))
             (CGContextAddPath h (.path sheet))
             (CGContextEOClip h)
             (CGContextSetGrayStrokeColor h
@@ -365,7 +364,7 @@
           (CGContextEOFillPath m)
           0)))
     (while (< (load ink-index) ink-count)
-      (let [ink (al/al-get [Ink] (.inks s) (load ink-index))]
+      (let [ink (get (.inks s) (load ink-index))]
         (when (intersects (.bounds ink) region) (paint-ink c ink)))
       (set! ink-index (+ (load ink-index) 1)))
     (msg i64 (class c"NSGraphicsContext") (sel c"restoreGraphicsState") [])
@@ -377,7 +376,7 @@
 ;;; Deterministic fibers use integer mixing, so material variation is stationary
 ;;; under light movement and identical between screenshots and live rendering.
 (defn grain-hash [(x i64) (y i64) (seed i64)] (-> f64)
-  (let [a (^ (* x 374761393) (^ (* y 668265263) (* seed 1274126177)))
+  (let [a (^ (* x 374761393) (* y 668265263) (* seed 1274126177))
         b (* (^ a (>> a 13)) 1274126177)]
     (- (/ (cast f64 (& (^ b (>> b 16)) 65535)) 65535.0) 0.5)))
 
@@ -485,7 +484,8 @@
                   (when (<= (load visibility) 0.0) (break)))))))))
     (load visibility)))
 
-(defn heights4 [(data (ptr u8)) (x (vec f32 4)) (y (vec f32 4))] (-> (vec f32 4))
+(defn heights4 [(data (ptr u8)) (x (vec f32 4)) (y (vec f32 4))]
+  (-> (vec f32 4))
   (v/mul (v/heights data x y (.width (scene)) (.height (scene)))
          (v/splat 0.25098039215686274)))
 
@@ -700,9 +700,9 @@
       (let [pigment (cast f64 (load (index colors (+ (* pos 4) channel))))
             value
               (if (or (> (load (index (.specular (micro/state)) pos))
-                         (cast f32 0.0))
+                         (: 0.0 f32))
                       (> (load (index (.sheen (micro/state)) pos))
-                         (cast f32 0.0)))
+                         (: 0.0 f32)))
                   (* 255.0
                      (finish/fin-channel (/ pigment 255.0)
                                          multiplier
@@ -711,7 +711,7 @@
                   (* pigment shade))]
         (set! (index output (+ (* pos 4) channel))
               (cast u8 (clamp value 0.0 255.0)))))
-    (set! (index output (+ (* pos 4) 3)) (cast u8 255)))
+    (set! (index output (+ (* pos 4) 3)) (: 255 u8)))
   0)
 
 (defn render [] (-> i64)
@@ -791,8 +791,8 @@
                        (cast f64 (.height tiles))))]
     (for [ty top bottom]
       (for [tx left right]
-        (let [(mut maximum) (cast u8 0)
-              (mut minimum) (cast u8 255)
+        (let [(mut maximum) (: 0 u8)
+              (mut minimum) (: 255 u8)
               right
                 (if (< (+ (* tx 16) 16) (.width s)) (+ (* tx 16) 16) (.width s))
               bottom
@@ -846,7 +846,7 @@
         ty1
           (cast i64
                 (clamp (/ bottom 16.0) 0.0 (cast f64 (- (.height tiles) 1))))
-        (mut maximum) (cast u8 0)]
+        (mut maximum) (: 0 u8)]
     (for [ty ty0 (+ ty1 1)]
       (for [tx tx0 (+ tx1 1)]
         (let [value (load (index (.data tiles) (+ (* ty (.width tiles)) tx)))]
@@ -965,16 +965,16 @@
         i
           (if (and (.valid c)
                    (>= (.order ink) 0)
-                   (< (.order ink) (al/al-len [i64] (.ink-orders c))))
-              (al/al-get [i64] (.ink-orders c) (.order ink))
+                   (< (.order ink) (len (.ink-orders c))))
+              (get (.ink-orders c) (.order ink))
               -1)]
     (if (>= i 0)
-        (let [previous (al/al-elem [Ink] (field c inks) i)]
+        (let [previous (elem (field c inks) i)]
           (if (and (= (.kind previous) (.kind ink))
                    (= (.font previous) (.font ink))
-                   (primitive/fcmp-eq (.width previous) (.width ink))
-                   (primitive/fcmp-eq (.height previous) (.height ink))
-                   (primitive/fcmp-eq (.size previous) (.size ink))
+                   (= (.width previous) (.width ink))
+                   (= (.height previous) (.height ink))
+                   (= (.size previous) (.size ink))
                    (or (= (.text previous) (.text ink))
                        (msg bool
                             (.text previous)

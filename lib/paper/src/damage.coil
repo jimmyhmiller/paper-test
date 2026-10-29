@@ -39,16 +39,16 @@
 (defn discard [] (-> i64)
   (let [c (cache)]
     (when (.ready c)
-      (for [i 0 (al/al-len [Sheet] (.sheets c))]
-        (CGPathRelease (.path (al/al-elem [Sheet] (field c sheets) i)))
-        (CGPathRelease (.edges (al/al-elem [Sheet] (field c sheets) i)))
-        (relief/release (.relief (al/al-elem [Sheet] (field c sheets) i))))
-      (for [i 0 (al/al-len [Ink] (.inks c))]
-        (let [ink (al/al-elem [Ink] (field c inks) i)]
+      (for [i 0 (len (.sheets c))]
+        (CGPathRelease (.path (elem (field c sheets) i)))
+        (CGPathRelease (.edges (elem (field c sheets) i)))
+        (relief/release (.relief (elem (field c sheets) i))))
+      (for [i 0 (len (.inks c))]
+        (let [ink (elem (field c inks) i)]
           (o/release (.text ink))
           (when (!= (.clip ink) (o/nil)) (CGPathRelease (.clip ink)) 0)))
-      (al/al-clear! [Sheet] (mut (.sheets c)))
-      (al/al-clear! [Ink] (mut (.inks c)))
+      (clear! (mut (.sheets c)))
+      (clear! (mut (.inks c)))
       0))
   0)
 
@@ -56,11 +56,12 @@
   (discard)
   (let [c (cache)]
     (when (not (.ready c))
-      (set! (.sheets c) (al/al-new [Sheet] (alloc/malloc-allocator)))
-      (set! (.inks c) (al/al-new [Ink] (alloc/malloc-allocator)))
-      (set! (.ink-orders c) (al/al-new [i64] (alloc/malloc-allocator)))
-      (set! (.paint-order c) (al/al-new [i64] (alloc/malloc-allocator)))
-      (set! (.previous-order c) (al/al-new [i64] (alloc/malloc-allocator)))
+      (set! (.sheets c) (al/ArrayList::new [Sheet] (alloc/malloc-allocator)))
+      (set! (.inks c) (al/ArrayList::new [Ink] (alloc/malloc-allocator)))
+      (set! (.ink-orders c) (al/ArrayList::new [i64] (alloc/malloc-allocator)))
+      (set! (.paint-order c) (al/ArrayList::new [i64] (alloc/malloc-allocator)))
+      (set! (.previous-order c)
+            (al/ArrayList::new [i64] (alloc/malloc-allocator)))
       (set! (.ready c) true))
     (set! (.valid c) false)
     (set! (.region-count c) 0)
@@ -99,8 +100,8 @@
             (do
               (set! merged (union-bounds a b))
               (set! (.region-count c) (- (.region-count c) 1))
-              (store! (index (field c regions) (load i))
-                      (load (index (field c regions) (.region-count c))))
+              (set! (index (field c regions) (load i))
+                    (load (index (field c regions) (.region-count c))))
               (set! i 0))
             (set! i (+ (load i) 1)))))
     (if (= (.region-count c) 32)
@@ -109,10 +110,10 @@
             (set! merged
                   (union-bounds (load merged)
                                 (load (index (field c regions) j)))))
-          (store! (index (field c regions) 0) (load merged))
+          (set! (index (field c regions) 0) (load merged))
           (set! (.region-count c) 1))
         (do
-          (store! (index (field c regions) (.region-count c)) (load merged))
+          (set! (index (field c regions) (.region-count c)) (load merged))
           (set! (.region-count c) (+ (.region-count c) 1)))))
   0)
 
@@ -137,12 +138,12 @@
   0)
 
 (defn sheet-equal [(a Sheet) (b Sheet)] (-> bool)
-  (and (p/fcmp-eq (.z a) (.z b))
+  (and (= (.z a) (.z b))
        (= (.continuous a) (.continuous b))
        (= (.color a) (.color b))
-       (p/fcmp-eq (.rough a) (.rough b))
-       (p/fcmp-eq (.fiber a) (.fiber b))
-       (p/fcmp-eq (.seed a) (.seed b))
+       (= (.rough a) (.rough b))
+       (= (.fiber a) (.fiber b))
+       (= (.seed a) (.seed b))
        (material/pattern-equal (.pattern a) (.pattern b))
        (material/finish-equal (.finish a) (.finish b))
        (relief/equal (.relief a) (.relief b))
@@ -152,12 +153,12 @@
            (CGPathEqualToPath (.edges a) (.edges b)))))
 
 (defn ink-equal [(a Ink) (b Ink)] (-> bool)
-  (and (p/fcmp-eq (.x a) (.x b))
-       (p/fcmp-eq (.y a) (.y b))
-       (p/fcmp-eq (.width a) (.width b))
-       (p/fcmp-eq (.height a) (.height b))
-       (p/fcmp-eq (.size a) (.size b))
-       (p/fcmp-eq (.z a) (.z b))
+  (and (= (.x a) (.x b))
+       (= (.y a) (.y b))
+       (= (.width a) (.width b))
+       (= (.height a) (.height b))
+       (= (.size a) (.size b))
+       (= (.z a) (.z b))
        (= (.color a) (.color b))
        (= (.font a) (.font b))
        (= (.kind a) (.kind b))
@@ -176,23 +177,23 @@
 (defn order-commands [(sheets (al/ArrayList Sheet))
                       (inks (al/ArrayList Ink))
                       (out (mut (al/ArrayList i64)))] (-> i64)
-  (al/al-clear! [i64] (mut out))
+  (clear! (mut out))
   (let [(mut next) 0
-        count (al/al-len [Ink] inks)]
-    (for [i 0 (al/al-len [Sheet] sheets)]
-      (let [sheet (al/al-get [Sheet] sheets i)]
+        count (len inks)]
+    (for [i 0 (len sheets)]
+      (let [sheet (get sheets i)]
         (while (< (load next) count)
-          (let [ink (al/al-get [Ink] inks (load next))]
+          (let [ink (get inks (load next))]
             (if (or (< (.z ink) (.z sheet))
-                    (and (p/fcmp-eq (.z ink) (.z sheet))
+                    (and (= (.z ink) (.z sheet))
                          (< (.order ink) (.order sheet))))
                 (do
-                  (al/al-push! [i64] (mut out) (- -1 (load next)))
+                  (push! (mut out) (- -1 (load next)))
                   (set! next (+ (load next) 1)))
                 (break))))
-        (al/al-push! [i64] (mut out) (+ i 1))))
+        (push! (mut out) (+ i 1))))
     (while (< (load next) count)
-      (al/al-push! [i64] (mut out) (- -1 (load next)))
+      (push! (mut out) (- -1 (load next)))
       (set! next (+ (load next) 1))))
   0)
 
@@ -200,24 +201,24 @@
   (let [s (scene)
         c (cache)]
     (cond (and (> current 0) (> previous 0))
-            (sheet-equal (al/al-get [Sheet] (.sheets s) (- current 1))
-                         (al/al-get [Sheet] (.sheets c) (- previous 1)))
+            (sheet-equal (get (.sheets s) (- current 1))
+                         (get (.sheets c) (- previous 1)))
           (and (< current 0) (< previous 0))
-            (ink-equal (al/al-get [Ink] (.inks s) (- -1 current))
-                       (al/al-get [Ink] (.inks c) (- -1 previous)))
+            (ink-equal (get (.inks s) (- -1 current))
+                       (get (.inks c) (- -1 previous)))
           :else false)))
 
 (defn include-command [(token i64) (previous bool)] (-> i64)
   (if (> token 0)
       (let [item
               (if previous
-                  (al/al-get [Sheet] (.sheets (cache)) (- token 1))
-                  (al/al-get [Sheet] (.sheets (scene)) (- token 1)))]
-        (include (CGPathGetPathBoundingBox (.path item))))
+                  (get (.sheets (cache)) (- token 1))
+                  (get (.sheets (scene)) (- token 1)))]
+        (include (.bounds item)))
       (let [item
               (if previous
-                  (al/al-get [Ink] (.inks (cache)) (- -1 token))
-                  (al/al-get [Ink] (.inks (scene)) (- -1 token)))]
+                  (get (.inks (cache)) (- -1 token))
+                  (get (.inks (scene)) (- -1 token)))]
         (include (.bounds item)))))
 
 (defstruct DiffScratch [(frontiers (array i64 8515))])
@@ -252,11 +253,11 @@
                 (mut y) (- (load x) k)]
             (while (and (< (load x) n)
                         (< (load y) m)
-                        (command-equal (al/al-get [i64] a (+ first (load x)))
-                                       (al/al-get [i64] b (+ first (load y)))))
+                        (command-equal (get a (+ first (load x)))
+                                       (get b (+ first (load y)))))
               (set! x (+ (load x) 1))
               (set! y (+ (load y) 1)))
-            (store! (frontier depth k) (load x))
+            (set! (frontier depth k) (load x))
             (when (and (>= (load x) n) (>= (load y) m))
               (set! found depth)
               (break))))
@@ -283,13 +284,11 @@
                   (set! x (- (load x) 1))
                   (set! y (- (load y) 1)))
                 (if (= (load x) previous-x)
-                    (include-command (al/al-get [i64]
-                                                b
-                                                (+ first (- (load y) 1)))
+                    (include-command (get b
+                                          (+ first (- (load y) 1)))
                                      true)
-                    (include-command (al/al-get [i64]
-                                                a
-                                                (+ first (- (load x) 1)))
+                    (include-command (get a
+                                          (+ first (- (load x) 1)))
                                      false))
                 (set! x previous-x)
                 (set! y previous-y)
@@ -306,32 +305,32 @@
     (let [a (.paint-order c)
           b (.previous-order c)
           (mut first) 0
-          (mut end-a) (al/al-len [i64] a)
-          (mut end-b) (al/al-len [i64] b)]
+          (mut end-a) (len a)
+          (mut end-b) (len b)]
       (while (and (< (load first) (load end-a))
                   (< (load first) (load end-b))
-                  (command-equal (al/al-get [i64] a (load first))
-                                 (al/al-get [i64] b (load first))))
+                  (command-equal (get a (load first))
+                                 (get b (load first))))
         (set! first (+ (load first) 1)))
       (while (and (> (load end-a) (load first))
                   (> (load end-b) (load first))
-                  (command-equal (al/al-get [i64] a (- (load end-a) 1))
-                                 (al/al-get [i64] b (- (load end-b) 1))))
+                  (command-equal (get a (- (load end-a) 1))
+                                 (get b (- (load end-b) 1))))
         (set! end-a (- (load end-a) 1))
         (set! end-b (- (load end-b) 1)))
       (when (not (measure-edits (load first) (load end-a) (load end-b)))
         (if (= (load end-a) (load end-b))
             (for [i (load first) (load end-a)]
-              (let [x (al/al-get [i64] a i)
-                    y (al/al-get [i64] b i)]
+              (let [x (get a i)
+                    y (get b i)]
                 (when (not (command-equal x y))
                   (include-command x false)
                   (include-command y true))))
             (do
               (for [i (load first) (load end-a)]
-                (include-command (al/al-get [i64] a i) false))
+                (include-command (get a i) false))
               (for [i (load first) (load end-b)]
-                (include-command (al/al-get [i64] b i) true)))))))
+                (include-command (get b i) true)))))))
   0)
 
 ;;; Compare exact retained commands, including old bounds for removed geometry.
@@ -366,22 +365,24 @@
   (discard)
   (let [c (cache)
         s (scene)]
-    (al/al-clear! [i64] (mut (.ink-orders c)))
-    (for [i 0 (+ (.serial s) 1)] (al/al-push! [i64] (mut (.ink-orders c)) -1))
-    (for [i 0 (al/al-len [Sheet] (.sheets s))]
-      (let [(mut sheet) (al/al-get [Sheet] (.sheets s) i)]
-        (set! (.path sheet) (CGPathCreateCopy (.path sheet)))
-        (when (!= (.edges sheet) (o/nil))
-          (set! (.edges sheet) (CGPathCreateCopy (.edges sheet))))
+    (clear! (mut (.ink-orders c)))
+    (for [i 0 (+ (.serial s) 1)] (push! (mut (.ink-orders c)) -1))
+    ;; The remembered frame shares the scene's outlines instead of copying them.
+    ;; Nothing edits a submitted outline in place: a cut or a clip replaces the
+    ;; path with a new one, and the next frame builds all of its own. A copy
+    ;; here was an allocation per sheet per frame, and a free for each later.
+    (for [i 0 (len (.sheets s))]
+      (let [(mut sheet) (get (.sheets s) i)]
+        (CGPathRetain (.path sheet))
+        (when (!= (.edges sheet) (o/nil)) (CGPathRetain (.edges sheet)) 0)
         (relief/retain (.relief sheet))
-        (al/al-push! [Sheet] (mut (.sheets c)) (load sheet))))
-    (for [i 0 (al/al-len [Ink] (.inks s))]
-      (let [(mut ink) (al/al-get [Ink] (.inks s) i)]
-        (al/al-set! [i64] (mut (.ink-orders c)) (.order ink) i)
+        (push! (mut (.sheets c)) (load sheet))))
+    (for [i 0 (len (.inks s))]
+      (let [(mut ink) (get (.inks s) i)]
+        (set! (mut (.ink-orders c)) (.order ink) i)
         (set! (.text ink) (o/retain (.text ink)))
-        (when (!= (.clip ink) (o/nil))
-          (set! (.clip ink) (CGPathCreateCopy (.clip ink))))
-        (al/al-push! [Ink] (mut (.inks c)) (load ink))))
+        (when (!= (.clip ink) (o/nil)) (CGPathRetain (.clip ink)) 0)
+        (push! (mut (.inks c)) (load ink))))
     (set! (.background c) (.background s))
     (set! (.valid c) true))
   0)

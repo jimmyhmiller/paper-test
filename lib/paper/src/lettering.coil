@@ -1,4 +1,5 @@
 (module paper.lettering)
+(import "coil.cc" :as cc)
 (import "paper.flow" :use *)
 (import "paper.ffi" :use *)
 (import "paper.objc" :use *)
@@ -6,34 +7,41 @@
 (import "paper.paint" :use [type-face])
 (import "coil.primitive" :as p)
 (import "coil.alloc" :as alloc)
-(import "coil.arraylist" :as al)
 (import "paper.relief" :as relief)
 (import "paper.scene" :as commands)
 (import "paper.platform" :as host)
 
-(extern CTFontCreateWithName :cc c [(ptr i8) f64 (ptr CGAffine)] (-> (ptr i8)))
+(extern CTFontCreateWithName
+        :cc
+        (cc/C)
+        [(ptr i8) f64 (ptr CGAffine)]
+        (-> (ptr i8)))
 
 (extern CTFontGetGlyphsForCharacters
         :cc
-        c
+        (cc/C)
         [(ptr i8) (ptr u16) (ptr u16) i64]
         (-> bool))
 
 (extern CTFontGetAdvancesForGlyphs
         :cc
-        c
+        (cc/C)
         [(ptr i8) u32 (ptr u16) (ptr CGSize) i64]
         (-> f64))
 
 (extern CTFontCreatePathForGlyph
         :cc
-        c
+        (cc/C)
         [(ptr i8) u16 (ptr CGAffine)]
         (-> (ptr i8)))
 
 (defstruct FontRange [(location i64) (length i64)])
 
-(extern CTFontCreateForString :cc c [(ptr i8) (ptr i8) FontRange] (-> (ptr i8)))
+(extern CTFontCreateForString
+        :cc
+        (cc/C)
+        [(ptr i8) (ptr i8) FontRange]
+        (-> (ptr i8)))
 
 ;;; Real outline apertures share the paper renderer's material and lighting.
 ;;; CoreText selects fallback fonts for symbols and provides their native advances.
@@ -46,7 +54,7 @@
   (let [string (ns text)
         (mut found) -1
         (mut oldest) 0]
-    (store! (lettering-serial) (+ (load (lettering-serial)) 1))
+    (set! (lettering-serial) (+ (load (lettering-serial)) 1))
     (for [i 0 256]
       (let [entry (index (lettering-entries) i)]
         (when (< (.used entry)
@@ -55,9 +63,9 @@
         (when (and (!= (.path entry) (nil))
                    (= (.font entry) font-index)
                    (= (.right entry) right)
-                   (p/fcmp-eq (.size entry) size)
-                   (p/fcmp-eq (.width entry) (.w r))
-                   (p/fcmp-eq (.height entry) (.h r))
+                   (= (.size entry) size)
+                   (= (.width entry) (.w r))
+                   (= (.height entry) (.h r))
                    (msg bool
                         (.text entry)
                         (sel c"isEqualToString:")
@@ -134,7 +142,7 @@
                                      (FontRange :location i :length 1))
             (mut ch)
               (msg u16 string (sel c"characterAtIndex:") [u64] (cast u64 i))
-            (mut glyph) (cast u16 0)]
+            (mut glyph) (: 0 u16)]
         (CTFontGetGlyphsForCharacters face ch glyph 1)
         (set! width
               (+ (load width)
@@ -159,7 +167,7 @@
                                        (FontRange :location i :length 1))
               (mut ch)
                 (msg u16 string (sel c"characterAtIndex:") [u64] (cast u64 i))
-              (mut glyph) (cast u16 0)]
+              (mut glyph) (: 0 u16)]
           (CTFontGetGlyphsForCharacters face ch glyph 1)
           (let [(mut transform)
                   (load (CGAffine
@@ -297,7 +305,7 @@
   (if centered
       (centered-lettering-path (inset r padding) text size font-index)
       (lettering-path (inset r padding) text size font-index false))
-  (let [payload (cast (ptr relief/Panel) (alloc/malloc (p/sizeof relief/Panel)))
+  (let [payload (cast (ptr relief/Panel) (alloc/malloc (sizeof relief/Panel)))
         glyph (CGPathCreateCopy (.path (scene)))]
     (let [bounds (CGPathGetPathBoundingBox glyph)]
       (begin-sheet)
@@ -306,38 +314,38 @@
         (for [i 0 4]
           (assert (CGPathContainsPoint (.path (scene))
                                        (cast (ptr CGAffine) 0)
-                                       (CGPoint :x
-                                                  (+ (- (.x bounds) width)
-                                                     (if (= (% i 2) 0)
-                                                         0.0
-                                                         (+ (.w bounds)
-                                                            (* 2.0 width))))
+                                       (CGPoint
+                                         :x
+                                           (+ (- (.x bounds) width)
+                                              (if (= (% i 2) 0)
+                                                  0.0
+                                                  (+ (.w bounds)
+                                                     (* 2.0 width))))
                                          :y
                                            (+ (- (.y bounds) width)
                                               (if (< i 2)
                                                   0.0
                                                   (+ (.h bounds) (* 2.0 width)))))
                                        true)))))
-    (store! payload
-            (relief/Panel
-              :refs 1
-              :bounds r
-              :radius radius
-              :shoulder-width shoulder-width
-              :shoulder-depth shoulder-depth
-              :depth depth
-              :width width
-              :z (+ z (.offset (scene)))
-              :glyph glyph
-              :edge edge
-              :top top
-              :bottom bottom
-              :expand (fnptr-of expand-panel)))
+    (set! payload
+          (relief/Panel
+            :refs 1
+            :bounds r
+            :radius radius
+            :shoulder-width shoulder-width
+            :shoulder-depth shoulder-depth
+            :depth depth
+            :width width
+            :z (+ z (.offset (scene)))
+            :glyph glyph
+            :edge edge
+            :top top
+            :bottom bottom
+            :expand (fnptr-of expand-panel)))
     (panel r radius z top)
-    (set! (.relief (al/al-elem [commands/Sheet]
-                               (field (scene) sheets)
-                               (- (al/al-len [commands/Sheet] (.sheets (scene)))
-                                  1)))
+    (set! (.relief (elem (field (scene) sheets)
+                         (- (len (.sheets (scene)))
+                            1)))
           payload))
   0)
 

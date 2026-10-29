@@ -8,11 +8,12 @@
 ;;; edges, remain byte-exact. Dense masks are used when packing would grow them.
 (defstruct Packed [(data (ptr u16)) (width i64) (height i64) (tiled bool)])
 
-(defn coverage [(source (ptr u32)) (width i64) (height i64) (x i64) (y i64)] (-> u16)
+(defn coverage [(source (ptr u32)) (width i64) (height i64) (x i64) (y i64)]
+  (-> u16)
   (if (and (< x width) (< y height))
       (cast u16
-            (p/iand (load (index source (+ (* y width) x))) (cast u32 65535)))
-      (cast u16 0)))
+            (& (load (index source (+ (* y width) x))) (: 65535 u32)))
+      (: 0 u16)))
 
 (defn pack [(source (ptr u32)) (width i64) (height i64)] (-> Packed)
   (let [columns (/ (+ width 63) 64)
@@ -26,7 +27,7 @@
       (let [ox (* (% tile columns) 64)
             oy (* (/ tile columns) 64)
             first (coverage source width height ox oy)
-            (mut uniform) (or (= first (cast u16 0)) (= first (cast u16 255)))]
+            (mut uniform) (or (= first (: 0 u16)) (= first (: 255 u16)))]
         (for [y 0 64]
           (when (not (load uniform)) (break))
           (for [x 0 64]
@@ -35,7 +36,7 @@
               (break))))
         (if (load uniform)
             (set! (index table tile)
-                  (if (= first (cast u16 0)) (cast u16 0) (cast u16 1)))
+                  (if (= first (: 0 u16)) (: 0 u16) (: 1 u16)))
             (do
               (set! (index table tile) (cast u16 (+ (load mixed) 2)))
               (set! mixed (+ (load mixed) 1))))))
@@ -54,7 +55,7 @@
       (if tiled
           (do
             (for [i 0 (* out-width out-height)]
-              (set! (index data i) (cast u16 0)))
+              (set! (index data i) (: 0 u16)))
             (for [tile 0 count]
               (let [id (cast i64 (load (index table tile)))]
                 (set! (index data tile) (cast u16 id))
@@ -71,7 +72,7 @@
           (do
             (for [i 0 (* width height)]
               (set! (index data i)
-                    (cast u16 (p/iand (load (index source i)) (cast u32 65535)))))
+                    (cast u16 (& (load (index source i)) (: 65535 u32)))))
             0))
       (p/free (cast (ptr i8) table))
       (Packed

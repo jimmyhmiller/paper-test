@@ -1,4 +1,5 @@
 (module paper.frame-clock)
+(import "coil.cc" :as cc)
 (import "coil.primitive" :as p)
 (import "paper.objc" :use *)
 (import "paper.ffi" :use *)
@@ -11,10 +12,14 @@
    (target (ptr i8))
    (class (ptr i8))
    (metal-class (ptr i8))
-   (callback (fnptr c [] i64))
+   (callback (fnptr (cc/C) [] i64))
    (timestamp f64)
    (duration f64)
-   (frames i64)])
+   (frames i64)
+   ;; Whole refreshes beyond the next one at which a frame asks to be shown,
+   ;; and whether PAPER_PRESENT_AHEAD fixed that rather than leaving it to pacing.
+   (ahead f64)
+   (ahead-fixed bool)])
 
 (defn clock [] (-> (ptr Clock))
   (p/alloc-static Clock))
@@ -27,7 +32,8 @@
     ;; targetTimestamp is already the upcoming refresh. Asking Metal to
     ;; present one duration later skips that refresh and can halve the visible
     ;; cadence when the frame is ready in time.
-    (set! (.presentation-time (gpu/gpu)) (.timestamp c))
+    (set! (.presentation-time (gpu/gpu))
+          (+ (.timestamp c) (* (.ahead c) (.duration c))))
     (call-ptr (.callback c))))
 
 (defn stop [] (-> i64)
@@ -58,7 +64,7 @@
 
 ;;; Explicit opt-in for a CAMetalLayer on macOS 14+. Duration records the
 ;;; requested cadence here, not a measured CADisplayLink timestamp difference.
-(defn start-metal [(layer (ptr i8)) (callback (fnptr c [] i64)) (fps f32)] (-> i64)
+(defn start-metal [(layer (ptr i8)) (callback (fnptr (cc/C) [] i64)) (fps f32)] (-> i64)
   (assert (> fps 0.0))
   (stop)
   (let [c (clock)
@@ -102,9 +108,13 @@
          (constant-object c"NSRunLoopCommonModes")))
   0)
 
-(defn start [(view (ptr i8)) (callback (fnptr c [] i64)) (fps f32)] (-> i64)
+(defn start [(view (ptr i8)) (callback (fnptr (cc/C) [] i64)) (fps f32)] (-> i64)
   (stop)
-  (let [c (clock)]
+  (let [c (clock)
+        ahead (gpu/getenv c"PAPER_PRESENT_AHEAD")]
+    (set! (.ahead-fixed c) (!= ahead (nil)))
+    (set! (.ahead c)
+          (if (= ahead (nil)) 0.0 (msg f64 (ns ahead) (sel c"doubleValue") [])))
     (when (= (.class c) (nil))
       (set! (.class c)
             (objc_allocateClassPair (class c"NSObject")

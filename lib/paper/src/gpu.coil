@@ -1,6 +1,6 @@
 (module paper.gpu)
+(import "coil.cc" :as cc)
 (import "coil.primitive" :as p)
-(import "coil.slice" :as slice)
 (import "paper.objc" :use *)
 (import "paper.ffi" :use *)
 (import "paper.profile" :as profile)
@@ -55,9 +55,9 @@
    (present-ms f64)
    (available bool)])
 
-(extern getenv :cc c [(ptr i8)] (-> (ptr i8)))
+(extern getenv :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
 
-(extern MTLCreateSystemDefaultDevice :cc c [] (-> (ptr i8)))
+(extern MTLCreateSystemDefaultDevice :cc (cc/C) [] (-> (ptr i8)))
 
 (defn gpu [] (-> (ptr GPU))
   (p/alloc-static GPU))
@@ -68,8 +68,8 @@
       (let [description
               (utf8 (msg (ptr i8) error (sel c"localizedDescription") []))]
         (println "Metal error: {}"
-                 (slice/slice-new (cast (ptr u8) description)
-                                  (cast i64 (strlen description))))
+                 (slice::new (cast (ptr u8) description)
+                             (cast i64 (strlen description))))
         0))
     (assert false))
   object)
@@ -110,7 +110,7 @@
                      (msg (ptr i8) (class c"NSString") (sel c"alloc") [])
                      (sel c"initWithBytes:length:encoding:")
                      [(ptr u8) u64 u64]
-                     (slice/slice-data source)
+                     (data source)
                      (cast u64 (len source))
                      4)
               options (new c"MTLCompileOptions")
@@ -158,8 +158,8 @@
                     (nil))))
 
 (defn power-of-two [(value i64)] (-> u64)
-  (let [(mut n) (cast u64 1)]
-    (while (< (load n) (cast u64 value)) (set! n (* (load n) (cast u64 2))))
+  (let [(mut n) (: 1 u64)]
+    (while (< (load n) (cast u64 value)) (set! n (* (load n) (: 2 u64))))
     (load n)))
 
 (defn maximum-texture [] (-> (ptr i8))
@@ -233,13 +233,13 @@
                :depth 1))
         (msg i64 encoder (sel c"endEncoding") [])
         (set! width
-              (if (> (load width) (cast u64 1))
-                  (/ (load width) (cast u64 2))
-                  (cast u64 1)))
+              (if (> (load width) (: 1 u64))
+                  (/ (load width) (: 2 u64))
+                  (: 1 u64)))
         (set! height
-              (if (> (load height) (cast u64 1))
-                  (/ (load height) (cast u64 2))
-                  (cast u64 1))))))
+              (if (> (load height) (: 1 u64))
+                  (/ (load height) (: 2 u64))
+                  (: 1 u64))))))
   0)
 
 (defn setup [] (-> bool)
@@ -300,8 +300,9 @@
       :height (- bottom y)
       :depth 1)))
 
-(defn encode [(command (ptr i8)) (pipeline (ptr i8)) (region MetalRegion)] (-> i64)
-  (when (and (> (.width region) (cast u64 0)) (> (.height region) (cast u64 0)))
+(defn encode [(command (ptr i8)) (pipeline (ptr i8)) (region MetalRegion)]
+  (-> i64)
+  (when (and (> (.width region) (: 0 u64)) (> (.height region) (: 0 u64)))
     (encode-region command pipeline region))
   0)
 
@@ -577,7 +578,8 @@
         (release descriptor)))
     (.display g)))
 
-(defn layer-size [(layer (ptr i8)) (width f64) (height f64) (scale f64)] (-> i64)
+(defn layer-size [(layer (ptr i8)) (width f64) (height f64) (scale f64)]
+  (-> i64)
   (msg i64 layer (sel c"setContentsScale:") [f64] scale)
   (msg i64
        layer
@@ -586,7 +588,8 @@
        (CGSize :w (* width scale) :h (* height scale)))
   0)
 
-(defn create-layer [(view (ptr i8)) (width f64) (height f64) (scale f64)] (-> (ptr i8))
+(defn create-layer [(view (ptr i8)) (width f64) (height f64) (scale f64)]
+  (-> (ptr i8))
   (let [layer (new c"CAMetalLayer")]
     (msg i64 layer (sel c"setDevice:") [(ptr i8)] (.device (gpu)))
     (msg i64 layer (sel c"setPixelFormat:") [u64] 80)

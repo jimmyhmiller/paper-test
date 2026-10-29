@@ -98,3 +98,29 @@
     (check-recency)
     (masks/reset) (set! (.preparing (masks/cache)) false)
     (o/release pool)))
+
+;;; Eviction keeps the index exact by itself: no rebuild follows it here. Two
+;;; buckets force every entry into long chains, so removal and the slot moved
+;;; into the gap are exercised at chain heads, in chain interiors, and with the
+;;; evicted and the moved entry sharing one chain.
+(deftest mask-eviction-keeps-the-index-exact-without-a-rebuild
+  (let [pool (o/new c"NSAutoreleasePool") count 64]
+    (scene/init) (masks/reset)
+    (set! (.preparing (masks/cache)) true)
+    (for [i 0 count] (masks/lookup (key (triangle (cast f64 i))) 16 16))
+    (masks/rebuild-index 2)
+    (for [evicted 0 (- count 1)]
+      (masks/evict-oldest)
+      (check-recency)
+      (let [remaining (- (- count 1) evicted)]
+        (assert (= (len (.entries (masks/cache))) remaining))
+        ; Every survivor is still found, so looking it up adds no entry. The
+        ; lookups run oldest first and leave the recency order as it was.
+        (for [i (+ evicted 1) count]
+          (masks/lookup (key (triangle (cast f64 i))) 16 16)
+          (assert (= (len (.entries (masks/cache))) remaining)))))
+    ; A key that was evicted is really gone: it comes back as a new entry.
+    (masks/lookup (key (triangle 0.0)) 16 16)
+    (assert (= (len (.entries (masks/cache))) 2))
+    (masks/reset) (set! (.preparing (masks/cache)) false)
+    (o/release pool)))

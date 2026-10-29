@@ -146,7 +146,7 @@
              c"UNDEFINED RESULT · AC TO CLEAR"
              (if (!= (.operation (state)) 0)
                  (key-name (.operation (state)))
-                 c"PAPER / CALCULATOR")))
+                 c"")))
   (beveled-carved (rect 121.0 158.0 376.0 63.0)
                   (model/display (state))
                   68.0
@@ -197,7 +197,6 @@
            (rect 424.0 y 96.0 (+ height (if (.scientific (state)) 0.0 20.0)))
            size)))
   (ink-height 44.0)
-  (label 112.0 732.0 9.0 0x6f604a 3 c"P A P E R")
   (recess (rect 249.0 723.0 122.0 26.0)
           13.0
           44.0

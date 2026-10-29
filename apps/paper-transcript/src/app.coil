@@ -1016,8 +1016,10 @@
 ;;; the transcript and pans the waveform — what a trackpad does, but the same
 ;;; every run — then after a fixed number of frames writes a trace and exits.
 ;;; PAPER_TRANSCRIPT_BENCH_ZOOM sets the waveform zoom in points per second.
+;;; PAPER_TRANSCRIPT_BENCH_FRAMES lengthens the run, for a profiler to attach to.
 (defn bench-frames [] (-> i64)
-  240)
+  (let [text (getenv c"PAPER_TRANSCRIPT_BENCH_FRAMES")]
+    (if (= (cast i64 text) 0) 240 (cast i64 (lib/parse-float text)))))
 
 (defn bench? [] (-> bool)
   (!= (cast i64 (getenv c"PAPER_TRANSCRIPT_BENCH")) 0))

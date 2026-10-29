@@ -1,4 +1,5 @@
 (module paper.ffi)
+(import "coil.cc" :as cc)
 
 (defstruct CGPoint [(x f64) (y f64)])
 
@@ -15,168 +16,162 @@
     :w w
     :h h))
 
-(extern CGColorSpaceCreateDeviceRGB :cc c [] (-> (ptr i8)))
+(extern CGColorSpaceCreateDeviceRGB :cc (cc/C) [] (-> (ptr i8)))
 
-(extern CGColorSpaceCreateDeviceGray :cc c [] (-> (ptr i8)))
+(extern CGColorSpaceCreateDeviceGray :cc (cc/C) [] (-> (ptr i8)))
 
-(extern CGColorSpaceRelease :cc c [(ptr i8)] (-> void))
+(extern CGColorSpaceRelease :cc (cc/C) [(ptr i8)] (-> void))
 
 (extern CGBitmapContextCreate
-        :cc
-        c
+        :cc (cc/C)
         [(ptr i8) u64 u64 u64 u64 (ptr i8) u32]
         (-> (ptr i8)))
 
-(extern CGBitmapContextGetData :cc c [(ptr i8)] (-> (ptr u8)))
+(extern CGBitmapContextGetData :cc (cc/C) [(ptr i8)] (-> (ptr u8)))
 
-(extern CGBitmapContextCreateImage :cc c [(ptr i8)] (-> (ptr i8)))
+(extern CGBitmapContextCreateImage :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
 
-(extern CGContextRelease :cc c [(ptr i8)] (-> void))
+(extern CGContextRelease :cc (cc/C) [(ptr i8)] (-> void))
 
-(extern CGImageRelease :cc c [(ptr i8)] (-> void))
+(extern CGImageRelease :cc (cc/C) [(ptr i8)] (-> void))
 
-(extern CGContextSetRGBFillColor :cc c [(ptr i8) f64 f64 f64 f64] (-> void))
+(extern CGContextSetRGBFillColor :cc (cc/C) [(ptr i8) f64 f64 f64 f64] (-> void))
 
-(extern CGContextSetGrayFillColor :cc c [(ptr i8) f64 f64] (-> void))
+(extern CGContextSetGrayFillColor :cc (cc/C) [(ptr i8) f64 f64] (-> void))
 
-(extern CGContextSetGrayStrokeColor :cc c [(ptr i8) f64 f64] (-> void))
+(extern CGContextSetGrayStrokeColor :cc (cc/C) [(ptr i8) f64 f64] (-> void))
 
-(extern CGContextSetLineWidth :cc c [(ptr i8) f64] (-> void))
+(extern CGContextSetLineWidth :cc (cc/C) [(ptr i8) f64] (-> void))
 
-(extern CGContextFillRect :cc c [(ptr i8) CGRect] (-> void))
+(extern CGContextFillRect :cc (cc/C) [(ptr i8) CGRect] (-> void))
 
-(extern CGContextSaveGState :cc c [(ptr i8)] (-> void))
+(extern CGContextSaveGState :cc (cc/C) [(ptr i8)] (-> void))
 
-(extern CGContextRestoreGState :cc c [(ptr i8)] (-> void))
+(extern CGContextRestoreGState :cc (cc/C) [(ptr i8)] (-> void))
 
-(extern CGContextTranslateCTM :cc c [(ptr i8) f64 f64] (-> void))
+(extern CGContextTranslateCTM :cc (cc/C) [(ptr i8) f64 f64] (-> void))
 
-(extern CGContextScaleCTM :cc c [(ptr i8) f64 f64] (-> void))
+(extern CGContextScaleCTM :cc (cc/C) [(ptr i8) f64 f64] (-> void))
 
-(extern CGContextAddPath :cc c [(ptr i8) (ptr i8)] (-> void))
+(extern CGContextAddPath :cc (cc/C) [(ptr i8) (ptr i8)] (-> void))
 
-(extern CGContextEOFillPath :cc c [(ptr i8)] (-> void))
+(extern CGContextEOFillPath :cc (cc/C) [(ptr i8)] (-> void))
 
-(extern CGContextEOClip :cc c [(ptr i8)] (-> void))
+(extern CGContextEOClip :cc (cc/C) [(ptr i8)] (-> void))
 
-(extern CGContextStrokePath :cc c [(ptr i8)] (-> void))
+(extern CGContextStrokePath :cc (cc/C) [(ptr i8)] (-> void))
 
-(extern CGPathCreateMutable :cc c [] (-> (ptr i8)))
+(extern CGPathCreateMutable :cc (cc/C) [] (-> (ptr i8)))
 
-(extern CGPathCreateCopy :cc c [(ptr i8)] (-> (ptr i8)))
+(extern CGPathCreateCopy :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
 
-(extern CGPathAddPath :cc c [(ptr i8) (ptr CGAffine) (ptr i8)] (-> void))
+(extern CGPathAddPath :cc (cc/C) [(ptr i8) (ptr CGAffine) (ptr i8)] (-> void))
 
 (extern CGPathCreateCopyByStrokingPath
-        :cc
-        c
+        :cc (cc/C)
         [(ptr i8) (ptr CGAffine) f64 i32 i32 f64]
         (-> (ptr i8)))
 
 (extern CGPathCreateCopyByUnioningPath
-        :cc
-        c
+        :cc (cc/C)
         [(ptr i8) (ptr i8) bool]
         (-> (ptr i8)))
 
 (extern CGPathCreateCopyBySubtractingPath
-        :cc
-        c
+        :cc (cc/C)
         [(ptr i8) (ptr i8) bool]
         (-> (ptr i8)))
 
 (extern CGPathContainsPoint
-        :cc
-        c
+        :cc (cc/C)
         [(ptr i8) (ptr CGAffine) CGPoint bool]
         (-> bool))
 
-(extern CGPathIsEmpty :cc c [(ptr i8)] (-> bool))
+(extern CGPathIsEmpty :cc (cc/C) [(ptr i8)] (-> bool))
 
-(extern CGPathRelease :cc c [(ptr i8)] (-> void))
+(extern CGPathRelease :cc (cc/C) [(ptr i8)] (-> void))
 
-(extern CGPathMoveToPoint :cc c [(ptr i8) (ptr CGAffine) f64 f64] (-> void))
+(extern CGPathMoveToPoint :cc (cc/C) [(ptr i8) (ptr CGAffine) f64 f64] (-> void))
 
-(extern CGPathAddLineToPoint :cc c [(ptr i8) (ptr CGAffine) f64 f64] (-> void))
+(extern CGPathAddLineToPoint :cc (cc/C) [(ptr i8) (ptr CGAffine) f64 f64] (-> void))
 
 (extern CGPathAddCurveToPoint
-        :cc
-        c
+        :cc (cc/C)
         [(ptr i8) (ptr CGAffine) f64 f64 f64 f64 f64 f64]
         (-> void))
 
-(extern CGPathCloseSubpath :cc c [(ptr i8)] (-> void))
+(extern CGPathCloseSubpath :cc (cc/C) [(ptr i8)] (-> void))
 
 (extern CGPathAddRoundedRect
-        :cc
-        c
+        :cc (cc/C)
         [(ptr i8) (ptr CGAffine) CGRect f64 f64]
         (-> void))
 
-(extern CGPathAddEllipseInRect :cc c [(ptr i8) (ptr CGAffine) CGRect] (-> void))
+(extern CGPathAddEllipseInRect :cc (cc/C) [(ptr i8) (ptr CGAffine) CGRect] (-> void))
 
-(extern CFRelease :cc c [(ptr i8)] (-> void))
+(extern CFRelease :cc (cc/C) [(ptr i8)] (-> void))
 
 (extern CGImageDestinationCreateWithURL
-        :cc
-        c
+        :cc (cc/C)
         [(ptr i8) (ptr i8) u64 (ptr i8)]
         (-> (ptr i8)))
 
-(extern CGImageDestinationAddImage :cc c [(ptr i8) (ptr i8) (ptr i8)] (-> void))
+(extern CGImageDestinationAddImage :cc (cc/C) [(ptr i8) (ptr i8) (ptr i8)] (-> void))
 
-(extern CGImageDestinationFinalize :cc c [(ptr i8)] (-> bool))
+(extern CGImageDestinationFinalize :cc (cc/C) [(ptr i8)] (-> bool))
 
-(extern sin :cc c [f64] (-> f64))
+(extern sin :cc (cc/C) [f64] (-> f64))
 
-(extern cos :cc c [f64] (-> f64))
+(extern cos :cc (cc/C) [f64] (-> f64))
 
-(extern fabs :cc c [f64] (-> f64))
+(extern fabs :cc (cc/C) [f64] (-> f64))
 
-(extern sqrt :cc c [f64] (-> f64))
+(extern sqrt :cc (cc/C) [f64] (-> f64))
 
-(extern floor :cc c [f64] (-> f64))
+(extern floor :cc (cc/C) [f64] (-> f64))
 
-(extern pow :cc c [f64 f64] (-> f64))
+(extern pow :cc (cc/C) [f64 f64] (-> f64))
 
-(extern snprintf :cc c [(ptr i8) u64 (ptr i8) ...] (-> i32))
+(extern snprintf :cc (cc/C) [(ptr i8) u64 (ptr i8) ...] (-> i32))
 
-(extern strlen :cc c [(ptr i8)] (-> u64))
+(extern strlen :cc (cc/C) [(ptr i8)] (-> u64))
 
-(extern strcmp :cc c [(ptr i8) (ptr i8)] (-> i32))
+(extern strcmp :cc (cc/C) [(ptr i8) (ptr i8)] (-> i32))
 
-(extern strcasestr :cc c [(ptr i8) (ptr i8)] (-> (ptr i8)))
+(extern strcasestr :cc (cc/C) [(ptr i8) (ptr i8)] (-> (ptr i8)))
 
-(extern CACurrentMediaTime :cc c [] (-> f64))
+(extern CACurrentMediaTime :cc (cc/C) [] (-> f64))
 
-(extern objc_allocateClassPair :cc c [(ptr i8) (ptr i8) u64] (-> (ptr i8)))
+(extern objc_allocateClassPair :cc (cc/C) [(ptr i8) (ptr i8) u64] (-> (ptr i8)))
 
-(extern objc_registerClassPair :cc c [(ptr i8)] (-> void))
+(extern objc_registerClassPair :cc (cc/C) [(ptr i8)] (-> void))
 
-(extern class_addMethod :cc c [(ptr i8) (ptr i8) (ptr i8) (ptr i8)] (-> bool))
+(extern class_addMethod :cc (cc/C) [(ptr i8) (ptr i8) (ptr i8) (ptr i8)] (-> bool))
 
-(extern CGPathEqualToPath :cc c [(ptr i8) (ptr i8)] (-> bool))
+(extern CGPathEqualToPath :cc (cc/C) [(ptr i8) (ptr i8)] (-> bool))
 
-(extern CGPathIntersectsPath :cc c [(ptr i8) (ptr i8) bool] (-> bool))
+(extern CGPathIntersectsPath :cc (cc/C) [(ptr i8) (ptr i8) bool] (-> bool))
 
-(extern CGPathGetPathBoundingBox :cc c [(ptr i8)] (-> CGRect))
+(extern CGPathGetPathBoundingBox :cc (cc/C) [(ptr i8)] (-> CGRect))
 
-(extern CGContextClipToRect :cc c [(ptr i8) CGRect] (-> void))
+(extern CGPathGetBoundingBox :cc (cc/C) [(ptr i8)] (-> CGRect))
 
-(extern CGContextSetBlendMode :cc c [(ptr i8) i32] (-> void))
+(extern CGPathRetain :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
+
+(extern CGContextClipToRect :cc (cc/C) [(ptr i8) CGRect] (-> void))
+
+(extern CGContextSetBlendMode :cc (cc/C) [(ptr i8) i32] (-> void))
 
 (extern CGPathCreateCopyByTransformingPath
-        :cc
-        c
+        :cc (cc/C)
         [(ptr i8) (ref CGAffine)]
         (-> (ptr i8)))
 
-(extern CGContextSetRGBStrokeColor :cc c [(ptr i8) f64 f64 f64 f64] (-> void))
+(extern CGContextSetRGBStrokeColor :cc (cc/C) [(ptr i8) f64 f64 f64 f64] (-> void))
 
 (extern CGPathCreateCopyByIntersectingPath
-        :cc
-        c
+        :cc (cc/C)
         [(ptr i8) (ptr i8) bool]
         (-> (ptr i8)))
 
-(extern CGPathCreateMutableCopy :cc c [(ptr i8)] (-> (ptr i8)))
+(extern CGPathCreateMutableCopy :cc (cc/C) [(ptr i8)] (-> (ptr i8)))

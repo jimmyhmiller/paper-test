@@ -4,6 +4,7 @@
 (import "transcript.ui" :as ui)
 (import "transcript.app" :as app)
 (import "transcript.waveform" :as waveform)
+(import "paper.masks" :as masks)
 
 (extern getenv :cc c [(ptr i8)] (-> (ptr i8)))
 
@@ -16,5 +17,9 @@
              (= (getenv c"PAPER_TRANSCRIPT_BENCH_FOREGROUND")
                 (cast (ptr i8) 0)))
     (host/paper_background_launch true))
+  ;; PAPER_MICRO_REFERENCE shades every surface's grain in the fragment shader
+  ;; and keeps no cached copy of it: the comparison the cache has to beat.
+  (when (!= (getenv c"PAPER_MICRO_REFERENCE") (cast (ptr i8) 0))
+    (set! (.reference (masks/micro-cache)) true))
   (host/paper_run (primitive/fnptr-of ui/draw) (primitive/fnptr-of app/event))
   (waveform/stop (waveform/state)))

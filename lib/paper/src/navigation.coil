@@ -33,7 +33,8 @@
     :detail detail
     :enabled true))
 
-(defn selection-style [(paper Material) (active Material) (edge Material)] (-> SelectionStyle)
+(defn selection-style [(paper Material) (active Material) (edge Material)]
+  (-> SelectionStyle)
   (SelectionStyle
     :paper paper
     :active active
@@ -59,28 +60,41 @@
                          (selected bool)
                          (style SelectionStyle)] (-> i64)
   (assert (> group 0))
-  (case (.treatment style) 1
+  (case (.treatment style)
+    1
+      (panel bounds
+             (.radius style)
+             (+ (.z style)
+                (if selected
+                    8.0
+                    (if (and (host/paper_enabled) (host/paper_hovered id))
+                        2.0
+                        0.0)))
+             (control-stock id (if selected (.active style) (.paper style))))
+    2
+      (when (or selected (host/paper_pressed id) (host/paper_hovered id))
         (panel bounds
                (.radius style)
-               (+ (.z style) (if selected 8.0 (if (and (host/paper_enabled) (host/paper_hovered id)) 2.0 0.0)))
-               (control-stock id (if selected (.active style) (.paper style))))
-          2
-        (when (or selected (host/paper_pressed id) (host/paper_hovered id))
-          (panel bounds
-                 (.radius style)
-                 (.z style)
-                 (control-stock id (if selected (.active style) (.paper style)))))
-          (when (or selected (host/paper_pressed id))
-            (well bounds
-                  (.radius style)
-                  (.z style)
-                  (.paper style)
-                  (.edge style)
-                  (control-stock id (.active style)))))
+               (.z style)
+               (control-stock id (if selected (.active style) (.paper style)))))
+    (when (or selected (host/paper_pressed id))
+      (well bounds
+            (.radius style)
+            (.z style)
+            (.paper style)
+            (.edge style)
+            (control-stock id (.active style)))))
   (when (and (= (.treatment style) 0) (not selected) (host/paper_hovered id))
     (panel bounds (.radius style) (.z style) (control-stock id (.paper style))))
   (ink-height (+ (.z style) (if (= (.treatment style) 1) 8.0 0.0)))
-  (host/paper_selection_hit group id (.x bounds) (.y bounds) (.w bounds) (.h bounds) name selected))
+  (host/paper_selection_hit group
+                            id
+                            (.x bounds)
+                            (.y bounds)
+                            (.w bounds)
+                            (.h bounds)
+                            name
+                            selected))
 
 ;;; A title and optional subtitle, bounded and vertically centered in the row.
 ;;; leading reserves space for an application-drawn icon without hardcoded icons.
@@ -90,19 +104,40 @@
                      (selected bool)
                      (style SelectionStyle)] (-> i64)
   (with-enabled (.enabled item)
-                (selection-surface group (.id item) bounds (.title item) selected style)
-                (let [detail (> (host/strlen (.detail item)) (cast u64 0))
+                (selection-surface group
+                                   (.id item)
+                                   bounds
+                                   (.title item)
+                                   selected
+                                   style)
+                (let [detail (> (host/strlen (.detail item)) (: 0 u64))
                       title-height (* (.size style) 1.4)
                       detail-height (if detail (* (.detail-size style) 1.4) 0.0)
                       gap (if detail 5.0 0.0)
-                      top (+ (.y bounds) (/ (- (.h bounds) (+ title-height (+ detail-height gap))) 2.0))
+                      top
+                        (+ (.y bounds)
+                           (/ (- (.h bounds)
+                                 (+ title-height (+ detail-height gap)))
+                              2.0))
                       left (+ (.x bounds) (+ (.padding style) (.leading style)))
-                      width (- (.w bounds) (+ (* 2.0 (.padding style)) (.leading style)))
-                      ink (if (not (host/paper_enabled)) 0x777e70 (if selected (.active-ink style) (.ink style)))]
+                      width
+                        (- (.w bounds)
+                           (+ (* 2.0 (.padding style)) (.leading style)))
+                      ink
+                        (if (not (host/paper_enabled))
+                            0x777e70
+                            (if selected (.active-ink style) (.ink style)))]
                   (assert (and (> width 0.0) (>= top (.y bounds))))
-                  (text-box (rect left top width title-height) (.size style) ink (.font style) (.title item))
+                  (text-box (rect left top width title-height)
+                            (.size style)
+                            ink
+                            (.font style)
+                            (.title item))
                   (when detail
-                    (text-box (rect left (+ top (+ title-height gap)) width detail-height)
+                    (text-box (rect left
+                                    (+ top (+ title-height gap))
+                                    width
+                                    detail-height)
                               (.detail-size style)
                               (.secondary style)
                               0
@@ -118,7 +153,11 @@
                    (style SelectionStyle)] (-> i64)
   (for [i 0 (len items)]
     (let [item (get items i)]
-      (selection-row group item (column-cell bounds (len items) gap i) (= selected (.id item)) style)))
+      (selection-row group
+                     item
+                     (column-cell bounds (len items) gap i)
+                     (= selected (.id item))
+                     style)))
   0)
 
 (defn tab-strip [(group i64)
@@ -129,7 +168,11 @@
                  (style SelectionStyle)] (-> i64)
   (for [i 0 (len items)]
     (let [item (get items i)]
-      (selection-row group item (row-cell bounds (len items) gap i) (= selected (.id item)) style)))
+      (selection-row group
+                     item
+                     (row-cell bounds (len items) gap i)
+                     (= selected (.id item))
+                     style)))
   0)
 
 ;;; Pagination arithmetic is shared by rendering and actions, including empty data.
@@ -158,7 +201,15 @@
   (let [current (page-index page count size)
         pages (page-count count size)]
     (with-enabled (> current 0)
-                  (button previous-id (row-cell bounds 2 12.0 0) c"‹ Back" false material))
+                  (button previous-id
+                          (row-cell bounds 2 12.0 0)
+                          c"‹ Back"
+                          false
+                          material))
     (with-enabled (< (+ current 1) pages)
-                  (button next-id (row-cell bounds 2 12.0 1) c"Next ›" false material)))
+                  (button next-id
+                          (row-cell bounds 2 12.0 1)
+                          c"Next ›"
+                          false
+                          material)))
   0)

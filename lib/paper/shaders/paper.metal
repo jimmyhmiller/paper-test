@@ -579,7 +579,35 @@ kernel void prepare_material_micro(texture2d<float, access::write> output [[text
     if (xy.x >= output.get_width() || xy.y >= output.get_height()) return;
     output.write(float4(procedural_material_micro(d.rect.xy + float2(xy) + 0.5f, d), 1.0f), xy);
 }
+// One square tile per material, shared by every sheet of that stock. Its edges
+// are cross-faded into each other so it wraps without a seam: the far edge
+// fades into what lies just before the near one, and the slope channels are
+// renormalized so the blend keeps the contrast of the noise it mixes.
+kernel void prepare_material_tile(texture2d<float, access::write> output [[texture(0)]],
+                                  constant MaskDraw& d [[buffer(0)]], uint2 xy [[thread_position_in_grid]]) {
+    const float n = float(output.get_width());
+    if (xy.x >= output.get_width() || xy.y >= output.get_height()) return;
+    const float band = 96.0f;
+    const float2 p = float2(xy) + 0.5f;
+    const float wx = clamp((p.x - (n - band)) / band, 0.0f, 1.0f);
+    const float wy = clamp((p.y - (n - band)) / band, 0.0f, 1.0f);
+    const float w00 = (1.0f - wx) * (1.0f - wy), w10 = wx * (1.0f - wy), w01 = (1.0f - wx) * wy, w11 = wx * wy;
+    float3 sum = w00 * procedural_material_micro(p, d);
+    if (w10 > 0.0f) sum += w10 * procedural_material_micro(p - float2(n, 0.0f), d);
+    if (w01 > 0.0f) sum += w01 * procedural_material_micro(p - float2(0.0f, n), d);
+    if (w11 > 0.0f) sum += w11 * procedural_material_micro(p - float2(n, n), d);
+    const float keep = 1.0f / sqrt(w00 * w00 + w10 * w10 + w01 * w01 + w11 * w11);
+    output.write(float4(sum.xy * keep, sum.z, 1.0f), xy);
+}
 inline float3 material_micro(float2 xy, constant MaskDraw& d, texture2d<float, access::read> cached) {
+    if (d.padding.y > 1.5f) {
+        // Tiled: the grain is locked to the sheet's own origin and repeats.
+        const int n = int(cached.get_width());
+        const float2 origin = d.origin_scale_seed.xy * d.origin_scale_seed.z;
+        int2 q = int2(floor(xy - floor(origin)));
+        q = ((q % n) + n) % n;
+        return cached.read(uint2(q)).xyz;
+    }
     if (d.padding.y > 0.5f) return cached.read(uint2(xy - float2(d.finish_shape.w, d.finish_weight.w))).xyz;
     return procedural_material_micro(xy, d);
 }

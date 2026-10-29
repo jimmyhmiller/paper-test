@@ -84,7 +84,27 @@
 
 (const PHASE-LOOKUP-MISSES 23)
 
-(const PHASE-COUNT 24)
+(const PHASE-CALLBACK 24)
+
+(const PHASE-POLL 25)
+
+(const PHASE-DRAW 26)
+
+(const PHASE-RENDER 27)
+
+(const PHASE-PRESENT 28)
+
+(const PHASE-CHROME 29)
+
+(const PHASE-MASK-RELEASE 30)
+
+(const PHASE-MASK-RESERVE 31)
+
+(const PHASE-MASK-SETTLE 32)
+
+(const PHASE-MICRO-INSERTS 33)
+
+(const PHASE-COUNT 34)
 
 (defstruct Diagnostics
   [(checked bool)
@@ -94,10 +114,10 @@
    (last-start f64)
    (frame-start f64)
    (construction f64)
-   (phase (array f64 24))
+   (phase (array f64 34))
    (period-samples (array f64 120))
    (construction-samples (array f64 120))
-   (phase-samples (array f64 2880))
+   (phase-samples (array f64 4080))
    (sheets i64)
    (inks i64)
    (hits i64)
@@ -182,6 +202,15 @@
       (set! (index (field d phase) PHASE-MICRO) (.micro (masks/mask-cost)))
       (set! (index (field d phase) PHASE-VISIBILITY)
             (.visibility (masks/mask-cost)))
+      (let [parts (host/frame-parts)]
+        ;; The callback runs on past this point, so these describe the frame
+        ;; before this one — the same offset the renderer costs above carry.
+        (set! (index (field d phase) PHASE-CALLBACK) (.callback parts))
+        (set! (index (field d phase) PHASE-POLL) (.poll parts))
+        (set! (index (field d phase) PHASE-DRAW) (.draw parts))
+        (set! (index (field d phase) PHASE-RENDER) (.render parts))
+        (set! (index (field d phase) PHASE-PRESENT) (.present parts))
+        (set! (index (field d phase) PHASE-CHROME) (.chrome parts)))
       (let [lc (masks/lookup-cost)]
         (set! (index (field d phase) PHASE-LOOKUP) (.time lc))
         (set! (index (field d phase) PHASE-LOOKUP-CALLS) (cast f64 (.calls lc)))
@@ -190,6 +219,16 @@
         (set! (.time lc) 0.0)
         (set! (.calls lc) 0)
         (set! (.misses lc) 0))
+      (set! (index (field d phase) PHASE-MASK-RELEASE)
+            (.release (masks/mask-cost)))
+      (set! (index (field d phase) PHASE-MASK-RESERVE)
+            (* 1000.0 (.mask-reservation counters)))
+      (set! (index (field d phase) PHASE-MASK-SETTLE)
+            (.settle (masks/mask-cost)))
+      (set! (index (field d phase) PHASE-MICRO-INSERTS)
+            (cast f64 (.inserts (masks/micro-cache))))
+      (set! (.inserts (masks/micro-cache)) 0)
+      (set! (.mask-reservation counters) 0.0)
       (set! (.masks counters) 0.0)
       (set! (.cuts counters) 0.0)
       (set! (.bevel counters) 0.0))
@@ -388,6 +427,96 @@
                   (phase-mean d PHASE-VISIBILITY))))
   (text d))
 
+;;; The whole display-link callback against its parts. What the callback costs
+;;; beyond them is unmeasured work; what the frame period costs beyond the
+;;; callback is the wait for the next vsync, not work at all.
+(defn line-callback [(d (ptr Diagnostics))] (-> (ptr i8))
+  (snprintf (text d)
+            256
+            c"callback %.1f/%.0f of %.1f frame  poll %.1f  draw %.1f  render %.1f  present %.1f  chrome %.1f"
+            (phase-mean d PHASE-CALLBACK)
+            (phase-worst d PHASE-CALLBACK)
+            (mean-period d)
+            (phase-mean d PHASE-POLL)
+            (phase-mean d PHASE-DRAW)
+            (phase-mean d PHASE-RENDER)
+            (phase-mean d PHASE-PRESENT)
+            (phase-mean d PHASE-CHROME))
+  (text d))
+
+;;; The mask reservation taken apart, with the micro-texture cache beside it:
+;;; its lookups scan every entry, and each insert creates a GPU texture.
+(defn line-prepare [(d (ptr Diagnostics))] (-> (ptr i8))
+  (snprintf (text d)
+            256
+            c"prepare parts  release %.1f  reserve %.1f  build %.1f  settle %.1f   micro entries %lld  inserts %.1f/frame"
+            (phase-mean d PHASE-MASK-RELEASE)
+            (phase-mean d PHASE-MASK-RESERVE)
+            (phase-mean d PHASE-MASKS)
+            (phase-mean d PHASE-MASK-SETTLE)
+            (len (.entries (masks/micro-cache)))
+            (phase-mean d PHASE-MICRO-INSERTS))
+  (text d))
+
+;;; How the frames were spaced where it counts, on the display.
+(defn line-glass-cadence [(d (ptr Diagnostics))] (-> (ptr i8))
+  (let [stats (host/present-stats)]
+    (snprintf (text d)
+              256
+              c"glass cadence  one refresh apart %lld   held over %lld   two on one refresh %lld   aiming +%.0f refresh, moved %lld times"
+              (.even stats)
+              (.held stats)
+              (.squeezed stats)
+              (host/paper_present_ahead)
+              (.retargets stats)))
+  (text d))
+
+;;; How the recent draws were spaced, in display refreshes. An average hides the
+;;; difference between a steady stream with a few doubled frames and a stream
+;;; that alternates; the counts do not. Gaps of a quarter second and more are
+;;; pauses in the input rather than frames, and are left out.
+(defn line-cadence [(d (ptr Diagnostics))] (-> (ptr i8))
+  (let [n (sample-count d)
+        period
+          (if (and (not (.headless (host/host)))
+                   (> (host/paper_display_period) 0.0))
+              (* 1000.0 (host/paper_display_period))
+              16.667)
+        (mut one) 0
+        (mut two) 0
+        (mut more) 0]
+    (for [i 0 n]
+      (let [v (load (index (field d period-samples) i))]
+        (when (and (> v 0.0) (< v 250.0))
+          (cond (< v (* 1.5 period)) (set! one (+ (load one) 1))
+                (< v (* 2.5 period)) (set! two (+ (load two) 1))
+                :else (set! more (+ (load more) 1))))))
+    (snprintf (text d)
+              256
+              c"cadence  every refresh %lld   every 2nd %lld   slower %lld   (of the last %lld draws)"
+              (load one)
+              (load two)
+              (load more)
+              n))
+  (text d))
+
+;;; What the display actually showed since the last trace, as Metal reported it.
+(defn line-glass [(d (ptr Diagnostics))] (-> (ptr i8))
+  (let [stats (host/present-stats)
+        shown (.presented stats)]
+    (snprintf (text d)
+              256
+              c"glass  presented %lld  late %lld  dropped %lld  gestures taken in-frame %lld  worst +%.1fms late  draw-to-glass %.1fms"
+              shown
+              (.late stats)
+              (.dropped stats)
+              (.gestures stats)
+              (* 1000.0 (.worst-late stats))
+              (if (> shown 0)
+                  (* 1000.0 (/ (.latency stats) (cast f64 shown)))
+                  0.0)))
+  (text d))
+
 (defn line-lookup [(d (ptr Diagnostics))] (-> (ptr i8))
   (snprintf (text d)
             256
@@ -512,9 +641,14 @@
     (append-line d (mut used) (line-frames d))
     (append-line d (mut used) (line-display d))
     (append-line d (mut used) (line-phases d))
+    (append-line d (mut used) (line-callback d))
+    (append-line d (mut used) (line-glass d))
+    (append-line d (mut used) (line-glass-cadence d))
+    (append-line d (mut used) (line-cadence d))
     (append-line d (mut used) (line-renderer d))
     (append-line d (mut used) (line-raster d))
     (append-line d (mut used) (line-gpu d))
+    (append-line d (mut used) (line-prepare d))
     (append-line d (mut used) (line-lookup d))
     (append-line d (mut used) (line-scene d))
     (append-line d (mut used) (line-take d s))
@@ -559,6 +693,8 @@
     (append-line d (mut used) (text d))
     (snprintf (text d) 256 c"status %s" (model/status s))
     (append-line d (mut used) (text d))
+    ;; The next trace then describes exactly what happened after this one.
+    (host/reset-present-stats)
     (let [buffer (index (field d trace) 0)
           f (fopen (trace-path) c"w")]
       (printf c"%s" buffer)
