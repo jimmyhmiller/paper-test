@@ -5,6 +5,24 @@
 
 (extern chmod :cc (cc/C) [(ptr i8) u16] (-> i32))
 
+;;; Replacing a signed executable invalidates the enclosing bundle signature.
+;;; Sign the complete bundle after writing its executable and metadata.
+(defn sign-bundle [] (-> i64)
+  (let [task (new c"NSTask")
+        arguments (new c"NSMutableArray")]
+    (let [values
+            [c"--force" c"--deep" c"--sign" c"-" c"build/Papercut Studio.app"]]
+      (for [i 0 5]
+        (msg i64 arguments (sel c"addObject:") [(ptr i8)] (ns (get values i)))))
+    (msg i64 task (sel c"setLaunchPath:") [(ptr i8)] (ns c"/usr/bin/codesign"))
+    (msg i64 task (sel c"setArguments:") [(ptr i8)] arguments)
+    (msg i64 task (sel c"launch") [])
+    (msg i64 task (sel c"waitUntilExit") [])
+    (let [status (msg i32 task (sel c"terminationStatus") [])]
+      (release arguments)
+      (release task)
+      (cast i64 status))))
+
 ;;; Package the already-built executable using macOS file APIs, entirely in Coil.
 (defn main [] (-> i64)
   (let [pool (new c"NSAutoreleasePool")
@@ -82,6 +100,7 @@
                        [(ptr i8) bool]
                        (ns c"build/Papercut Studio.app/Contents/Info.plist")
                        true))
+          (assert (= (sign-bundle) 0))
           (release info)
           (release pool)
           (println "Built build/Papercut Studio.app")
