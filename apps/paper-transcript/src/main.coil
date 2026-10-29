@@ -1,12 +1,12 @@
 (module transcript.main)
-(import "coil.primitive" :as primitive)
+(import "coil.cc" :as cc)
 (import "paper.platform" :as host)
 (import "transcript.ui" :as ui)
 (import "transcript.app" :as app)
 (import "transcript.waveform" :as waveform)
 (import "paper.masks" :as masks)
 
-(extern getenv :cc c [(ptr i8)] (-> (ptr i8)))
+(extern getenv :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
 
 (defn main [] (-> i64)
   (host/paper_configure c"Paper Transcript" 1480.0 940.0)
@@ -21,5 +21,5 @@
   ;; and keeps no cached copy of it: the comparison the cache has to beat.
   (when (!= (getenv c"PAPER_MICRO_REFERENCE") (cast (ptr i8) 0))
     (set! (.reference (masks/micro-cache)) true))
-  (host/paper_run (primitive/fnptr-of ui/draw) (primitive/fnptr-of app/event))
+  (host/paper_run (fnptr-of ui/draw) (fnptr-of app/event))
   (waveform/stop (waveform/state)))

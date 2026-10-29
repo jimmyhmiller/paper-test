@@ -1,4 +1,5 @@
 (module transcript.library)
+(import "coil.cc" :as cc)
 (import "coil.primitive" :as primitive)
 (import "coil.alloc" :as alloc)
 (import "coil.fs" :as fs)
@@ -11,11 +12,11 @@
 (import "transcript.model" :as model)
 (import "transcript.page" :as page)
 
-(extern getenv :cc c [(ptr i8)] (-> (ptr i8)))
+(extern getenv :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
 
-(extern strtod :cc c [(ptr i8) (ptr (ptr i8))] (-> f64))
+(extern strtod :cc (cc/C) [(ptr i8) (ptr (ptr i8))] (-> f64))
 
-(extern mkdir :cc c [(ptr i8) i32] (-> i32))
+(extern mkdir :cc (cc/C) [(ptr i8) i32] (-> i32))
 
 (defn parse-float [(text (ptr i8))] (-> f64)
   (strtod text (cast (ptr (ptr i8)) 0)))
@@ -27,7 +28,7 @@
 (defn release-bytes [(a (dyn alloc/Allocator)) (bytes (slice u8))] (-> i64)
   (match (alloc/bytes-request (len bytes) 1)
     (Some [request]
-          (alloc/raw-free a (cast (ptr i8) (slice-data bytes)) request))
+          (alloc/raw-free a (cast (ptr i8) (data bytes)) request))
     (None [] 0)))
 
 ;;; The library is the same one the editor in jim writes: recordings in
@@ -103,7 +104,7 @@
         (when (and (letter? c) (< (load n) 31))
           (set! (index buffer (load n)) (cast i8 c))
           (set! n (+ (load n) 1)))))
-    (set! (index buffer (load n)) (cast i8 0))
+    (set! (index buffer (load n)) (: 0 i8))
     (or (same? buffer c"um")
         (same? buffer c"umm")
         (same? buffer c"uh")
@@ -147,7 +148,7 @@
           capped (if (> length 250) 250 (if (< length 0) 0 length))]
       (for [i 0 capped]
         (set! (index out i) (load (index name (+ (load start) i)))))
-      (set! (index out capped) (cast i8 0)))
+      (set! (index out capped) (: 0 i8)))
     out))
 
 (defn same-prefix? [(name (ptr i8)) (prefix (ptr i8))] (-> bool)
@@ -200,7 +201,7 @@
               (set! (index buffer (load k))
                     (cast i8 (lower (cast i64 (load (index name i))))))
               (set! k (+ (load k) 1))))
-          (set! (index buffer (load k)) (cast i8 0))
+          (set! (index buffer (load k)) (: 0 i8))
           (or (same? buffer c"wav")
               (same? buffer c"m4a")
               (same? buffer c"mp3")
@@ -272,13 +273,14 @@
             n (len span)
             length (if (> n 63) 63 n)]
         (for [k 0 length] (set! (index buffer k) (cast i8 (get span k))))
-        (set! (index buffer length) (cast i8 0))
+        (set! (index buffer length) (: 0 i8))
         (strtod buffer (cast (ptr (ptr i8)) 0)))))
 
 ;;; Append one word to the model, copying its text into the arena with the
 ;;; leading space whisper emits removed. Returns false when a capacity is
 ;;; reached, which the caller reports rather than silently truncating.
-(defn push-word [(s (ptr model/Session)) (span (slice u8)) (t0 f64) (t1 f64)] (-> bool)
+(defn push-word [(s (ptr model/Session)) (span (slice u8)) (t0 f64) (t1 f64)]
+  (-> bool)
   (let [n (len span)
         (mut start) 0
         (mut end) n]
@@ -300,7 +302,7 @@
             (for [k 0 length]
               (set! (index (model/text-arena) (+ off k))
                     (cast i8 (get span (+ (load start) k)))))
-            (set! (index (model/text-arena) (+ off length)) (cast i8 0))
+            (set! (index (model/text-arena) (+ off length)) (: 0 i8))
             (set! (.off w) off)
             (set! (.len w) length)
             (set! (.t0 w) t0)
@@ -349,7 +351,9 @@
               (when (and (= (get span 0) 32) (load open))
                 (when (> (load used) 0)
                   (when (push-word s
-                                   (slice-new [u8] (index buffer 0) (load used))
+                                   (slice::new [u8]
+                                               (index buffer 0)
+                                               (load used))
                                    (load t0)
                                    (load t1))
                     (set! added (+ (load added) 1))))
@@ -366,7 +370,7 @@
         (set! idx (json/next-index doc entry))))
     (when (and (load open) (> (load used) 0))
       (when (push-word s
-                       (slice-new [u8] (index buffer 0) (load used))
+                       (slice::new [u8] (index buffer 0) (load used))
                        (load t0)
                        (load t1))
         (set! added (+ (load added) 1))))
@@ -500,7 +504,7 @@
 (defn read-json [(s (ptr model/Session)) (path (ptr i8)) (kind i64)] (-> bool)
   (let [a (alloc/malloc-allocator)
         length (cast i64 (strlen path))
-        contents (fs/read-file a (slice-new [u8] (cast (ptr u8) path) length))]
+        contents (fs/read-file a (slice::new [u8] (cast (ptr u8) path) length))]
     (match contents
       (Err [e] false)
       (Ok [bytes]
@@ -510,9 +514,10 @@
                     (Err [e] false)
                     (Ok [doc]
                         (let [(mut d) doc]
-                          (case kind 0
-                                (read-transcript-doc s doc) 1
-                                (read-peaks-doc s doc) (read-edits-doc s doc))
+                          (case kind
+                            0 (read-transcript-doc s doc)
+                            1 (read-peaks-doc s doc)
+                            (read-edits-doc s doc))
                           (json/doc-free! (mut d))
                           true)))]
             (release-bytes a bytes)
@@ -538,7 +543,7 @@
 (defn decibels-to-amplitude [(db f64)] (-> f64)
   (exp (* db 0.1151292546497022)))
 
-(extern exp :cc c [f64] (-> f64))
+(extern exp :cc (cc/C) [f64] (-> f64))
 
 (defn peak-text-path [] (-> (ptr i8))
   c"/tmp/paper-transcript/peaks.txt")
@@ -548,9 +553,9 @@
         path (peak-text-path)
         contents
           (fs/read-file a
-                        (slice-new [u8]
-                                   (cast (ptr u8) path)
-                                   (cast i64 (strlen path))))]
+                        (slice::new [u8]
+                                    (cast (ptr u8) path)
+                                    (cast i64 (strlen path))))]
     (match contents
       (Err [e] 0)
       (Ok [bytes]
@@ -578,7 +583,7 @@
                                   (cast i8 (get bytes (load j))))
                             (set! used (+ (load used) 1))
                             (set! j (+ (load j) 1)))
-                          (set! (index buffer (load used)) (cast i8 0))
+                          (set! (index buffer (load used)) (: 0 i8))
                           (when (< (load count) 720000)
                             ;; "-inf" is digital silence; strtod yields infinity,
                             ;; so floor it at a level well below any real signal.
@@ -639,8 +644,8 @@
           path (peaks-path (index (path-buffer-b) 0) name)
           written
             (fs/write-file a
-                           (slice-new [u8]
-                                      (cast (ptr u8) path)
-                                      (cast i64 (strlen path)))
-                           (slice-new [u8] (cast (ptr u8) out) (load used)))]
+                           (slice::new [u8]
+                                       (cast (ptr u8) path)
+                                       (cast i64 (strlen path)))
+                           (slice::new [u8] (cast (ptr u8) out) (load used)))]
       (match written (Ok [n] (load used)) (Err [e] 0)))))

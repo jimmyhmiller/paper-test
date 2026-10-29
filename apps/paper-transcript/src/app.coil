@@ -1,4 +1,5 @@
 (module transcript.app)
+(import "coil.cc" :as cc)
 (import "coil.primitive" :as primitive)
 (import "coil.alloc" :as alloc)
 (import "coil.fs" :as fs)
@@ -17,21 +18,21 @@
 (import "transcript.ui" :as ui)
 (import "transcript.diagnostics" :as diag)
 
-(extern printf :cc c [(ptr i8) ...] (-> i32))
+(extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
 
-(extern popen :cc c [(ptr i8) (ptr i8)] (-> (ptr i8)))
+(extern popen :cc (cc/C) [(ptr i8) (ptr i8)] (-> (ptr i8)))
 
-(extern pclose :cc c [(ptr i8)] (-> i32))
+(extern pclose :cc (cc/C) [(ptr i8)] (-> i32))
 
-(extern fgets :cc c [(ptr i8) i32 (ptr i8)] (-> (ptr i8)))
+(extern fgets :cc (cc/C) [(ptr i8) i32 (ptr i8)] (-> (ptr i8)))
 
-(extern atoll :cc c [(ptr i8)] (-> i64))
+(extern atoll :cc (cc/C) [(ptr i8)] (-> i64))
 
-(extern kill :cc c [i32 i32] (-> i32))
+(extern kill :cc (cc/C) [i32 i32] (-> i32))
 
-(extern exit :cc c [i32] (-> void))
+(extern exit :cc (cc/C) [i32] (-> void))
 
-(extern getenv :cc c [(ptr i8)] (-> (ptr i8)))
+(extern getenv :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
 
 ;;; macOS hardware key codes, as the renderer reports them.
 (const KEY-SPACE 49)
@@ -195,10 +196,10 @@
                                 (model/take-name (model/take-at (.take s))))
               written
                 (fs/write-file a
-                               (slice-new [u8]
-                                          (cast (ptr u8) path)
-                                          (cast i64 (strlen path)))
-                               (slice-new [u8] (cast (ptr u8) out) (load used)))]
+                               (slice::new [u8]
+                                           (cast (ptr u8) path)
+                                           (cast i64 (strlen path)))
+                               (slice::new [u8] (cast (ptr u8) out) (load used)))]
           (match written (Ok [n] 0) (Err [e] 0))))))
 
 ;;; ---- take loading ---------------------------------------------------------
@@ -278,7 +279,8 @@
 ;;; ffmpeg are separate programs, and a failure in either must not take the
 ;;; editor down with it. The shell reports the child's pid, which is how the
 ;;; tick handler later learns the job has finished.
-(defn start-job [(s (ptr model/Session)) (kind i64) (command (ptr i8))] (-> bool)
+(defn start-job [(s (ptr model/Session)) (kind i64) (command (ptr i8))]
+  (-> bool)
   (let [j (job)]
     (if (.running j)
         false
@@ -577,7 +579,8 @@
 
 ;;; Open an undoable step covering a word range and, optionally, the region
 ;;; list. Making a new edit discards anything that had been undone.
-(defn begin-step [(s (ptr model/Session)) (lo i64) (hi i64) (with-regions bool)] (-> i64)
+(defn begin-step [(s (ptr model/Session)) (lo i64) (hi i64) (with-regions bool)]
+  (-> i64)
   (let [h (history/history)]
     (history/clear-side h history/SIDE-REDO)
     (history/begin h history/SIDE-UNDO s)
@@ -775,7 +778,8 @@
     (and (and (>= x (.x r)) (<= x (+ (.x r) (.w r))))
          (and (>= y (.y r)) (<= y (+ (.y r) (.h r)))))))
 
-(defn press-transcript [(s (ptr model/Session)) (x f64) (y f64) (extend bool)] (-> i64)
+(defn press-transcript [(s (ptr model/Session)) (x f64) (y f64) (extend bool)]
+  (-> i64)
   (let [(mut px) 0.0
         (mut py) 0.0
         (mut gap) false]
@@ -1057,7 +1061,7 @@
       (let [snap (getenv c"PAPER_TRANSCRIPT_BENCH_SNAPSHOT")]
         (when (!= (cast i64 snap) 0) (host/paper_snapshot snap)))
       (write-trace s)
-      (exit (cast i32 0))
+      (exit (: 0 i32))
       0)
     0))
 

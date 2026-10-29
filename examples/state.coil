@@ -59,12 +59,13 @@
                  (.agent-names s)
                  (o/sel c"addObject:")
                  [(ptr i8)]
-                 (case i 0
-                       (o/ns c"ResearchAgent") 1
-                       (o/ns c"DataCollector") 2
-                       (o/ns c"SummaryAgent") 3
-                       (o/ns c"WebScraper") 4
-                       (o/ns c"EmailResponder") (o/ns (index name 0)))))))
+                 (case i
+                   0 (o/ns c"ResearchAgent")
+                   1 (o/ns c"DataCollector")
+                   2 (o/ns c"SummaryAgent")
+                   3 (o/ns c"WebScraper")
+                   4 (o/ns c"EmailResponder")
+                   (o/ns (index name 0)))))))
     (set! (.agents s) (o/msg i64 (.agent-names s) (o/sel c"count") []))
     (set! (.watered s) (host/paper_pref_get c"watered" 0))
     (set! (.journal s) (host/paper_pref_get c"journal-count" 0))

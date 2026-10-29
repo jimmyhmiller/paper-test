@@ -176,7 +176,8 @@
   0)
 
 ;;; Record the region list as it is now.
-(defn record-regions [(h (ptr History)) (which i64) (s (ptr model/Session))] (-> bool)
+(defn record-regions [(h (ptr History)) (which i64) (s (ptr model/Session))]
+  (-> bool)
   (let [sd (side h which)]
     (if (not (.open sd))
         false

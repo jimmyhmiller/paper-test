@@ -1,4 +1,5 @@
 (module paper-scenes.native-benchmark)
+(import "coil.cc" :as cc)
 (import "coil.primitive" :as p)
 (import "coil.atomic" :as atomic)
 (import "paper-scenes.workload" :use [setting draw-case])
@@ -12,9 +13,9 @@
 (import "paper.objc" :use *)
 (import "paper.ffi" :use *)
 
-(extern printf :cc c [(ptr i8) ...] (-> i32))
+(extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
 
-(extern fflush :cc c [(ptr i8)] (-> i32))
+(extern fflush :cc (cc/C) [(ptr i8)] (-> i32))
 
 (defstruct Sample
   [(drawable (ptr i8))
@@ -49,31 +50,40 @@
 ; Apple Blocks ABI: https://clang.llvm.org/docs/Block-ABI-Apple.html
 ; Metal copies this stack block. Only a raw pointer to a static Sample is
 ; captured; the slot is not reused until both GPU and presentation complete.
-(defstruct PresentationDescriptor [(reserved u64) (size u64) (signature (ptr i8))])
-(defstruct PresentationBlock
-  [(isa (ptr i8)) (flags i32) (reserved i32)
-   (invoke (fnptr c [(ptr PresentationBlock) (ptr i8)] void))
-   (descriptor (ptr PresentationDescriptor)) (sample (ptr Sample))])
+(defstruct PresentationDescriptor
+  [(reserved u64) (size u64) (signature (ptr i8))])
 
-(defn presentation-finished [(closure (ptr PresentationBlock)) (drawable (ptr i8))] (-> void)
+(defstruct PresentationBlock
+  [(isa (ptr i8))
+   (flags i32)
+   (reserved i32)
+   (invoke (fnptr (cc/C) [(ptr PresentationBlock) (ptr i8)] void))
+   (descriptor (ptr PresentationDescriptor))
+   (sample (ptr Sample))])
+
+(defn presentation-finished [(closure (ptr PresentationBlock))
+                             (drawable (ptr i8))] (-> void)
   (let [sample (.sample closure)]
     (set! (.presented sample) (msg f64 drawable (sel c"presentedTime") []))
-    (atomic/atomic-store (field sample presentation-done) 1)))
+    (atomic/store (field sample presentation-done) 1)))
 
 (defn present-sample [(layer (ptr i8)) (sample (ptr Sample))] (-> bool)
   (let [descriptor (p/alloc-static PresentationDescriptor)]
-    (when (= (.size descriptor) (cast u64 0))
+    (when (= (.size descriptor) (: 0 u64))
       (set! (.size descriptor) (cast u64 (sizeof PresentationBlock)))
       (set! (.signature descriptor) c"v16@?0@8"))
-    (atomic/atomic-store (field sample presentation-done) 0)
-    (let [closure (p/alloc-stack PresentationBlock)]
-      (store! closure (PresentationBlock
-                    :isa (dlsym (cast (ptr i8) -2) c"_NSConcreteStackBlock")
-                    :flags 0x40000000 :reserved 0
-                    :invoke (fnptr-of presentation-finished)
-                    :descriptor descriptor :sample sample))
+    (atomic/store (field sample presentation-done) 0)
+    (let [(mut closure)
+            (: (PresentationBlock
+                 :isa (dlsym (cast (ptr i8) -2) c"_NSConcreteStackBlock")
+                 :flags 0x40000000
+                 :reserved 0
+                 :invoke (fnptr-of presentation-finished)
+                 :descriptor descriptor
+                 :sample sample)
+               PresentationBlock)]
       (assert (!= (.isa closure) (nil)))
-      (gpu/present-with-handler layer (cast (ptr i8) closure)))))
+      (gpu/present-with-handler layer (cast (ptr i8) (mut closure))))))
 
 ;;; Keep source frame IDs with each in-flight submission. Emit only completed
 ;;; command buffers and final presentation outcomes, including dropped/cold rows.
@@ -85,7 +95,8 @@
         (let [status (msg i64 (.command s) (sel c"status") [])]
           (assert (!= status 5))
           (assert (< (- (CACurrentMediaTime) (.start s)) 10.0))
-          (when (and (= status 4) (= (atomic/atomic-load (field s presentation-done)) 1))
+          (when (and (= status 4)
+                     (= (atomic/read (field s presentation-done)) 1))
             (printf c"%lld,%lld,%lld,%lld,%lld,%lld,%lld,%.4f,%.4f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%lld\n"
                     (.theme s)
                     (.scenario s)
@@ -128,8 +139,12 @@
             (draw-case theme scenario frame 4)
             (render/render-frame false)
             (set! (.minimum-duration slot) (.presentation-duration (gpu/gpu)))
-            (set! (.metal-clock slot) (if (= (.scheduled-drawable (gpu/gpu)) (nil)) 0 1))
-            (set! (.requested slot) (if (> (.minimum-duration slot) 0.0) 0.0 (.presentation-time (gpu/gpu))))
+            (set! (.metal-clock slot)
+                  (if (= (.scheduled-drawable (gpu/gpu)) (nil)) 0 1))
+            (set! (.requested slot)
+                  (if (> (.minimum-duration slot) 0.0)
+                      0.0
+                      (.presentation-time (gpu/gpu))))
             (set! (.duration slot) (.duration (clock/clock)))
             (assert (present-sample (.layer r) slot))
             (set! (.drawable slot) (retain (.last-drawable (gpu/gpu))))
@@ -197,7 +212,7 @@
     (msg i64 app (sel c"activateIgnoringOtherApps:") [bool] true)
     (printf c"theme,scenario,frame,width,height,sheets,mask_bytes,cpu_ms,gpu_ms,presented_s,start_s,target_s,requested_s,clock_duration_s,gpu_start_s,gpu_end_s,min_duration_s,metal_clock\n")
     (assert (not (and (= (setting c"PAPER_BENCH_METAL_CLOCK" 0) 1)
-                       (= (setting c"PAPER_BENCH_MIN_DURATION" 0) 1))))
+                      (= (setting c"PAPER_BENCH_MIN_DURATION" 0) 1))))
     (set! (.presentation-duration (gpu/gpu))
           (if (= (setting c"PAPER_BENCH_MIN_DURATION" 0) 1) (/ 1.0 60.0) 0.0))
     (msg i64 app (sel c"updateWindows") [])

@@ -1,4 +1,5 @@
 (module calculator.fidelity)
+(import "coil.cc" :as cc)
 (import "calculator.ui" :as ui)
 (import "calculator.model" :as model)
 (import "paper.platform" :as host)
@@ -11,9 +12,8 @@
 (import "paper.lighting" :as light)
 (import "paper.profile" :as profile)
 (import "paper.masks" :as masks)
-(import "coil.arraylist" :as al)
 
-(extern printf :cc c [(ptr i8) ...] (-> i32))
+(extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
 
 (defn main [] (-> i64)
   (let [pool (o/new c"NSAutoreleasePool")]
@@ -38,8 +38,11 @@
                 :enabled true
                 :bevel 0.0
                 :cuts 0.0
-                :masks 0.0))
-      (let [entries (al/al-len [masks/Entry] (.entries (masks/cache)))
+                :masks 0.0
+                :mask-reservation 0.0
+                :micro-preparation 0.0
+                :composition-encoding 0.0))
+      (let [entries (len (.entries (masks/cache)))
             start (host/CACurrentMediaTime)]
         (set! (.scientific (ui/state)) (= (% i 2) 0))
         (ui/draw)
@@ -62,8 +65,8 @@
                       (* (- (host/CACurrentMediaTime) encoded) 1000.0)
                       (.gpu-ms (gpu/gpu)))
               (printf c"  %lld sheets, %lld new coverage/distance textures\n"
-                      (al/al-len [scene/Sheet] (.sheets (scene/scene)))
-                      (- (al/al-len [masks/Entry] (.entries (masks/cache)))
+                      (len (.sheets (scene/scene)))
+                      (- (len (.entries (masks/cache)))
                          entries))
               (printf c"  bevel %.2f ms cuts %.2f ms masks %.2f ms\n"
                       (* (.bevel (profile/counters)) 1000.0)

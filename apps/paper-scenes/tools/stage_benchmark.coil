@@ -1,4 +1,5 @@
 (module paper-scenes.stage-benchmark)
+(import "coil.cc" :as cc)
 (import "paper-scenes.workload" :use [setting draw-case])
 (import "paper.scene" :as scene)
 (import "paper.render" :as render)
@@ -11,9 +12,9 @@
 (import "paper.objc" :as o)
 (import "paper.ffi" :use [CACurrentMediaTime])
 
-(extern printf :cc c [(ptr i8) ...] (-> i32))
+(extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
 
-(extern fflush :cc c [(ptr i8)] (-> i32))
+(extern fflush :cc (cc/C) [(ptr i8)] (-> i32))
 
 (defn drain-stage [] (-> f64)
   (if (= (.command (gpu/gpu)) (o/nil))

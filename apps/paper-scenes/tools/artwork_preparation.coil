@@ -1,20 +1,32 @@
 (module paper-scenes.artwork-preparation)
+(import "coil.cc" :as cc)
 (import "paper-scenes.ukiyo" :as ukiyo)
 (import "paper.scene" :as scene)
 (import "paper.objc" :as o)
 (import "paper.ffi" :use [CACurrentMediaTime])
 
-(extern printf :cc c [(ptr i8) ...] (-> i32))
+(extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
 
 ;;; Measure first construction of canonical artwork in dependency order.
 ;;; Earlier rows prepare shared dependencies; the final row measures remaining
 ;;; scene construction after those caches are populated. No GPU or fps claim.
 (defn main [] (-> i64)
   (let [pool (o/new c"NSAutoreleasePool")
-        labels [c"clouds" c"mountain" c"ridge-stock" c"ridge-grain" c"panes"
-                c"navy-wraps" c"red-folds" c"navy-creases" c"navy-grain" c"surf" c"remaining-scene"]]
+        labels
+          [c"clouds"
+           c"mountain"
+           c"ridge-stock"
+           c"ridge-grain"
+           c"panes"
+           c"navy-wraps"
+           c"red-folds"
+           c"navy-creases"
+           c"navy-grain"
+           c"surf"
+           c"remaining-scene"]]
     (scene/init)
-    (set! (.width (scene/scene)) 2560) (set! (.height (scene/scene)) 1680)
+    (set! (.width (scene/scene)) 2560)
+    (set! (.height (scene/scene)) 1680)
     (set! (.scale (scene/scene)) 2.0)
     (printf c"stage,first_construction_ms\n")
     (for [stage 0 11]
@@ -31,6 +43,8 @@
           8 (for [i 0 2] (ukiyo/navy-grain i))
           9 (for [i 0 6] (ukiyo/wave-asset i))
           (ukiyo/draw 1280.0 840.0 0.0 0 false))
-        (printf c"%s,%.4f\n" (get labels stage) (* 1000.0 (- (CACurrentMediaTime) start)))))
+        (printf c"%s,%.4f\n"
+                (get labels stage)
+                (* 1000.0 (- (CACurrentMediaTime) start)))))
     (o/release pool))
   0)

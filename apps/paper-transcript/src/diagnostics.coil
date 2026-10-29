@@ -1,4 +1,5 @@
 (module transcript.diagnostics)
+(import "coil.cc" :as cc)
 (import "coil.primitive" :as primitive)
 (import "paper.ffi" :use [snprintf CACurrentMediaTime strlen])
 (import "paper.platform" :as host)
@@ -14,17 +15,17 @@
 (import "transcript.sound" :as sound)
 (import "transcript.waveform" :as waveform)
 
-(extern printf :cc c [(ptr i8) ...] (-> i32))
+(extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
 
-(extern fflush :cc c [(ptr i8)] (-> i32))
+(extern fflush :cc (cc/C) [(ptr i8)] (-> i32))
 
-(extern fopen :cc c [(ptr i8) (ptr i8)] (-> (ptr i8)))
+(extern fopen :cc (cc/C) [(ptr i8) (ptr i8)] (-> (ptr i8)))
 
-(extern fputs :cc c [(ptr i8) (ptr i8)] (-> i32))
+(extern fputs :cc (cc/C) [(ptr i8) (ptr i8)] (-> i32))
 
-(extern fclose :cc c [(ptr i8)] (-> i32))
+(extern fclose :cc (cc/C) [(ptr i8)] (-> i32))
 
-(extern getenv :cc c [(ptr i8)] (-> (ptr i8)))
+(extern getenv :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
 
 ;;; Runtime instrumentation, so a report about the editor feeling slow can be
 ;;; answered with numbers rather than a guess.
@@ -305,7 +306,8 @@
 
 ;;; Events per second over the window, from a counter sampled once per frame.
 ;;; A window shorter than two frames has no rate yet.
-(defn counter-rate [(d (ptr Diagnostics)) (samples (ptr (array i64 120)))] (-> f64)
+(defn counter-rate [(d (ptr Diagnostics)) (samples (ptr (array i64 120)))]
+  (-> f64)
   (let [span (window-seconds d)]
     (assert (> span 0.0))
     (/ (cast f64
@@ -611,7 +613,8 @@
 (defn trace-path [] (-> (ptr i8))
   c"/tmp/paper-transcript-trace.txt")
 
-(defn append-line [(d (ptr Diagnostics)) (used (ptr i64)) (value (ptr i8))] (-> i64)
+(defn append-line [(d (ptr Diagnostics)) (used (ptr i64)) (value (ptr i8))]
+  (-> i64)
   (let [buffer (index (field d trace) 0)
         room (- 8192 (load used))]
     (when (> room 2)
@@ -636,7 +639,7 @@
   (let [d (diagnostics)
         (mut used) 0
         snd (sound/sound)]
-    (set! (index (field d trace) 0) (cast i8 0))
+    (set! (index (field d trace) 0) (: 0 i8))
     (append-line d (mut used) c"paper transcript — trace")
     (append-line d (mut used) (line-frames d))
     (append-line d (mut used) (line-display d))
@@ -685,10 +688,11 @@
     (snprintf (text d)
               256
               c"job   %s   progress %lld%%"
-              (case job-kind 1
-                    c"transcribing" 2
-                    c"reading waveform" 3
-                    c"exporting" c"none")
+              (case job-kind
+                1 c"transcribing"
+                2 c"reading waveform"
+                3 c"exporting"
+                c"none")
               job-progress)
     (append-line d (mut used) (text d))
     (snprintf (text d) 256 c"status %s" (model/status s))

@@ -1,4 +1,5 @@
 (module paper-scenes.benchmark)
+(import "coil.cc" :as cc)
 (import "paper-scenes.workload" :use [setting draw-case])
 (import "paper.scene" :as scene)
 (import "paper.render" :as render)
@@ -10,8 +11,9 @@
 (import "paper.objc" :as o)
 (import "paper.ffi" :use *)
 
-(extern printf :cc c [(ptr i8) ...] (-> i32))
-(extern fflush :cc c [(ptr i8)] (-> i32))
+(extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
+
+(extern fflush :cc (cc/C) [(ptr i8)] (-> i32))
 
 ;;; Every row waits for completed GPU execution. No screenshot readback is timed.
 ;;; Frame zero is retained, so cold costs cannot disappear into warm-up averages.
@@ -23,7 +25,11 @@
         density (setting c"PAPER_BENCH_DENSITY" 4)
         first (setting c"PAPER_BENCH_THEME" 0)
         count (setting c"PAPER_BENCH_THEMES" 8)]
-    (assert (and (> frames 0) (> width 0) (> height 0) (>= first 0) (<= (+ first count) 8)))
+    (assert (and (> frames 0)
+                 (> width 0)
+                 (> height 0)
+                 (>= first 0)
+                 (<= (+ first count) 8)))
     (scene/init)
     (set! (.headless (host/host)) true)
     (set! (.width (scene/scene)) width)
@@ -35,7 +41,8 @@
     (for [theme first (+ first count)]
       (for [scenario 0 3]
         (for [frame 0 frames]
-          (let [frame-pool (o/new c"NSAutoreleasePool") start (CACurrentMediaTime)]
+          (let [frame-pool (o/new c"NSAutoreleasePool")
+                start (CACurrentMediaTime)]
             (draw-case theme scenario frame density)
             (let [built (CACurrentMediaTime)]
               (set! (.gpu-ms (gpu/gpu)) 0.0)
@@ -43,10 +50,18 @@
               (gpu/synchronize)
               (let [done (CACurrentMediaTime)]
                 (printf c"%lld,%lld,%lld,%lld,%lld,%lld,%lld,%.4f,%.4f,%.4f,%.4f,%lld\n"
-                        theme scenario frame width height
-                        (len (.sheets (scene/scene))) (len (.inks (scene/scene)))
-                        (* 1000.0 (- built start)) (* 1000.0 (- done built))
-                        (.gpu-ms (gpu/gpu)) (* 1000.0 (- done start)) (.bytes (masks/cache)))))
+                        theme
+                        scenario
+                        frame
+                        width
+                        height
+                        (len (.sheets (scene/scene)))
+                        (len (.inks (scene/scene)))
+                        (* 1000.0 (- built start))
+                        (* 1000.0 (- done built))
+                        (.gpu-ms (gpu/gpu))
+                        (* 1000.0 (- done start))
+                        (.bytes (masks/cache)))))
             (o/release frame-pool)))
         (fflush (o/nil))))
     (workers/stop)

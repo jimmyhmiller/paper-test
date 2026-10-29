@@ -1,4 +1,5 @@
 (module papercut.performance)
+(import "coil.cc" :as cc)
 (import "papercut.main" :as demo)
 (import "papercut.state" :as state)
 (import "paper.scene" :as scene)
@@ -9,7 +10,7 @@
 (import "paper.objc" :as o)
 (import "paper.ffi" :use *)
 
-(extern printf :cc c [(ptr i8) ...] (-> i32))
+(extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
 
 ;;; Deterministic full-resolution frames, excluding startup and PNG encoding.
 ;;; CSV contains individual frames so percentiles and missed budgets are visible.
@@ -34,17 +35,23 @@
         (for [frame 0 24]
           (let [frame-pool (o/new c"NSAutoreleasePool")
                 t (CACurrentMediaTime)]
-            (case scenario 0
-                  (set! (.light-x (state/state)) (+ -600.0 (* (cast f64 frame) 130.0))) 1
-                  (set! (.hole-x (state/state)) (+ 0.24 (* (cast f64 (% frame 20)) 0.025))) 2
-                  (set! (.hover (host/host)) (if (= (% frame 2) 0) 19 20)) 3
-                  (do
-                    (set! (.elevation (state/state)) 80.0)
-                    (set! (.depth (state/state)) 2.0)
-                    (set! (.light-x (state/state)) (+ -600.0 (* (cast f64 frame) 130.0))))
-                    4
-                  (set! (.depth (state/state)) (* (cast f64 (% frame 21)) 0.1)) 5
-                  (set! (.grain (state/state)) (* (cast f64 (% frame 21)) 0.1)) (set! (.app (state/state)) (% frame 4)))
+            (case scenario
+              0
+                (set! (.light-x (state/state))
+                      (+ -600.0 (* (cast f64 frame) 130.0)))
+              1
+                (set! (.hole-x (state/state))
+                      (+ 0.24 (* (cast f64 (% frame 20)) 0.025)))
+              2 (set! (.hover (host/host)) (if (= (% frame 2) 0) 19 20))
+              3
+                (do
+                  (set! (.elevation (state/state)) 80.0)
+                  (set! (.depth (state/state)) 2.0)
+                  (set! (.light-x (state/state))
+                        (+ -600.0 (* (cast f64 frame) 130.0))))
+              4 (set! (.depth (state/state)) (* (cast f64 (% frame 21)) 0.1))
+              5 (set! (.grain (state/state)) (* (cast f64 (% frame 21)) 0.1))
+              (set! (.app (state/state)) (% frame 4)))
             (demo/draw)
             (let [built (CACurrentMediaTime)]
               (render/rasterize-frame false)

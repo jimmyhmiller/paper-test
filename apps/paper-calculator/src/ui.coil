@@ -26,39 +26,40 @@
   (p/alloc-static model/Calculator))
 
 (defn key-name [(id i64)] (-> (ptr i8))
-  (case id 0
-        c"0" 1
-        c"1" 2
-        c"2" 3
-        c"3" 4
-        c"4" 5
-        c"5" 6
-        c"6" 7
-        c"7" 8
-        c"8" 9
-        c"9" 10
-        c"." 11
-        c"+" 12
-        c"−" 13
-        c"×" 14
-        c"÷" 15
-        c"=" 16
-        c"AC" 17
-        c"⌫" 18
-        c"±" 19
-        c"%" 20
-        c"sin" 21
-        c"cos" 22
-        c"tan" 23
-        c"ln" 24
-        c"log" 25
-        c"xʸ" 26
-        c"√" 27
-        c"x²" 28
-        c"1/x" 29
-        c"π" 30
-        c"Scientific" 31
-        c"DEG" c""))
+  (case id
+    0 c"0"
+    1 c"1"
+    2 c"2"
+    3 c"3"
+    4 c"4"
+    5 c"5"
+    6 c"6"
+    7 c"7"
+    8 c"8"
+    9 c"9"
+    10 c"."
+    11 c"+"
+    12 c"−"
+    13 c"×"
+    14 c"÷"
+    15 c"="
+    16 c"AC"
+    17 c"⌫"
+    18 c"±"
+    19 c"%"
+    20 c"sin"
+    21 c"cos"
+    22 c"tan"
+    23 c"ln"
+    24 c"log"
+    25 c"xʸ"
+    26 c"√"
+    27 c"x²"
+    28 c"1/x"
+    29 c"π"
+    30 c"Scientific"
+    31 c"DEG"
+    c""))
 
 (defn cover-stock [(pigment u32)] (-> Material)
   (surface-finish (texture-relief (texture-scale (texture-angle (pressed-paper pigment)
@@ -238,23 +239,24 @@
             id
               (cond (and (>= ch 48) (<= ch 57)) (- ch 48)
                     :else
-                      (case ch 46
-                            10 43
-                            11 45
-                            12 42
-                            13 47
-                            14 61
-                            15 13
-                            15 3
-                            15 27
-                            16 99
-                            16 67
-                            16 127
-                            17 8
-                            17 37
-                            19 115
-                            30 83
-                            30 -1))]
+                      (case ch
+                        46 10
+                        43 11
+                        45 12
+                        42 13
+                        47 14
+                        61 15
+                        13 15
+                        3 15
+                        27 16
+                        99 16
+                        67 16
+                        127 17
+                        8 17
+                        37 19
+                        115 30
+                        83 30
+                        -1))]
         (when (>= id 0) (model/press (state) id)))))
   0)
 
@@ -299,8 +301,8 @@
                                        (class c"NSEvent")
                                        (sel c"pressedMouseButtons")
                                        [])
-                                  (cast u64 1))
-                               (cast u64 0)))]
+                                  (: 1 u64))
+                               (: 0 u64)))]
                 (when (power/update (power-hold) x held)
                   (msg i64 (.window (host/host)) (sel c"close") [])
                   0))

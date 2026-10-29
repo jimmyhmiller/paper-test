@@ -358,12 +358,13 @@
 
 ;;; The last word of the run that starts at `i`: same state, same line, and no
 ;;; gap pill in between to interrupt it.
-(defn run-end [(s (ptr model/Session)) (i i64) (state i64) (current i64)] (-> i64)
+(defn run-end [(s (ptr model/Session)) (i i64) (state i64) (current i64)]
+  (-> i64)
   (let [(mut j) i]
     (while (and (< (+ (load j) 1) (.word-count s))
                 (and (= (word-state s (+ (load j) 1) current) state)
-                     (and (primitive/fcmp-eq (.y (model/word (+ (load j) 1)))
-                                             (.y (model/word (load j))))
+                     (and (= (.y (model/word (+ (load j) 1)))
+                             (.y (model/word (load j))))
                           (not (> (.gap-w (model/word (load j))) 0.0)))))
       (set! j (+ (load j) 1)))
     (load j)))
@@ -501,86 +502,87 @@
                                  last (run-end s (load i) state current)
                                  wr (run-rect r s (load i) last scroll)]
                              (when (> (+ y lh) 0.0)
-                               (case state STATE-CUT
-                                     (do
-                                       (recess-floor wr
-                                                     3.0
-                                                     (t/z-sheet)
-                                                     2.0
-                                                     0.55
-                                                     (t/cut-floor)
-                                                     (t/cut-floor))
-                                       (ink-height (- (t/z-sheet) 2.0))
-                                       (for [k (load i) (+ last 1)]
-                                         (label (+ (.x r) (.x (model/word k)))
-                                                (+ (.y r)
-                                                   (- (.y (model/word k))
-                                                      scroll))
-                                                size
-                                                0x968b78
-                                                font
-                                                (model/word-text (model/word k))))
-                                       0)
-                                       STATE-SELECTED
-                                     (do
-                                       (tile wr
-                                             1.5
-                                             (+ (t/z-sheet) 1.5)
-                                             (t/slate-stock))
-                                       (ink-height (+ (t/z-sheet) 1.5))
-                                       (for [k (load i) (+ last 1)]
-                                         (label (+ (.x r) (.x (model/word k)))
-                                                (+ (.y r)
-                                                   (- (.y (model/word k))
-                                                      scroll))
-                                                size
-                                                0x1c2933
-                                                font
-                                                (model/word-text (model/word k))))
-                                       0)
-                                       STATE-CURRENT
-                                     (do
-                                       (tile wr
-                                             5.0
-                                             (+ (t/z-sheet) 4.0)
-                                             (t/ochre-stock))
-                                       (ink-height (+ (t/z-sheet) 4.0))
-                                       (label (+ (.x r) (.x w))
-                                              (+ (.y r) y)
+                               (case state
+                                 STATE-CUT
+                                   (do
+                                     (recess-floor wr
+                                                   3.0
+                                                   (t/z-sheet)
+                                                   2.0
+                                                   0.55
+                                                   (t/cut-floor)
+                                                   (t/cut-floor))
+                                     (ink-height (- (t/z-sheet) 2.0))
+                                     (for [k (load i) (+ last 1)]
+                                       (label (+ (.x r) (.x (model/word k)))
+                                              (+ (.y r)
+                                                 (- (.y (model/word k))
+                                                    scroll))
                                               size
-                                              0x3d2c10
+                                              0x968b78
                                               font
-                                              (model/word-text w))
-                                       0)
-                                       STATE-FILLER
-                                     (do
-                                       (tile wr
-                                             5.0
-                                             (+ (t/z-sheet) 2.0)
-                                             (t/plum-stock))
-                                       (ink-height (+ (t/z-sheet) 2.0))
-                                       (for [k (load i) (+ last 1)]
-                                         (label (+ (.x r) (.x (model/word k)))
-                                                (+ (.y r)
-                                                   (- (.y (model/word k))
-                                                      scroll))
-                                                size
-                                                0x3b2b41
-                                                font
-                                                (model/word-text (model/word k))))
-                                       0)
-                                       (do
-                                         (ink-height (t/z-sheet))
-                                         (for [k (load i) (+ last 1)]
-                                           (label (+ (.x r) (.x (model/word k)))
-                                                  (+ (.y r)
-                                                     (- (.y (model/word k))
-                                                        scroll))
-                                                  size
-                                                  (t/ink)
-                                                  font
-                                                  (model/word-text (model/word k))))
-                                         0))
+                                              (model/word-text (model/word k))))
+                                     0)
+                                 STATE-SELECTED
+                                   (do
+                                     (tile wr
+                                           1.5
+                                           (+ (t/z-sheet) 1.5)
+                                           (t/slate-stock))
+                                     (ink-height (+ (t/z-sheet) 1.5))
+                                     (for [k (load i) (+ last 1)]
+                                       (label (+ (.x r) (.x (model/word k)))
+                                              (+ (.y r)
+                                                 (- (.y (model/word k))
+                                                    scroll))
+                                              size
+                                              0x1c2933
+                                              font
+                                              (model/word-text (model/word k))))
+                                     0)
+                                 STATE-CURRENT
+                                   (do
+                                     (tile wr
+                                           5.0
+                                           (+ (t/z-sheet) 4.0)
+                                           (t/ochre-stock))
+                                     (ink-height (+ (t/z-sheet) 4.0))
+                                     (label (+ (.x r) (.x w))
+                                            (+ (.y r) y)
+                                            size
+                                            0x3d2c10
+                                            font
+                                            (model/word-text w))
+                                     0)
+                                 STATE-FILLER
+                                   (do
+                                     (tile wr
+                                           5.0
+                                           (+ (t/z-sheet) 2.0)
+                                           (t/plum-stock))
+                                     (ink-height (+ (t/z-sheet) 2.0))
+                                     (for [k (load i) (+ last 1)]
+                                       (label (+ (.x r) (.x (model/word k)))
+                                              (+ (.y r)
+                                                 (- (.y (model/word k))
+                                                    scroll))
+                                              size
+                                              0x3b2b41
+                                              font
+                                              (model/word-text (model/word k))))
+                                     0)
+                                 (do
+                                   (ink-height (t/z-sheet))
+                                   (for [k (load i) (+ last 1)]
+                                     (label (+ (.x r) (.x (model/word k)))
+                                            (+ (.y r)
+                                               (- (.y (model/word k))
+                                                  scroll))
+                                            size
+                                            (t/ink)
+                                            font
+                                            (model/word-text (model/word k))))
+                                   0))
                                (for [k (load i) (+ last 1)]
                                  (when (> (.gap-w (model/word k)) 0.0)
                                    (draw-gap-pill r
@@ -870,7 +872,8 @@
 ;;; The waveform's well without its cut. The trough's hole is in the main
 ;;; sheet; its floor is built here with the removed spans already punched out,
 ;;; and the well's two stepped frames are laid round it.
-(defn trough [(r Rect) (inner Rect) (s (ptr model/Session)) (origin f64)] (-> i64)
+(defn trough [(r Rect) (inner Rect) (s (ptr model/Session)) (origin f64)]
+  (-> i64)
   (let [z (t/z-sheet)]
     (begin-sheet)
     (rounded-path r 7.0)
@@ -1221,7 +1224,8 @@
     0))
 
 ;;; ---- ledger ---------------------------------------------------------------
-(defn stat [(r Rect) (heading (ptr i8)) (value (ptr i8)) (stock Material)] (-> i64)
+(defn stat [(r Rect) (heading (ptr i8)) (value (ptr i8)) (stock Material)]
+  (-> i64)
   (d/card r 6.0 (t/z-inset) stock)
   (ink-height (t/z-inset))
   (d/tracked (rect (+ (.x r) 18.0) (+ (.y r) 10.0) (- (.w r) 30.0) 15.0)

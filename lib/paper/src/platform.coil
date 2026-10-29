@@ -18,6 +18,51 @@
 (import "paper.geometry" :use [Rect rect clamp contains?])
 (import "layout.core" :as layout)
 
+(defstruct FrameIntegration
+  [(before (fnptr (cc/C) [] bool))
+   (present (fnptr (cc/C) [(ptr i8)] bool))
+   (enabled bool)])
+
+(defn frame-integration [] (-> (ptr FrameIntegration))
+  (primitive/alloc-static FrameIntegration))
+
+;;; Install stable main-thread callbacks before paper_run. before runs on each
+;;; display frame, even when no redraw is pending; false defers scene rebuilding.
+;;; present submits this frame to the supplied CAMetalLayer and reports success.
+;;; The owner keeps both callbacks alive until paper_run returns, then clears
+;;; the registration. Callbacks must return promptly and preserve thread affinity.
+(defn paper_frame_integration [(before (fnptr (cc/C) [] bool))
+                               (present (fnptr (cc/C) [(ptr i8)] bool))]
+  (-> i64)
+  (set! (.before (frame-integration)) before)
+  (set! (.present (frame-integration)) present)
+  (set! (.enabled (frame-integration)) true)
+  0)
+
+(defn paper_clear_frame_integration [] (-> i64)
+  (set! (.enabled (frame-integration)) false)
+  0)
+
+(defstruct DrawAdmission
+  [(enter (fnptr (cc/C) [] bool)) (leave (fnptr (cc/C) [] i64)) (enabled bool)])
+
+(defn draw-admission [] (-> (ptr DrawAdmission))
+  (primitive/alloc-static DrawAdmission))
+
+;;; Admission runs before refresh mutates controls or scene state, including
+;;; initial, resize and display-driven refreshes. A successful enter is paired
+;;; with leave immediately after the application draw callback.
+(defn paper_draw_admission [(enter (fnptr (cc/C) [] bool))
+                            (leave (fnptr (cc/C) [] i64))] (-> i64)
+  (set! (.enter (draw-admission)) enter)
+  (set! (.leave (draw-admission)) leave)
+  (set! (.enabled (draw-admission)) true)
+  0)
+
+(defn paper_clear_draw_admission [] (-> i64)
+  (set! (.enabled (draw-admission)) false)
+  0)
+
 (defstruct Input
   [(container (ptr i8))
    (id i64)
@@ -735,6 +780,14 @@
   (set! (.dirty (scene)) true)
   0)
 
+;;; Leave the AppKit loop after an attached REPL requests shutdown.
+(defn paper_repl_close [] (-> i64)
+  (let [window (.window (host))]
+    (when (!= window (nil))
+      (msg i64 window (sel c"close") [])
+      0))
+  0)
+
 ;;; Request focus for a control submitted by the next draw, such as a new dialog.
 (defn paper_focus [(id i64)] (-> i64)
   (set! (.requested-focus (host)) id)
@@ -993,12 +1046,20 @@
     (for [i 0 100000]
       (set! (.ticks app) (+ (.ticks app) 1))
       (dispatch 6 0 (CACurrentMediaTime) 0.0)
-      (for [k 0 (len (.inputs app))]
-        (set! (.live (elem (field app inputs) k)) false))
-      (call-ptr (.draw app))
-      (render/render-frame false)
-      (gpu/synchronize)
-      (set! (.gpu (gpu/present-cost)) (.gpu-ms (gpu/gpu)))))
+      (let [ready
+              (if (.enabled (draw-admission))
+                  (call-ptr (.enter (draw-admission)))
+                  true)]
+        (when ready
+          (for [k 0 (len (.inputs app))]
+            (set! (.live (elem (field app inputs) k)) false))
+          (call-ptr (.draw app))
+          (when (.enabled (draw-admission))
+            (call-ptr (.leave (draw-admission)))
+            0)
+          (render/render-frame false)
+          (gpu/synchronize)
+          (set! (.gpu (gpu/present-cost)) (.gpu-ms (gpu/gpu)))))))
   0)
 
 ;;; The display-link callback end to end, split into the parts the scene and
@@ -1172,63 +1233,71 @@
     (gpu/present-with-handler layer (cast (ptr i8) (mut closure)))))
 
 (defn refresh [] (-> i64)
-  (let [app (host)
-        started (CACurrentMediaTime)
-        parts (frame-parts)
-        editor (editing-input)]
-    (for [i 0 (len (.inputs app))]
-      (set! (.live (elem (field app inputs) i)) false))
-    (profile/measure-ms (.draw parts) (call-ptr (.draw app)))
-    (when (or (and (> (.focus app) 0) (< (focus-index (.focus app)) 0))
-              (and (> editor 0) (< (focus-index editor) 0)))
-      (set! (.focus app) 0)
+  (block :refresh
+    (when (.enabled (draw-admission))
+      (unless (call-ptr (.enter (draw-admission))) (break :refresh 0))
+      0)
+    (let [app (host)
+          started (CACurrentMediaTime)
+          parts (frame-parts)
+          editor (editing-input)]
+      (for [i 0 (len (.inputs app))]
+        (set! (.live (elem (field app inputs) i)) false))
+      (profile/measure-ms (.draw parts) (call-ptr (.draw app)))
+      (when (.enabled (draw-admission)) (call-ptr (.leave (draw-admission))) 0)
+      (when (or (and (> (.focus app) 0) (< (focus-index (.focus app)) 0))
+                (and (> editor 0) (< (focus-index editor) 0)))
+        (set! (.focus app) 0)
+        (when (not (.headless app))
+          (msg bool (.window app) (sel c"makeFirstResponder:") [(ptr i8)] (nil))
+          0))
+      (when (> (.requested-focus app) 0)
+        (when (not (.headless app)) (focus-control (.requested-focus app)) 0)
+        (set! (.requested-focus app) 0))
+      (profile/measure-ms (.render parts) (render/render-frame (.headless app)))
       (when (not (.headless app))
-        (msg bool (.window app) (sel c"makeFirstResponder:") [(ptr i8)] (nil))
-        0))
-    (when (> (.requested-focus app) 0)
-      (when (not (.headless app)) (focus-control (.requested-focus app)) 0)
-      (set! (.requested-focus app) 0))
-    (profile/measure-ms (.render parts) (render/render-frame (.headless app)))
-    (when (not (.headless app))
-      (profile/measure-ms (.chrome parts)
-                          (for [i 0 (len (.inputs app))]
-                            (let [item (get (.inputs app) i)]
-                              (msg i64
-                                   (.view item)
-                                   (sel c"setHidden:")
-                                   [bool]
-                                   (not (.live item))))))
-      (profile/measure-ms (.present parts)
-                          (if (.available (gpu/gpu))
-                              (do
-                                (when (not (present-measured (.layer app)
-                                                             started))
-                                  (paper_redraw))
-                                0)
-                              (let [image
-                                      (CGBitmapContextCreateImage (.output-context (scene)))]
+        (profile/measure-ms (.chrome parts)
+                            (for [i 0 (len (.inputs app))]
+                              (let [item (get (.inputs app) i)]
                                 (msg i64
-                                     (class c"CATransaction")
-                                     (sel c"begin")
-                                     [])
-                                (msg i64
-                                     (class c"CATransaction")
-                                     (sel c"setDisableActions:")
+                                     (.view item)
+                                     (sel c"setHidden:")
                                      [bool]
-                                     true)
-                                (msg i64
-                                     (.layer app)
-                                     (sel c"setContents:")
-                                     [(ptr i8)]
-                                     image)
-                                (msg i64
-                                     (class c"CATransaction")
-                                     (sel c"commit")
-                                     [])
-                                (CGImageRelease image)
-                                0)))
-      (profile/accumulate-ms (.chrome parts) (accessibility-refresh))))
-  0)
+                                     (not (.live item))))))
+        (profile/measure-ms (.present parts)
+                            (if (.available (gpu/gpu))
+                                (do
+                                  (when (not (if (.enabled (frame-integration))
+                                                 (call-ptr (.present (frame-integration))
+                                                           (.layer app))
+                                                 (present-measured (.layer app)
+                                                                   started)))
+                                    (paper_redraw))
+                                  0)
+                                (let [image
+                                        (CGBitmapContextCreateImage (.output-context (scene)))]
+                                  (msg i64
+                                       (class c"CATransaction")
+                                       (sel c"begin")
+                                       [])
+                                  (msg i64
+                                       (class c"CATransaction")
+                                       (sel c"setDisableActions:")
+                                       [bool]
+                                       true)
+                                  (msg i64
+                                       (.layer app)
+                                       (sel c"setContents:")
+                                       [(ptr i8)]
+                                       image)
+                                  (msg i64
+                                       (class c"CATransaction")
+                                       (sel c"commit")
+                                       [])
+                                  (CGImageRelease image)
+                                  0)))
+        (profile/accumulate-ms (.chrome parts) (accessibility-refresh))))
+    0))
 
 (defn hit-test [(x f64) (y f64)] (-> i64)
   (let [(mut result) 0
@@ -2224,10 +2293,14 @@
     ;; Only a callback that draws is timed. A callback offered a frame with
     ;; nothing to show returns immediately, and averaging those in reports a
     ;; cost no frame ever paid.
-    (when (.dirty (scene))
-      (refresh)
-      (set! (.callback parts) (* 1000.0 (- (profile/now) started)))
-      (pace (+ (.callback parts) (.gpu (gpu/present-cost))))))
+    (let [ready
+            (if (.enabled (frame-integration))
+                (call-ptr (.before (frame-integration)))
+                true)]
+      (when (and ready (.dirty (scene)))
+        (refresh)
+        (set! (.callback parts) (* 1000.0 (- (profile/now) started)))
+        (pace (+ (.callback parts) (.gpu (gpu/present-cost)))))))
   0)
 
 ;;; Normalize gestures against the last submitted control, so layout and event

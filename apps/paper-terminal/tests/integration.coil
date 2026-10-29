@@ -8,14 +8,13 @@
 (import "paper.objc" :as o)
 (import "paper.platform" :as host)
 (import "paper.scene" :as scene)
-(import "coil.primitive" :as p)
 
 (defn send [(terminal (ptr term/Terminal)) (text (ptr i8))] (-> i64)
   ; Text input is paste-aware: bracketed-paste shells require a real Return key.
   (let [length (host/strlen text)
         newline
           (and (> length 0)
-               (= (load (p/index text (cast i64 (- length 1)))) (cast i8 10)))]
+               (= (load (index text (cast i64 (- length 1)))) (: 10 i8)))]
     (g/ghostty_surface_text (.surface terminal)
                             text
                             (if newline (- length 1) length))
@@ -62,15 +61,15 @@
          (o/class c"NSEvent")
          (o/sel c"mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:")
          [u64 host/CGPoint u64 f64 i64 (ptr i8) i64 i64 f32]
-         (cast u64 1)
+         (: 1 u64)
          (host/CGPoint :x x :y (- (.window-h (host/host)) y))
-         (cast u64 0)
+         (: 0 u64)
          (host/CACurrentMediaTime)
          (o/msg i64 (.window (host/host)) (o/sel c"windowNumber") [])
          (o/nil)
          0
          1
-         (cast f32 1.0)))
+         (: 1.0 f32)))
 
 (defn main [] (-> i64)
   (let [pool (o/new c"NSAutoreleasePool")]

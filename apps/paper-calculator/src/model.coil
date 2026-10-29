@@ -1,14 +1,14 @@
 (module calculator.model)
-(import "coil.primitive" :as p)
+(import "coil.cc" :as cc)
 (import "paper.ffi" :use [snprintf strlen sin cos sqrt pow fabs])
 
-(extern strtod :cc c [(ptr i8) (ptr (ptr i8))] (-> f64))
+(extern strtod :cc (cc/C) [(ptr i8) (ptr (ptr i8))] (-> f64))
 
-(extern tan :cc c [f64] (-> f64))
+(extern tan :cc (cc/C) [f64] (-> f64))
 
-(extern log :cc c [f64] (-> f64))
+(extern log :cc (cc/C) [f64] (-> f64))
 
-(extern log10 :cc c [f64] (-> f64))
+(extern log10 :cc (cc/C) [f64] (-> f64))
 
 ;;; A pocket calculator uses immediate execution, with an editable decimal entry.
 ;;; Operation IDs: 11 +, 12 -, 13 multiply, 14 divide, 25 power.
@@ -60,25 +60,28 @@
   (when (.error s) (reset s))
   (set! (.waiting s) false)
   (when (.fresh s)
-    (set! (index (display s) 0) (cast i8 0))
+    (set! (index (display s) 0) (: 0 i8))
     (set! (.fresh s) false)
     (set! (.repeat s) 0))
   (let [n (cast i64 (strlen (display s)))
         (mut dot) false]
-    (for [i 0 n] (when (= (load (index (display s) i)) (cast i8 46)) (set! dot true)))
+    (for [i 0 n]
+      (when (= (load (index (display s) i)) (: 46 i8)) (set! dot true)))
     (when (and (< n 15) (or (!= d 10) (not (load dot))))
       (let [(mut pos) n]
-        (when (and (= n 1) (= (load (index (display s) 0)) (cast i8 48)) (!= d 10)) (set! pos 0))
+        (when (and (= n 1) (= (load (index (display s) 0)) (: 48 i8)) (!= d 10))
+          (set! pos 0))
         (when (and (= n 2)
-                   (= (load (index (display s) 0)) (cast i8 45))
-                   (= (load (index (display s) 1)) (cast i8 48))
+                   (= (load (index (display s) 0)) (: 45 i8))
+                   (= (load (index (display s) 1)) (: 48 i8))
                    (!= d 10))
           (set! pos 1))
         (when (and (= n 0) (= d 10))
-          (set! (index (display s) 0) (cast i8 48))
+          (set! (index (display s) 0) (: 48 i8))
           (set! pos 1))
-        (set! (index (display s) (load pos)) (cast i8 (if (= d 10) 46 (+ 48 d))))
-        (set! (index (display s) (+ (load pos) 1)) (cast i8 0))
+        (set! (index (display s) (load pos))
+              (cast i8 (if (= d 10) 46 (+ 48 d))))
+        (set! (index (display s) (+ (load pos) 1)) (: 0 i8))
         (set! (.value s) (strtod (display s) (cast (ptr (ptr i8)) 0))))))
   0)
 
@@ -105,7 +108,9 @@
                 (let [op (.operation s)
                       rhs (.value s)]
                   (result s (binary (.left s) rhs op))
-                  (when (not (.error s)) (set! (.repeat s) op) (set! (.operand s) rhs))
+                  (when (not (.error s))
+                    (set! (.repeat s) op)
+                    (set! (.operand s) rhs))
                   (set! (.operation s) 0)
                   (set! (.waiting s) false))
                 (when (!= (.repeat s) 0)
@@ -114,19 +119,23 @@
         (= id 17)
           (let [n (cast i64 (strlen (display s)))]
             (when (not (.fresh s))
-              (if (or (<= n 1) (and (= n 2) (= (load (index (display s) 0)) (cast i8 45))))
+              (if (or (<= n 1)
+                      (and (= n 2) (= (load (index (display s) 0)) (: 45 i8))))
                   (do (snprintf (display s) 64 c"0") 0)
-                  (do (set! (index (display s) (- n 1)) (cast i8 0)) 0))
+                  (do (set! (index (display s) (- n 1)) (: 0 i8)) 0))
               (set! (.value s) (strtod (display s) (cast (ptr (ptr i8)) 0))))
             0)
         (= id 18)
           (let [n (cast i64 (strlen (display s)))]
-            (if (= (load (index (display s) 0)) (cast i8 45))
-                (for [i 0 n] (set! (index (display s) i) (load (index (display s) (+ i 1)))))
+            (if (= (load (index (display s) 0)) (: 45 i8))
+                (for [i 0 n]
+                  (set! (index (display s) i)
+                        (load (index (display s) (+ i 1)))))
                 (do
                   (for [i 0 (+ n 1)]
-                    (set! (index (display s) (- (+ n 1) i)) (load (index (display s) (- n i)))))
-                  (set! (index (display s) 0) (cast i8 45))))
+                    (set! (index (display s) (- (+ n 1) i))
+                          (load (index (display s) (- n i)))))
+                  (set! (index (display s) 0) (: 45 i8))))
             (set! (.value s) (- 0.0 (.value s)))
             (when (<= (fabs (.value s)) 0.0) (set! (.fresh s) false))
             (set! (.waiting s) false)
@@ -144,16 +153,20 @@
                 angle (if (.degrees s) (* v (/ 3.141592653589793 180.0)) v)]
             (set! (.repeat s) 0)
             (result s
-                    (case id 20
-                          (sin angle) 21
-                          (cos angle) 22
-                          (if (< (fabs (cos angle)) 1.0e-15) (sqrt -1.0) (tan angle)) 23
-                          (log v) 24
-                          (log10 v) 26
-                          (sqrt v) 27
-                          (* v v) 28
-                          (/ 1.0 v) 29
-                          3.141592653589793 v))
+                    (case id
+                      20 (sin angle)
+                      21 (cos angle)
+                      22
+                        (if (< (fabs (cos angle)) 1.0e-15)
+                            (sqrt -1.0)
+                            (tan angle))
+                      23 (log v)
+                      24 (log10 v)
+                      26 (sqrt v)
+                      27 (* v v)
+                      28 (/ 1.0 v)
+                      29 3.141592653589793
+                      v))
             (set! (.waiting s) false)
             0)
         :else 0))

@@ -6,10 +6,30 @@
 
 (defn robot [(x f64) (y f64) (scale f64) (material Material)] (-> i64)
   (disc x y (* 42.0 scale) 33.0 material)
-  (panel (rect (+ x (* 9.0 scale)) (+ y (* 12.0 scale)) (* 25.0 scale) (* 20.0 scale)) (* 6.0 scale) 38.0 (cream))
-  (disc (+ x (* 15.0 scale)) (+ y (* 18.0 scale)) (* 4.0 scale) 40.0 (ink-stock))
-  (disc (+ x (* 25.0 scale)) (+ y (* 18.0 scale)) (* 4.0 scale) 40.0 (ink-stock))
-  (panel (rect (+ x (* 20.0 scale)) (+ y (* 6.0 scale)) (* 3.0 scale) (* 7.0 scale)) 1.5 36.0 (ink-stock)))
+  (panel (rect (+ x (* 9.0 scale))
+               (+ y (* 12.0 scale))
+               (* 25.0 scale)
+               (* 20.0 scale))
+         (* 6.0 scale)
+         38.0
+         (cream))
+  (disc (+ x (* 15.0 scale))
+        (+ y (* 18.0 scale))
+        (* 4.0 scale)
+        40.0
+        (ink-stock))
+  (disc (+ x (* 25.0 scale))
+        (+ y (* 18.0 scale))
+        (* 4.0 scale)
+        40.0
+        (ink-stock))
+  (panel (rect (+ x (* 20.0 scale))
+               (+ y (* 6.0 scale))
+               (* 3.0 scale)
+               (* 7.0 scale))
+         1.5
+         36.0
+         (ink-stock)))
 
 (defn agent-status [(i i64)] (-> i64)
   (let [base
@@ -23,20 +43,31 @@
   (case (agent-status i) 0 (moss) 1 (blue) 2 (ochre) (clay)))
 
 (defn agent-name [(i i64)] (-> (ptr i8))
-  (o/utf8 (o/msg (ptr i8) (.agent-names (state)) (o/sel c"objectAtIndex:") [i64] i)))
+  (o/utf8 (o/msg (ptr i8)
+                 (.agent-names (state))
+                 (o/sel c"objectAtIndex:")
+                 [i64]
+                 i)))
 
 (defn proposed-agent-name [] (-> (ptr i8))
   (o/msg (ptr i8)
          (o/ns (host/paper_input_value 151))
          (o/sel c"stringByTrimmingCharactersInSet:")
          [(ptr i8)]
-         (o/msg (ptr i8) (o/class c"NSCharacterSet") (o/sel c"whitespaceAndNewlineCharacterSet") [])))
+         (o/msg (ptr i8)
+                (o/class c"NSCharacterSet")
+                (o/sel c"whitespaceAndNewlineCharacterSet")
+                [])))
 
 (defn valid-agent-name? [(name (ptr i8))] (-> bool)
   (let [length (o/msg i64 name (o/sel c"length") [])]
     (and (> length 0)
          (<= length 48)
-         (not (o/msg bool (.agent-names (state)) (o/sel c"containsObject:") [(ptr i8)] name)))))
+         (not (o/msg bool
+                     (.agent-names (state))
+                     (o/sel c"containsObject:")
+                     [(ptr i8)]
+                     name)))))
 
 (defn create-agent [] (-> bool)
   (let [s (state)
@@ -107,7 +138,8 @@
             [projects (box (grow 1.0) (fixed 152.0))]
             [space (box (grow 1.0) (grow 1.0))]
             [profile
-             (padded (aligned (row (grow 1.0) (fixed 70.0) 10.0) 0.5 0.0) (padding 10.0))
+             (padded (aligned (row (grow 1.0) (fixed 70.0) 10.0) 0.5 0.0)
+                     (padding 10.0))
              [avatar (box (fixed 31.0) (fixed 31.0))]
              [details
               (column (grow 1.0) (fit) 2.0)
@@ -135,9 +167,15 @@
            (caption eyebrow 10.0 0x526145 3 c"YOUR PROJECTS")
            (for [i 0 4]
              (let [cell (column-cell projects 4 8.0 i)
-                   name (case i 0 c"Alpha Project" 1 c"Beta Research" 2 c"Customer Care" c"Experimental Lab")
+                   name
+                     (case i
+                       0 c"Alpha Project"
+                       1 c"Beta Research"
+                       2 c"Customer Care"
+                       c"Experimental Lab")
                    mat (case i 0 (moss) 1 (blue) 2 (ochre) (clay))]
-               (when (= i (.project (state))) (panel cell 9.0 22.0 (cotton 0xbcc3a4)))
+               (when (= i (.project (state)))
+                 (panel cell 9.0 22.0 (cotton 0xbcc3a4)))
                (arrange (inset cell 6.0)
                         [item
                          (aligned (row (grow 1.0) (grow 1.0) 12.0) 0.5 0.0)
@@ -166,7 +204,8 @@
              (row (grow 1.0) (grow 1.0) 8.0)
              [axis (box (fixed 20.0) (grow 1.0))]
              [plot (box (grow 1.0) (grow 1.0))]]
-            [dates (padded (box (grow 1.0) (fixed 18.0)) (edges 28.0 0.0 0.0 0.0))]]
+            [dates
+             (padded (box (grow 1.0) (fixed 18.0)) (edges 28.0 0.0 0.0 0.0))]]
            (panel root 22.0 32.0 (cream))
            (caption heading 19.0 0x30382b 3 c"Agent activity")
            (tag success c"Success" (moss))
@@ -175,11 +214,33 @@
              (let [y (+ (.y plot) (* (.h plot) (/ (cast f64 i) 3.0)))]
                (number (.x axis) (- y 7.0) 10.0 0x777b69 (- 75 (* i 25)))
                (rule (.x plot) y (.w plot) 0xd0cfb8)))
-           (let [green (: [0.33 0.46 0.38 0.72 0.59 0.7 0.51 0.74 0.91 0.59 0.65 0.83] (slice f64))
-                 gold (: [0.13 0.23 0.17 0.37 0.27 0.46 0.29 0.43 0.52 0.31 0.34 0.49] (slice f64))
-                 red (: [0.03 0.09 0.06 0.19 0.12 0.24 0.10 0.2 0.3 0.15 0.1 0.23] (slice f64))]
-             (area-band (.x plot) (.y plot) (.w plot) (.h plot) green gold 46.0 (sage))
-             (area-band (.x plot) (.y plot) (.w plot) (.h plot) gold red 40.0 (ochre))
+           (let [green
+                   (: [0.33 0.46 0.38 0.72 0.59 0.7 0.51 0.74 0.91 0.59 0.65
+                       0.83]
+                      (slice f64))
+                 gold
+                   (: [0.13 0.23 0.17 0.37 0.27 0.46 0.29 0.43 0.52 0.31 0.34
+                       0.49]
+                      (slice f64))
+                 red
+                   (: [0.03 0.09 0.06 0.19 0.12 0.24 0.10 0.2 0.3 0.15 0.1 0.23]
+                      (slice f64))]
+             (area-band (.x plot)
+                        (.y plot)
+                        (.w plot)
+                        (.h plot)
+                        green
+                        gold
+                        46.0
+                        (sage))
+             (area-band (.x plot)
+                        (.y plot)
+                        (.w plot)
+                        (.h plot)
+                        gold
+                        red
+                        40.0
+                        (ochre))
              (area (.x plot) (.y plot) (.w plot) (.h plot) red 34.0 (clay)))
            (for [i 0 7]
              (let [cell (row-cell dates 7 0.0 i)]
@@ -197,7 +258,13 @@
              [chart (box (grow 1.0) (grow 1.0))]
              [legend (box (fixed 97.0) (grow 1.0))]]]
            (panel root 22.0 32.0 (cream))
-           (caption heading 19.0 0x30382b 3 (if (< (.w bounds) 270.0) c"Agent health" c"A healthy little ecosystem"))
+           (caption heading
+                    19.0
+                    0x30382b
+                    3
+                    (if (< (.w bounds) 270.0)
+                        c"Agent health"
+                        c"A healthy little ecosystem"))
            (let [cx (+ (.x chart) (* (.w chart) 0.5))
                  cy (+ (.y chart) (* (.h chart) 0.5))
                  radius (* 0.48 (minimum (.w chart) (.h chart)))
@@ -205,17 +272,36 @@
                  (mut text) (zeroed (array i8 64))]
              (for [kind 0 4]
                (let [(mut count) 0]
-                 (for [i 0 (.agents (state))] (when (= (agent-status i) kind) (set! count (+ (load count) 1))))
-                 (let [end (+ (load start) (* 6.28318530718 (/ (cast f64 (load count)) (cast f64 (.agents (state))))))
+                 (for [i 0 (.agents (state))]
+                   (when (= (agent-status i) kind)
+                     (set! count (+ (load count) 1))))
+                 (let [end
+                         (+ (load start)
+                            (* 6.28318530718
+                               (/ (cast f64 (load count))
+                                  (cast f64 (.agents (state))))))
                        material (case kind 0 (moss) 1 (blue) 2 (ochre) (clay))]
                    (when (> (load count) 0)
-                     (arc-sheet cx cy radius (* radius 0.44) (load start) end (+ 38.0 (cast f64 kind)) material))
+                     (arc-sheet cx
+                                cy
+                                radius
+                                (* radius 0.44)
+                                (load start)
+                                end
+                                (+ 38.0 (cast f64 kind))
+                                material))
                    (host/snprintf (index text 0)
                                   64
                                   c"%s  %lld"
-                                  (case kind 0 c"Running" 1 c"Idle" 2 c"Waiting" c"Error")
+                                  (case kind
+                                    0 c"Running"
+                                    1 c"Idle"
+                                    2 c"Waiting"
+                                    c"Error")
                                   (load count))
-                   (tag (column-cell legend 4 10.0 kind) (index text 0) material)
+                   (tag (column-cell legend 4 10.0 kind)
+                        (index text 0)
+                        material)
                    (set! start end))))
              (number (- cx 13.0) (- cy 12.0) 22.0 0x34462e (.agents (state)))))
   0)
@@ -236,51 +322,73 @@
                       20.0
                       0x30382b
                       3
-                      (case (.agent-nav s) 1 c"Your agent directory" 2 c"Today’s task list" c"Cluster analytics"))
-             (case (.agent-nav s) 1
-                   (do
-                     (for [i 0 (page-length (.agent-page s) (.agents s) 5)]
-                       (let [index (+ (page-start (.agent-page s) (.agents s) 5) i)]
-                         (arrange (column-cell body 5 4.0 i)
-                                  [entry
-                                   (row (grow 1.0) (grow 1.0) 14.0)
-                                   [icon (box (fixed 24.0) (grow 1.0))]
-                                   [name (box (grow 1.0) (grow 1.0))]
-                                   [status (box (fixed 160.0) (grow 1.0))]]
-                                  (robot (.x icon) (.y icon) 0.55 (status-material index))
-                                  (caption name 13.0 0x46553b 3 (agent-name index))
-                                  (caption status
-                                           12.0
-                                           0x6f7b60
-                                           0
-                                           (case (agent-status index) 0
-                                                 c"running" 1
-                                                 c"idle" 2
-                                                 c"waiting" c"retry scheduled")))))
-                     (caption note 10.0 0x7c866d 0 c"Local example workspace")
-                     (pager 125 124 pages (.agent-page s) (.agents s) 5 (cream)))
-                     2
-                   (for [i 0 4]
-                     (check (+ 130 i)
-                            (column-cell body 4 10.0 i)
-                            (case i 0
-                                  c"Review the research summary" 1
-                                  c"Refresh the customer dataset" 2
-                                  c"Approve the model rollout" c"Check the scraper retry")
-                            (selected-bit? (.tasks s) i)
-                            (moss)))
-                     (do
-                       (for [i 0 4]
-                         (arrange (column-cell body 4 12.0 i)
-                                  [entry
-                                   (aligned (row (grow 1.0) (grow 1.0) 12.0) 0.5 0.0)
-                                   [week (box (fixed 20.0) (fixed 18.0))]
-                                   [bar (box (grow 1.0) (fixed 13.0))]]
-                                  (numeral week 11.0 0x718060 (+ 1 i))
-                                  (progress bar
-                                            (+ 0.43 (* 0.15 (cast f64 i)))
-                                            (case i 0 (blue) 1 (sage) 2 (ochre) (moss)))))
-                       (caption footer 13.0 0x687458 0 c"Completed tasks across the last four weeks")))))
+                      (case (.agent-nav s)
+                        1 c"Your agent directory"
+                        2 c"Today’s task list"
+                        c"Cluster analytics"))
+             (case (.agent-nav s)
+               1
+                 (do
+                   (for [i 0 (page-length (.agent-page s) (.agents s) 5)]
+                     (let [index
+                             (+ (page-start (.agent-page s) (.agents s) 5) i)]
+                       (arrange (column-cell body 5 4.0 i)
+                                [entry
+                                 (row (grow 1.0) (grow 1.0) 14.0)
+                                 [icon (box (fixed 24.0) (grow 1.0))]
+                                 [name (box (grow 1.0) (grow 1.0))]
+                                 [status (box (fixed 160.0) (grow 1.0))]]
+                                (robot (.x icon)
+                                       (.y icon)
+                                       0.55
+                                       (status-material index))
+                                (caption name
+                                         13.0
+                                         0x46553b
+                                         3
+                                         (agent-name index))
+                                (caption status
+                                         12.0
+                                         0x6f7b60
+                                         0
+                                         (case (agent-status index)
+                                           0 c"running"
+                                           1 c"idle"
+                                           2 c"waiting"
+                                           c"retry scheduled")))))
+                   (caption note 10.0 0x7c866d 0 c"Local example workspace")
+                   (pager 125 124 pages (.agent-page s) (.agents s) 5 (cream)))
+               2
+                 (for [i 0 4]
+                   (check (+ 130 i)
+                          (column-cell body 4 10.0 i)
+                          (case i
+                            0 c"Review the research summary"
+                            1 c"Refresh the customer dataset"
+                            2 c"Approve the model rollout"
+                            c"Check the scraper retry")
+                          (selected-bit? (.tasks s) i)
+                          (moss)))
+               (do
+                 (for [i 0 4]
+                   (arrange (column-cell body 4 12.0 i)
+                            [entry
+                             (aligned (row (grow 1.0) (grow 1.0) 12.0) 0.5 0.0)
+                             [week (box (fixed 20.0) (fixed 18.0))]
+                             [bar (box (grow 1.0) (fixed 13.0))]]
+                            (numeral week 11.0 0x718060 (+ 1 i))
+                            (progress bar
+                                      (+ 0.43 (* 0.15 (cast f64 i)))
+                                      (case i
+                                        0 (blue)
+                                        1 (sage)
+                                        2 (ochre)
+                                        (moss)))))
+                 (caption footer
+                          13.0
+                          0x687458
+                          0
+                          c"Completed tasks across the last four weeks")))))
   0)
 
 (defn agent-list [(bounds Rect)] (-> i64)
@@ -294,7 +402,9 @@
            (let [(mut shown) 0
                  query (host/paper_input_value 150)]
              (for [i 0 (.agents (state))]
-               (when (and (< (load shown) 5) (!= (host/strcasestr (agent-name i) query) (cast (ptr i8) 0)))
+               (when (and (< (load shown) 5)
+                          (!= (host/strcasestr (agent-name i) query)
+                              (cast (ptr i8) 0)))
                  (arrange (column-cell list 5 6.0 (load shown))
                           [entry
                            (aligned (row (grow 1.0) (grow 1.0) 10.0) 0.5 0.0)
@@ -303,9 +413,14 @@
                            [status (box (fixed 7.0) (fixed 7.0))]]
                           (robot (.x icon) (.y icon) 0.5 (status-material i))
                           (caption name 12.0 0x3a4432 0 (agent-name i))
-                          (disc (.x status) (.y status) 7.0 36.0 (status-material i)))
+                          (disc (.x status)
+                                (.y status)
+                                7.0
+                                36.0
+                                (status-material i)))
                  (set! shown (+ (load shown) 1))))
-             (when (= (load shown) 0) (caption list 13.0 0x67715b 0 c"No agents match your search."))))
+             (when (= (load shown) 0)
+               (caption list 13.0 0x67715b 0 c"No agents match your search."))))
   0)
 
 (defn terminal [(bounds Rect)] (-> i64)
@@ -315,7 +430,8 @@
             [header
              (row (grow 1.0) (fixed 24.0) 12.0)
              [heading (box (grow 1.0) (grow 1.0))]
-             [cluster (box (fixed (if (< (.w bounds) 280.0) 65.0 130.0)) (grow 1.0))]]
+             [cluster
+              (box (fixed (if (< (.w bounds) 280.0) 65.0 130.0)) (grow 1.0))]]
             [screen
              (padded (column (grow 1.0) (grow 1.0) 7.0) (padding 14.0))
              [prompt (box (grow 1.0) (fixed 16.0))]
@@ -325,7 +441,9 @@
              [result (box (grow 1.0) (fixed 16.0))]]]
            (panel root 21.0 32.0 (cream))
            (caption heading 18.0 0x30382b 3 c"Terminal")
-           (tag cluster (if (< (.w bounds) 280.0) c"Alpha" c"Alpha cluster") (moss))
+           (tag cluster
+                (if (< (.w bounds) 280.0) c"Alpha" c"Alpha cluster")
+                (moss))
            (recess screen 12.0 36.0 5.0 3.0 (cotton 0xb5bca3) (ink-stock))
            (caption prompt 10.0 0xc4c9a7 2 c"$ agentctl status --all")
            (for [i 0 3]
@@ -339,14 +457,27 @@
                                9.0
                                (if (= i 0) 0x9aab8c 0xd3cfbb)
                                2
-                               (case i 0 c"NAME" 1 c"ResearchAgent" c"DataCollector"))
-                      (caption status 9.0 (if (= i 0) 0x9aab8c 0xd3cfbb) 2 (if (= i 0) c"STATUS" c"running"))
-                      (caption tasks 9.0 (if (= i 0) 0x9aab8c 0xd3cfbb) 2 (case i 0 c"TASKS" 1 c"12" c"8"))))
+                               (case i
+                                 0 c"NAME"
+                                 1 c"ResearchAgent"
+                                 c"DataCollector"))
+                      (caption status
+                               9.0
+                               (if (= i 0) 0x9aab8c 0xd3cfbb)
+                               2
+                               (if (= i 0) c"STATUS" c"running"))
+                      (caption tasks
+                               9.0
+                               (if (= i 0) 0x9aab8c 0xd3cfbb)
+                               2
+                               (case i 0 c"TASKS" 1 c"12" c"8"))))
            (caption result
                     10.0
                     0xc4c9a7
                     2
-                    (if (.paused (state)) c"$ cluster paused ▌" c"$ all systems looking good ▌")))
+                    (if (.paused (state))
+                        c"$ cluster paused ▌"
+                        c"$ all systems looking good ▌")))
   0)
 
 (defn pinboard [(bounds Rect)] (-> i64)
@@ -361,11 +492,17 @@
            (panel root 21.0 32.0 (cream))
            (caption heading 18.0 0x30382b 3 c"On the pinboard")
            (caption title 13.0 0x39472f 3 c"✦  A little smarter, every day")
-           (caption body 11.0 0x636952 0 c"Model v2.1 is ready for Alpha.\nRollout begins with 50% of agents.")
+           (caption body
+                    11.0
+                    0x636952
+                    0
+                    c"Model v2.1 is ready for Alpha.\nRollout begins with 50% of agents.")
            (separator line 0xc7c7b0)
            (button 121
                    pause
-                   (if (.paused (state)) c"▶  Resume cluster" c"Ⅱ  Pause cluster")
+                   (if (.paused (state))
+                       c"▶  Resume cluster"
+                       c"Ⅱ  Pause cluster")
                    (.paused (state))
                    (sage)))
   0)
@@ -377,17 +514,26 @@
                            [overlay
                             (aligned (stack (grow 1.0) (grow 1.0)) 0.5 0.5)
                             [dialog
-                             (padded (column (bounded (grow 1.0) 0.0 577.0) (fit) 14.0) (padding 30.0))
+                             (padded (column (bounded (grow 1.0) 0.0 577.0)
+                                             (fit)
+                                             14.0)
+                                     (padding 30.0))
                              [heading (box (grow 1.0) (fixed 40.0))]
                              [description (box (grow 1.0) (fixed 47.0))]
                              [name (box (grow 1.0) (fixed 51.0))]
                              [error (box (grow 1.0) (fixed 18.0))]
                              [buttons
-                              (aligned (row (grow 1.0) (fixed 44.0) 15.0) 0.0 1.0)
+                              (aligned (row (grow 1.0) (fixed 44.0) 15.0)
+                                       0.0
+                                       1.0)
                               [cancel (box (fixed 100.0) (grow 1.0))]
                               [create (box (fixed 127.0) (grow 1.0))]]]]
                            (panel dialog 25.0 32.0 (cream))
-                           (caption heading 29.0 0x3e5135 1 c"Make room for a new agent.")
+                           (caption heading
+                                    29.0
+                                    0x3e5135
+                                    1
+                                    c"Make room for a new agent.")
                            (caption description
                                     14.0
                                     0x748064
@@ -396,16 +542,25 @@
                            (input 151 name c"Agent name")
                            (ink-height 32.0)
                            (when (.agent-error (state))
-                             (caption error 11.0 0x9f412b 0 c"Enter an unused name between 1 and 48 characters."))
+                             (caption error
+                                      11.0
+                                      0x9f412b
+                                      0
+                                      c"Enter an unused name between 1 and 48 characters."))
                            (button 123 cancel c"Cancel" false (cream))
                            (with-enabled (valid-agent-name? (proposed-agent-name))
-                                         (button 122 create c"Create agent" false (sage)))))
+                                         (button 122
+                                                 create
+                                                 c"Create agent"
+                                                 false
+                                                 (sage)))))
   0)
 
 (defn draw [(bounds Rect)] (-> i64)
   (arrange bounds
            [page
-            (padded (row (grow 1.0) (grow 1.0) 28.0) (edges 22.0 30.0 22.0 26.0))
+            (padded (row (grow 1.0) (grow 1.0) 28.0)
+                    (edges 22.0 30.0 22.0 26.0))
             [left
              (column (fixed 214.0) (grow 1.0) 0.0)
              [top-space (box (grow 1.0) (fixed 48.0))]
@@ -441,26 +596,43 @@
                     10.0
                     0x777a66
                     3
-                    (case (.project (state)) 0
-                          c"WORKSPACE / ALPHA PROJECT" 1
-                          c"WORKSPACE / BETA RESEARCH" 2
-                          c"WORKSPACE / CUSTOMER CARE" c"WORKSPACE / EXPERIMENTAL LAB"))
+                    (case (.project (state))
+                      0 c"WORKSPACE / ALPHA PROJECT"
+                      1 c"WORKSPACE / BETA RESEARCH"
+                      2 c"WORKSPACE / CUSTOMER CARE"
+                      c"WORKSPACE / EXPERIMENTAL LAB"))
            (caption heading 29.0 0x2a3528 1 c"Good morning, Alex.")
-           (caption subtitle 13.0 0x5a634d 0 c"Your agents have it from here.\nA little more room to think.")
+           (caption subtitle
+                    13.0
+                    0x5a634d
+                    0
+                    c"Your agents have it from here.\nA little more room to think.")
            (input 150 search c"Search your agents…")
            (button 120 new-agent c"+  New agent" false (cream))
            (for [i 0 4]
              (let [compact (< (.w metrics) 560.0)
-                   cell (if compact (grid-cell metrics 2 2 8.0 (% i 2) (/ i 2)) (row-cell metrics 4 12.0 i))
+                   cell
+                     (if compact
+                         (grid-cell metrics 2 2 8.0 (% i 2) (/ i 2))
+                         (row-cell metrics 4 12.0 i))
                    (mut count-text) (zeroed (array i8 24))]
                (host/snprintf (index count-text 0) 24 c"%lld" (.agents (state)))
                (metric cell
-                       (case i 0 c"ACTIVE AGENTS" 1 c"TASKS DONE" 2 c"SUCCESS RATE" c"RESPONSE TIME")
-                       (case i 0 (measure-data [i8] (index count-text 0)) 1 c"158" 2 c"97.2%" c"4.6m")
-                       (case i 0
-                             c"↑ 3 since yesterday" 1
-                             c"↑ 12% this week" 2
-                             c"↑ 2.1% this week" c"↓ 8% this week")
+                       (case i
+                         0 c"ACTIVE AGENTS"
+                         1 c"TASKS DONE"
+                         2 c"SUCCESS RATE"
+                         c"RESPONSE TIME")
+                       (case i
+                         0 (measure-data [i8] (index count-text 0))
+                         1 c"158"
+                         2 c"97.2%"
+                         c"4.6m")
+                       (case i
+                         0 c"↑ 3 since yesterday"
+                         1 c"↑ 12% this week"
+                         2 c"↑ 2.1% this week"
+                         c"↓ 8% this week")
                        (case i 0 (sage) 1 (ochre) 2 (blue) (clay)))))
            (if (or (= (.agent-nav (state)) 0) (= (.agent-nav (state)) 3))
                (activity activity-area)

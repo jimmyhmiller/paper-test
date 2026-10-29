@@ -31,7 +31,9 @@ The `coil-bugs` pad contains the upstream report.
 
 ```sh
 coil test
-python3 tools/test_report.py
+python3 -m venv build/python-tools
+build/python-tools/bin/pip install -r tools/requirements.txt
+build/python-tools/bin/python -m unittest discover -s tools -p 'test_*.py'
 coil build tools/inspect.coil -o build/inspect
 PAPER_BENCH_THEME=5 ./build/inspect build/ukiyo.png
 coil build tools/benchmark.coil -o build/benchmark

@@ -1,13 +1,14 @@
 (module transcript.sound)
+(import "coil.cc" :as cc)
 (import "coil.primitive" :as primitive)
 (import "paper.objc" :use *)
 (import "transcript.model" :as model)
 
-(extern malloc :cc c [u64] (-> (ptr i8)))
+(extern malloc :cc (cc/C) [u64] (-> (ptr i8)))
 
-(extern free :cc c [(ptr i8)] (-> void))
+(extern free :cc (cc/C) [(ptr i8)] (-> void))
 
-(extern memcpy :cc c [(ptr i8) (ptr i8) u64] (-> (ptr i8)))
+(extern memcpy :cc (cc/C) [(ptr i8) (ptr i8) u64] (-> (ptr i8)))
 
 ;;; Playback of the edit, not of the file. The source is decoded once into
 ;;; memory; every edit splices a new non-interleaved float buffer from it, and
@@ -165,7 +166,8 @@
 ;;; Splice the EDL into one contiguous buffer. Called whenever the edit changes;
 ;;; the result's frame count is exactly the sum of the kept spans, which is what
 ;;; keeps the transcript and the audio in step.
-(defn splice [(s (ptr Sound)) (session (ptr model/Session)) (soften bool)] (-> i64)
+(defn splice [(s (ptr Sound)) (session (ptr model/Session)) (soften bool)]
+  (-> i64)
   (if (not (.ready s))
       0
       (let [(mut total) 0]
@@ -301,7 +303,7 @@
           (for [c 0 (.channels s)]
             (let [entry (index (field list buffers) c)
                   base (load (index (field s edit) c))]
-              (set! (.channels entry) (cast u32 1))
+              (set! (.channels entry) (: 1 u32))
               (set! (.bytes entry) (cast u32 (* frames 4)))
               (set! (.data entry) (cast (ptr i8) (index base offset)))))
           (let [view
@@ -357,7 +359,7 @@
                          [(ptr i8) (ptr i8) u64 (ptr i8)]
                          view
                          (nil)
-                         (cast u64 0)
+                         (: 0 u64)
                          (nil))
                     (msg i64 (.player s) (sel c"play") [])
                     (set! (.playing s) true)

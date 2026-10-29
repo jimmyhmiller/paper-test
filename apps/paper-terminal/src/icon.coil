@@ -1,4 +1,5 @@
 (module folio.icon)
+(import "coil.cc" :as cc)
 (import "paper.flow" :use *)
 (import "paper.platform" :as host)
 (import "paper.scene" :as scene)
@@ -6,7 +7,7 @@
 (import "paper.objc" :as o)
 (import "paper.workers" :as workers)
 
-(extern CGContextClearRect :cc c [(ptr i8) host/CGRect] (-> void))
+(extern CGContextClearRect :cc (cc/C) [(ptr i8) host/CGRect] (-> void))
 
 (defn main [] (-> i64)
   (let [pool (o/new c"NSAutoreleasePool")]
@@ -21,7 +22,13 @@
     (panel (rect 160.0 230.0 690.0 590.0) 66.0 16.0 (cotton 0xbdc7a5))
     (panel (rect 160.0 185.0 275.0 100.0) 30.0 25.0 (ochre))
     (panel (rect 148.0 220.0 690.0 590.0) 66.0 28.0 (cream))
-    (recess (rect 196.0 288.0 594.0 454.0) 32.0 30.0 8.0 5.0 (sage) (cotton 0xe9dfc6))
+    (recess (rect 196.0 288.0 594.0 454.0)
+            32.0
+            30.0
+            8.0
+            5.0
+            (sage)
+            (cotton 0xe9dfc6))
     (ink-height 30.0)
     (caption (rect 260.0 365.0 250.0 260.0) 180.0 0x384934 2 c"›")
     (panel (rect 510.0 414.0 92.0 153.0) 3.0 36.0 (ochre))

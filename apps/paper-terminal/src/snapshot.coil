@@ -1,38 +1,39 @@
 (module folio.snapshot)
+(import "coil.cc" :as cc)
 (import "paper.platform" :as host)
 (import "paper.scene" :as scene)
 (import "paper.render" :as render)
 (import "paper.objc" :as o)
 (import "paper.geometry" :use [Rect])
-(import "coil.primitive" :as p)
 
 ;;; Export our own two render buffers. Ghostty presents its completed Metal frame
 ;;; through an IOSurface-backed CALayer. This reads that published frame, not the
 ;;; desktop, and never reconstructs terminal text or requests screen recording.
-(extern IOSurfaceGetWidth :cc c [(ptr i8)] (-> u64))
+(extern IOSurfaceGetWidth :cc (cc/C) [(ptr i8)] (-> u64))
 
-(extern IOSurfaceGetHeight :cc c [(ptr i8)] (-> u64))
+(extern IOSurfaceGetHeight :cc (cc/C) [(ptr i8)] (-> u64))
 
-(extern IOSurfaceGetBytesPerRow :cc c [(ptr i8)] (-> u64))
+(extern IOSurfaceGetBytesPerRow :cc (cc/C) [(ptr i8)] (-> u64))
 
-(extern IOSurfaceGetBaseAddress :cc c [(ptr i8)] (-> (ptr i8)))
+(extern IOSurfaceGetBaseAddress :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
 
-(extern IOSurfaceLock :cc c [(ptr i8) u32 (ptr u32)] (-> i32))
+(extern IOSurfaceLock :cc (cc/C) [(ptr i8) u32 (ptr u32)] (-> i32))
 
-(extern IOSurfaceUnlock :cc c [(ptr i8) u32 (ptr u32)] (-> i32))
+(extern IOSurfaceUnlock :cc (cc/C) [(ptr i8) u32 (ptr u32)] (-> i32))
 
-(extern CGContextDrawImage :cc c [(ptr i8) host/CGRect (ptr i8)] (-> void))
+(extern CGContextDrawImage :cc (cc/C) [(ptr i8) host/CGRect (ptr i8)] (-> void))
 
 (defstruct FrameSample [(signature i64) (premultiplication-errors i64)])
 
-(defn sample-region [(view (ptr i8)) (x0 i64) (y0 i64) (width i64) (height i64)] (-> FrameSample)
+(defn sample-region [(view (ptr i8)) (x0 i64) (y0 i64) (width i64) (height i64)]
+  (-> FrameSample)
   ; Inspect the actual published BGRA frame, not the generated shader source.
   (let [layer (o/msg (ptr i8) view (o/sel c"layer") [])
         surface (o/retain (o/msg (ptr i8) layer (o/sel c"contents") []))
         (mut signature) 0
         (mut errors) 0]
     (assert (!= surface (o/nil)))
-    (assert (= (IOSurfaceLock surface 1 (cast (ptr u32) 0)) (cast i32 0)))
+    (assert (= (IOSurfaceLock surface 1 (cast (ptr u32) 0)) (: 0 i32)))
     (let [bytes (cast (ptr u8) (IOSurfaceGetBaseAddress surface))
           stride (cast i64 (IOSurfaceGetBytesPerRow surface))]
       (assert (>= x0 0))
@@ -50,18 +51,19 @@
                   (+ x0 width)
                   (cast i64 (IOSurfaceGetWidth surface)))]
           (let [offset (+ (* y stride) (* x 4))
-                b (cast i64 (load (p/index bytes offset)))
-                g (cast i64 (load (p/index bytes (+ offset 1))))
-                r (cast i64 (load (p/index bytes (+ offset 2))))
-                a (cast i64 (load (p/index bytes (+ offset 3))))]
+                b (cast i64 (load (index bytes offset)))
+                g (cast i64 (load (index bytes (+ offset 1))))
+                r (cast i64 (load (index bytes (+ offset 2))))
+                a (cast i64 (load (index bytes (+ offset 3))))]
             (set! signature
                   (+ (load signature)
                      (* (+ (+ b (* g 3)) (+ (* r 7) (* a 11))) (+ 1 (% x 251)))))
             (when (or (> r (+ a 1)) (> g (+ a 1)) (> b (+ a 1)))
               (set! errors (+ (load errors) 1)))))))
-    (assert (= (IOSurfaceUnlock surface 1 (cast (ptr u32) 0)) (cast i32 0)))
+    (assert (= (IOSurfaceUnlock surface 1 (cast (ptr u32) 0)) (: 0 i32)))
     (o/release surface)
-    (FrameSample :signature (load signature)
+    (FrameSample
+      :signature (load signature)
       :premultiplication-errors (load errors))))
 
 (defn sample [(view (ptr i8))] (-> FrameSample)
@@ -71,7 +73,7 @@
   (let [layer (o/msg (ptr i8) view (o/sel c"layer") [])
         surface (o/retain (o/msg (ptr i8) layer (o/sel c"contents") []))]
     (assert (!= surface (o/nil)))
-    (assert (= (IOSurfaceLock surface 1 (cast (ptr u32) 0)) (cast i32 0)))
+    (assert (= (IOSurfaceLock surface 1 (cast (ptr u32) 0)) (: 0 i32)))
     (let [cs (host/CGColorSpaceCreateDeviceRGB)
           bitmap
             (host/CGBitmapContextCreate (IOSurfaceGetBaseAddress surface)
@@ -98,6 +100,6 @@
         (host/CGImageRelease image))
       (host/CGContextRelease bitmap)
       (host/CGColorSpaceRelease cs))
-    (assert (= (IOSurfaceUnlock surface 1 (cast (ptr u32) 0)) (cast i32 0)))
+    (assert (= (IOSurfaceUnlock surface 1 (cast (ptr u32) 0)) (: 0 i32)))
     (o/release surface))
   0)

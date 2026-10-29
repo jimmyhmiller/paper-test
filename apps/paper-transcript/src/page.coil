@@ -140,7 +140,8 @@
 
 ;;; Keep the spoken word on screen, but only move when it has actually left the
 ;;; comfortable band — a transcript that re-centres on every word is unreadable.
-(defn follow [(s (ptr model/Session)) (index i64) (viewport-height f64)] (-> f64)
+(defn follow [(s (ptr model/Session)) (index i64) (viewport-height f64)]
+  (-> f64)
   (if (or (< index 0) (>= index (.word-count s)))
       (.scroll s)
       (let [wy (.y (model/word index))
@@ -154,7 +155,8 @@
 
 ;;; The word or gap pill under a point in transcript content space. Returns the
 ;;; word index, with `gap` set when the point landed on that word's pill.
-(defn hit-word [(s (ptr model/Session)) (x f64) (y f64) (gap (ptr bool))] (-> i64)
+(defn hit-word [(s (ptr model/Session)) (x f64) (y f64) (gap (ptr bool))]
+  (-> i64)
   (let [lh (line-height)
         (mut found) -1
         (mut i) (first-visible s (- y (* 2.0 lh)))
@@ -246,9 +248,10 @@
   (set! (index (reference-cache) 1) 0.0)
   0)
 
-(defn column-reference [(s (ptr model/Session)) (buckets-per-column i64)] (-> f64)
+(defn column-reference [(s (ptr model/Session)) (buckets-per-column i64)]
+  (-> f64)
   (let [cache (reference-cache)]
-    (if (primitive/fcmp-eq (load (index cache 0)) (cast f64 buckets-per-column))
+    (if (= (load (index cache 0)) (cast f64 buckets-per-column))
         (load (index cache 1))
         (let [value (scan-reference s buckets-per-column)]
           (set! (index cache 0) (cast f64 buckets-per-column))
@@ -331,7 +334,8 @@
     (build-columns s origin width)
     0))
 
-(defn pan-to [(s (ptr model/Session)) (target f64) (origin f64) (width f64)] (-> i64)
+(defn pan-to [(s (ptr model/Session)) (target f64) (origin f64) (width f64)]
+  (-> i64)
   (let [limit (max-pan s width)]
     (set! (.wscroll s)
           (if (< target 0.0) 0.0 (if (> target limit) limit target)))

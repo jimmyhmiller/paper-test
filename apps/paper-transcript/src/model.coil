@@ -226,7 +226,8 @@
 ;;; A trimmed gap becomes a cut across the middle of its silence, so the kept
 ;;; milliseconds straddle the word boundary evenly and neither word loses its
 ;;; own breath.
-(defn gap-cuts [(s (ptr Session)) (out (ptr (array Clip 512))) (start i64)] (-> i64)
+(defn gap-cuts [(s (ptr Session)) (out (ptr (array Clip 512))) (start i64)]
+  (-> i64)
   (let [(mut count) start]
     (for [i 0 (- (.word-count s) 1)]
       (let [keep (.gap-keep (word i))]

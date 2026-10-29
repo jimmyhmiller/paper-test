@@ -1,4 +1,5 @@
 (module folio.native)
+(import "coil.cc" :as cc)
 (import "folio.objc" :use * :reexport)
 (import "coil.primitive" :as p)
 
@@ -10,31 +11,39 @@
 
 (defstruct Range [(location u64) (length u64)])
 
-(extern objc_allocateClassPair :cc c [(ptr i8) (ptr i8) u64] (-> (ptr i8)))
+(extern objc_allocateClassPair :cc (cc/C) [(ptr i8) (ptr i8) u64] (-> (ptr i8)))
 
-(extern objc_registerClassPair :cc c [(ptr i8)] (-> void))
+(extern objc_registerClassPair :cc (cc/C) [(ptr i8)] (-> void))
 
-(extern class_addMethod :cc c [(ptr i8) (ptr i8) (ptr i8) (ptr i8)] (-> bool))
+(extern class_addMethod
+        :cc
+        (cc/C)
+        [(ptr i8) (ptr i8) (ptr i8) (ptr i8)]
+        (-> bool))
 
-(extern class_addProtocol :cc c [(ptr i8) (ptr i8)] (-> i8))
+(extern class_addProtocol :cc (cc/C) [(ptr i8) (ptr i8)] (-> i8))
 
-(extern objc_getProtocol :cc c [(ptr i8)] (-> (ptr i8)))
+(extern objc_getProtocol :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
 
-(extern objc_setAssociatedObject :cc c [(ptr i8) (ptr i8) (ptr i8) u64] (-> void))
+(extern objc_setAssociatedObject
+        :cc
+        (cc/C)
+        [(ptr i8) (ptr i8) (ptr i8) u64]
+        (-> void))
 
-(extern objc_getAssociatedObject :cc c [(ptr i8) (ptr i8)] (-> (ptr i8)))
+(extern objc_getAssociatedObject :cc (cc/C) [(ptr i8) (ptr i8)] (-> (ptr i8)))
 
-(extern strlen :cc c [(ptr i8)] (-> u64))
+(extern strlen :cc (cc/C) [(ptr i8)] (-> u64))
 
-(extern strcmp :cc c [(ptr i8) (ptr i8)] (-> i32))
+(extern strcmp :cc (cc/C) [(ptr i8) (ptr i8)] (-> i32))
 
-(extern printf :cc c [(ptr i8) ...] (-> i32))
+(extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
 
-(extern getenv :cc c [(ptr i8)] (-> (ptr i8)))
+(extern getenv :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
 
-(extern setenv :cc c [(ptr i8) (ptr i8) i32] (-> i32))
+(extern setenv :cc (cc/C) [(ptr i8) (ptr i8) i32] (-> i32))
 
-(extern NSTemporaryDirectory :cc c [] (-> (ptr i8)))
+(extern NSTemporaryDirectory :cc (cc/C) [] (-> (ptr i8)))
 
 (defn nil [] (-> (ptr i8))
   (p/cast (ptr i8) 0))
@@ -61,5 +70,6 @@
 (defn frame! [(view (ptr i8)) (r Rect)] (-> i64)
   (msg i64 view (sel c"setFrame:") [Rect] r))
 
-(defn method! [(cls (ptr i8)) (name (ptr i8)) (fn (ptr i8)) (encoding (ptr i8))] (-> bool)
+(defn method! [(cls (ptr i8)) (name (ptr i8)) (fn (ptr i8)) (encoding (ptr i8))]
+  (-> bool)
   (class_addMethod cls (sel name) fn encoding))

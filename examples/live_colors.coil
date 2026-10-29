@@ -1,0 +1,12 @@
+(module papercut.live-colors)
+(import "coil.repl")
+(import "coil.var" :use *)
+
+(export brand-color)
+
+;;; Both ordinary builds and the live JIT use the REPL's Var lowering.
+(defn brand-color [] (-> u32)
+  0xe8dfca)
+
+(defn __repl_vars [] (-> Code)
+  (coil.repl/var-module))

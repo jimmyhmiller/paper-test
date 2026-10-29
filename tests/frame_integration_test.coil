@@ -1,0 +1,33 @@
+(module papercut.frame-integration-test)
+(import "paper.platform" :as host)
+(import "paper.scene" :as scene)
+(import "coil.arraylist" :as al)
+(import "coil.alloc" :as alloc)
+
+(defn denied [] (-> bool)
+  false)
+
+(defn leave [] (-> i64)
+  (assert false)
+  0)
+
+(defn draw [] (-> i64)
+  (assert false)
+  0)
+
+(deftest denied-draw-preserves-controls-and-pending-scene
+  (scene/init)
+  (let [app (host/host)]
+    (set! (.inputs app)
+          (al/ArrayList::new [host/Input] (alloc/malloc-allocator)))
+    (let [(mut input) (zeroed host/Input)]
+      (set! (.live input) true)
+      (push! (mut (.inputs app)) (load input)))
+    (set! (.draw app) (fnptr-of draw))
+    (set! (.dirty (scene/scene)) true)
+    (host/paper_draw_admission (fnptr-of denied) (fnptr-of leave))
+    (assert (= (host/refresh) 0))
+    (assert (.live (get (.inputs app) 0)))
+    (assert (.dirty (scene/scene)))
+    (host/paper_clear_draw_admission)
+    (free! (mut (.inputs app)))))

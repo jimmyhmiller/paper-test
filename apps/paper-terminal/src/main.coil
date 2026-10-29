@@ -63,10 +63,10 @@
   (p/alloc-static App))
 
 (defn tab-count [] (-> i64)
-  (al/al-len [Tab] (.tabs (app))))
+  (len (.tabs (app))))
 
 (defn tab [(index i64)] (-> (ptr Tab))
-  (al/al-elem [Tab] (mut (.tabs (app))) index))
+  (elem (mut (.tabs (app))) index))
 
 (defn current [] (-> (ptr terminal/Terminal))
   (if (> (tab-count) 0)
@@ -105,7 +105,7 @@
       :roughness (cast f32 (.roughness a))
       :background-depth (cast f32 (.background-depth a))
       :selection-depth (cast f32 (.selection-depth a))
-      :reserved (cast f32 0.0))))
+      :reserved (: 0.0 f32))))
 
 (defn apply-material [] (-> i64)
   (set! (.material-dirty (app)) false)
@@ -148,9 +148,8 @@
         (do (terminal/free! t) false)
         (do
           (set! (.next-id (app)) (+ (.next-id (app)) 1))
-          (al/al-push! [Tab]
-                       (mut (.tabs (app)))
-                       (Tab :id (.next-id (app)) :terminal t))
+          (push! (mut (.tabs (app)))
+                 (Tab :id (.next-id (app)) :terminal t))
           (focus-tab (- (tab-count) 1))
           (apply-material)
           true))))
@@ -201,7 +200,7 @@
            (o/nil))
     (terminal/free! t)
     (for [i index (- count 1)] (set! (tab i) (load (tab (+ i 1)))))
-    (al/al-pop! [Tab] (mut (.tabs (app))))
+    (pop! (mut (.tabs (app))))
     (set! (.active (app)) next)
     (if (< next 0) (set! (.quitting (app)) true) (do (focus-tab next) 0)))
   0)
@@ -261,10 +260,11 @@
   0)
 
 (defn tab-stock [(id i64)] (-> Material)
-  (case (% id 4) 0
-        (cotton 0xc3cbb0) 1
-        (cotton 0xd6b186) 2
-        (cotton 0xb2c6cb) (cotton 0xd2b2a7)))
+  (case (% id 4)
+    0 (cotton 0xc3cbb0)
+    1 (cotton 0xd6b186)
+    2 (cotton 0xb2c6cb)
+    (cotton 0xd2b2a7)))
 
 (defn material-track [(bounds Rect) (index i64)] (-> Rect)
   (let [inner (inset bounds 20.0)
@@ -403,21 +403,23 @@
     (for [i 0 4]
       (let [track (material-track bounds i)
             label
-              (case i 0
-                    c"SHINE" 1
-                    c"ROUGHNESS" 2
-                    c"BACKGROUND DEPTH" c"SELECTION DEPTH")
+              (case i
+                0 c"SHINE"
+                1 c"ROUGHNESS"
+                2 c"BACKGROUND DEPTH"
+                c"SELECTION DEPTH")
             value
-              (case i 0
-                    (.shine (app)) 1
-                    (/ (- (.roughness (app)) 0.15) 0.7) 2
-                    (/ (.background-depth (app)) 6.0)
-                      (/ (.selection-depth (app)) 6.0))
+              (case i
+                0 (.shine (app))
+                1 (/ (- (.roughness (app)) 0.15) 0.7)
+                2 (/ (.background-depth (app)) 6.0)
+                (/ (.selection-depth (app)) 6.0))
             raw
-              (case i 0
-                    (* (.shine (app)) 100.0) 1
-                    (* (.roughness (app)) 100.0) 2
-                    (.background-depth (app)) (.selection-depth (app)))
+              (case i
+                0 (* (.shine (app)) 100.0)
+                1 (* (.roughness (app)) 100.0)
+                2 (.background-depth (app))
+                (.selection-depth (app)))
             (mut number) (zeroed (array i8 32))
             compact (< (.w track) (.w inner))]
         (caption (rect (.x inner)
@@ -494,43 +496,44 @@
           (for [i 0 6]
             (let [track (material-track bounds i)
                   label
-                    (case i 0
-                          c"PAPER TONE" 1
-                          (if (.cut-paper (app))
-                              c"AIR GAP (pt)"
-                              c"CARVED ↔ RAISED")
-                            2
-                          (if (.cut-paper (app)) c"THICKNESS (pt)" c"CUT EDGE")
-                            3
-                          c"FIBRE" 4
-                          c"CURSOR LIFT" c"FOLDED CORNER")
+                    (case i
+                      0 c"PAPER TONE"
+                      1
+                        (if (.cut-paper (app))
+                            c"AIR GAP (pt)"
+                            c"CARVED ↔ RAISED")
+                      2 (if (.cut-paper (app)) c"THICKNESS (pt)" c"CUT EDGE")
+                      3 c"FIBRE"
+                      4 c"CURSOR LIFT"
+                      c"FOLDED CORNER")
                   value
-                    (case i 0
-                          (.text-fill (app)) 1
-                          (if (.cut-paper (app))
-                              (/ (.text-gap (app)) 8.0)
-                              (/ (+ (.text-relief (app)) 2.0) 4.0))
-                            2
-                          (if (.cut-paper (app))
-                              (/ (- (.text-thickness (app)) 0.15) 1.35)
-                              (/ (- (.text-edge (app)) 0.5) 3.5))
-                            3
-                          (/ (.text-grain (app)) 0.5) 4
-                          (/ (.cursor-lift (app)) 12.0)
-                            (/ (.cursor-fold (app)) 0.7))
+                    (case i
+                      0 (.text-fill (app))
+                      1
+                        (if (.cut-paper (app))
+                            (/ (.text-gap (app)) 8.0)
+                            (/ (+ (.text-relief (app)) 2.0) 4.0))
+                      2
+                        (if (.cut-paper (app))
+                            (/ (- (.text-thickness (app)) 0.15) 1.35)
+                            (/ (- (.text-edge (app)) 0.5) 3.5))
+                      3 (/ (.text-grain (app)) 0.5)
+                      4 (/ (.cursor-lift (app)) 12.0)
+                      (/ (.cursor-fold (app)) 0.7))
                   raw
-                    (case i 0
-                          (* (.text-fill (app)) 100.0) 1
-                          (if (.cut-paper (app))
-                              (.text-gap (app))
-                              (.text-relief (app)))
-                            2
-                          (if (.cut-paper (app))
-                              (.text-thickness (app))
-                              (.text-edge (app)))
-                            3
-                          (* (.text-grain (app)) 100.0) 4
-                          (.cursor-lift (app)) (* (.cursor-fold (app)) 100.0))
+                    (case i
+                      0 (* (.text-fill (app)) 100.0)
+                      1
+                        (if (.cut-paper (app))
+                            (.text-gap (app))
+                            (.text-relief (app)))
+                      2
+                        (if (.cut-paper (app))
+                            (.text-thickness (app))
+                            (.text-edge (app)))
+                      3 (* (.text-grain (app)) 100.0)
+                      4 (.cursor-lift (app))
+                      (* (.cursor-fold (app)) 100.0))
                   (mut number) (zeroed (array i8 48))]
               (caption (rect x
                              (if compact (.y track) (- (.y track) 16.0))
@@ -556,11 +559,12 @@
                                track
                                label
                                value
-                               (case i 0
-                                     (sage) 1
-                                     (cotton 0xd6b186) 2
-                                     (cotton 0xb2c6cb) 3
-                                     (cotton 0xd2b2a7) (cotton 0xd6b186)))))
+                               (case i
+                                 0 (sage)
+                                 1 (cotton 0xd6b186)
+                                 2 (cotton 0xb2c6cb)
+                                 3 (cotton 0xd2b2a7)
+                                 (cotton 0xd6b186)))))
           (let [half (/ (- w 6.0) 2.0)
                 y (- (+ (.y inner) (.h inner)) 72.0)]
             (lab-tab 206
@@ -744,11 +748,11 @@
           (and (>= id 220) (<= id 223))
             (let [track (material-track (.lab-bounds (app)) (- id 220))
                   v (clamp (/ (- x (.x track)) (.w track)) 0.0 1.0)]
-              (case id 220
-                    (set! (.shine (app)) v) 221
-                    (set! (.roughness (app)) (+ 0.15 (* v 0.7))) 222
-                    (set! (.background-depth (app)) (* v 6.0))
-                      (set! (.selection-depth (app)) (* v 6.0)))
+              (case id
+                220 (set! (.shine (app)) v)
+                221 (set! (.roughness (app)) (+ 0.15 (* v 0.7)))
+                222 (set! (.background-depth (app)) (* v 6.0))
+                (set! (.selection-depth (app)) (* v 6.0)))
               (apply-material))
           (= id 224) (do (set! (.shine (app)) 0.0) (apply-material))
           (= id 225)
@@ -783,19 +787,19 @@
           (and (>= id 200) (<= id 205))
             (let [track (material-track (.lab-bounds (app)) (- id 200))
                   v (clamp (/ (- x (.x track)) (.w track)) 0.0 1.0)]
-              (case id 200
-                    (set! (.text-fill (app)) v) 201
-                    (if (.cut-paper (app))
-                        (set! (.text-gap (app)) (* v 8.0))
-                        (set! (.text-relief (app)) (- (* v 4.0) 2.0)))
-                      202
-                    (if (.cut-paper (app))
-                        (set! (.text-thickness (app)) (+ 0.15 (* v 1.35)))
-                        (set! (.text-edge (app)) (+ 0.5 (* v 3.5))))
-                      203
-                    (set! (.text-grain (app)) (* v 0.5)) 204
-                    (set! (.cursor-lift (app)) (* v 12.0))
-                      (set! (.cursor-fold (app)) (* v 0.7)))
+              (case id
+                200 (set! (.text-fill (app)) v)
+                201
+                  (if (.cut-paper (app))
+                      (set! (.text-gap (app)) (* v 8.0))
+                      (set! (.text-relief (app)) (- (* v 4.0) 2.0)))
+                202
+                  (if (.cut-paper (app))
+                      (set! (.text-thickness (app)) (+ 0.15 (* v 1.35)))
+                      (set! (.text-edge (app)) (+ 0.5 (* v 3.5))))
+                203 (set! (.text-grain (app)) (* v 0.5))
+                204 (set! (.cursor-lift (app)) (* v 12.0))
+                (set! (.cursor-fold (app)) (* v 0.7)))
               (set! (.material-dirty (app)) true)
               (apply-material))
           (= id 206)
@@ -907,18 +911,18 @@
 (defn keyboard [(event (ptr i8))] (-> bool)
   (let [mods (o/msg u64 event (o/sel c"modifierFlags") [])
         code (o/msg u16 event (o/sel c"keyCode") [])
-        command (!= (& mods 1048576) (cast u64 0))
-        shift (!= (& mods 131072) (cast u64 0))]
-    (cond (and command (= code (cast u16 17))) (do (open-tab) true)
-          (and command (= code (cast u16 13)))
+        command (!= (& mods 1048576) (: 0 u64))
+        shift (!= (& mods 131072) (: 0 u64))]
+    (cond (and command (= code (: 17 u16))) (do (open-tab) true)
+          (and command (= code (: 13 u16)))
             (do (when (confirm-close false) (remove-tab (.active (app)))) true)
-          (and command (= code (cast u16 12)))
+          (and command (= code (: 12 u16)))
             (do (when (confirm-close true) (set! (.quitting (app)) true)) true)
-          (and command shift (= code (cast u16 33)))
+          (and command shift (= code (: 33 u16)))
             (do
               (focus-tab (model/adjacent (.active (app)) -1 (tab-count)))
               true)
-          (and command shift (= code (cast u16 30)))
+          (and command shift (= code (: 30 u16)))
             (do (focus-tab (model/adjacent (.active (app)) 1 (tab-count))) true)
           :else false)))
 
@@ -976,12 +980,14 @@
       (when (.dirty (scene/scene)) (refresh))))
   0)
 
-(defn menu-action [(self (ptr i8)) (selector (ptr i8)) (sender (ptr i8))] (-> void)
-  (case (o/msg i64 sender (o/sel c"tag") []) 1
-        (open-tab) 2
-        (focus-tab (model/adjacent (.active (app)) -1 (tab-count))) 3
-        (focus-tab (model/adjacent (.active (app)) 1 (tab-count))) 4
-        (when (confirm-close false) (remove-tab (.active (app)))) 0))
+(defn menu-action [(self (ptr i8)) (selector (ptr i8)) (sender (ptr i8))]
+  (-> void)
+  (case (o/msg i64 sender (o/sel c"tag") [])
+    1 (open-tab)
+    2 (focus-tab (model/adjacent (.active (app)) -1 (tab-count)))
+    3 (focus-tab (model/adjacent (.active (app)) 1 (tab-count)))
+    4 (when (confirm-close false) (remove-tab (.active (app))))
+    0))
 
 (defn menus [] (-> i64)
   (let [bar (o/new c"NSMenu")]
@@ -993,28 +999,31 @@
         (o/msg i64 menu (o/sel c"setTitle:") [(ptr i8)] (o/ns title))
         (for [i 0 (case group 0 1 1 4 2 3 3)]
           (let [name
-                  (case group 0
-                        c"Quit Paper Terminal" 1
-                        (case i 0
-                              c"New Tab" 1
-                              c"Previous Tab" 2
-                              c"Next Tab" c"Close Tab")
-                          2
-                        (case i 0 c"Copy" 1 c"Paste" c"Select All")
-                          (case i 0 c"Minimize" 1 c"Zoom" c"Enter Full Screen"))
+                  (case group
+                    0 c"Quit Paper Terminal"
+                    1
+                      (case i
+                        0 c"New Tab"
+                        1 c"Previous Tab"
+                        2 c"Next Tab"
+                        c"Close Tab")
+                    2 (case i 0 c"Copy" 1 c"Paste" c"Select All")
+                    (case i 0 c"Minimize" 1 c"Zoom" c"Enter Full Screen"))
                 action
-                  (case group 0
-                        c"terminate:" 1
-                        c"menuAction:" 2
-                        (case i 0 c"copy:" 1 c"paste:" c"selectAll:")
-                          (case i 0
-                                c"performMiniaturize:" 1
-                                c"performZoom:" c"toggleFullScreen:"))
+                  (case group
+                    0 c"terminate:"
+                    1 c"menuAction:"
+                    2 (case i 0 c"copy:" 1 c"paste:" c"selectAll:")
+                    (case i
+                      0 c"performMiniaturize:"
+                      1 c"performZoom:"
+                      c"toggleFullScreen:"))
                 key
-                  (case group 0
-                        c"q" 1
-                        (case i 0 c"t" 1 c"[" 2 c"]" c"w") 2
-                        (case i 0 c"c" 1 c"v" c"a") (case i 0 c"m" 1 c"" c"f"))
+                  (case group
+                    0 c"q"
+                    1 (case i 0 c"t" 1 c"[" 2 c"]" c"w")
+                    2 (case i 0 c"c" 1 c"v" c"a")
+                    (case i 0 c"m" 1 c"" c"f"))
                 item (host/native-menu-item name (o/sel action) key)]
             (when (= group 1)
               (o/msg i64
@@ -1107,7 +1116,7 @@
                                     c"ghostty"
                                     c"build/ghostty/share/ghostty")))
               1)
-    (set! (.tabs a) (al/al-new [Tab] (alloc/malloc-allocator)))
+    (set! (.tabs a) (al/ArrayList::new [Tab] (alloc/malloc-allocator)))
     (set! (.viewport a) (rect 0.0 0.0 1100.0 760.0))
     (scene/init)
     (host/paper_configure c"Paper Terminal" 1100.0 760.0)
@@ -1116,9 +1125,9 @@
     (set! (.view h) view)
     (set! (.window-w h) 1100.0)
     (set! (.window-h h) 760.0)
-    (set! (.draw h) (p/fnptr-of draw))
-    (set! (.event h) (p/fnptr-of event))
-    (set! (.inputs h) (al/al-new [host/Input] (alloc/malloc-allocator)))
+    (set! (.draw h) (fnptr-of draw))
+    (set! (.event h) (fnptr-of event))
+    (set! (.inputs h) (al/ArrayList::new [host/Input] (alloc/malloc-allocator)))
     (set! (.width (scene/scene)) (cast i64 (* 1100.0 scale)))
     (set! (.height (scene/scene)) (cast i64 (* 760.0 scale)))
     (set! (.scale (scene/scene)) scale)
@@ -1139,15 +1148,15 @@
     (assert (host/class_addMethod delegate-class
                                   (o/sel c"windowShouldClose:")
                                   (cast (ptr i8)
-                                        (p/fnptr-of window-should-close))
+                                        (fnptr-of window-should-close))
                                   c"B@:@"))
     (assert (host/class_addMethod delegate-class
                                   (o/sel c"applicationShouldTerminate:")
-                                  (cast (ptr i8) (p/fnptr-of should-terminate))
+                                  (cast (ptr i8) (fnptr-of should-terminate))
                                   c"Q@:@"))
     (assert (host/class_addMethod delegate-class
                                   (o/sel c"menuAction:")
-                                  (cast (ptr i8) (p/fnptr-of menu-action))
+                                  (cast (ptr i8) (fnptr-of menu-action))
                                   c"v@:@"))
     (host/objc_registerClassPair delegate-class)
     (let [delegate (o/msg (ptr i8) delegate-class (o/sel c"new") [])]
@@ -1170,7 +1179,7 @@
     (set! (.ready a) true)
     (focus-tab 0)
     (refresh)
-    (clock/start view (p/fnptr-of frame) 60.0))
+    (clock/start view (fnptr-of frame) 60.0))
   0)
 
 (defn paper-pointer [(event (ptr i8)) (kind i64)] (-> i64)
@@ -1238,7 +1247,7 @@
          [(ptr i8)]
          (o/nil))
   (for [i 0 (tab-count)] (terminal/free! (.terminal (tab i))))
-  (al/al-free! [Tab] (mut (.tabs (app))))
+  (free! (mut (.tabs (app))))
   (terminal/stop!)
   (workers/stop)
   (o/msg i64 (.window (host/host)) (o/sel c"setDelegate:") [(ptr i8)] (o/nil))

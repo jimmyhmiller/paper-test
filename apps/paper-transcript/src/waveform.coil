@@ -1,13 +1,14 @@
 (module transcript.waveform)
+(import "coil.cc" :as cc)
 (import "coil.primitive" :as p)
 (import "coil.atomic" :as atomic)
 (import "coil.thread" :as thread)
 (import "paper.objc" :use *)
 (import "paper.ffi" :use [floor snprintf])
 
-(extern malloc :cc c [u64] (-> (ptr i8)))
+(extern malloc :cc (cc/C) [u64] (-> (ptr i8)))
 
-(extern free :cc c [(ptr i8)] (-> void))
+(extern free :cc (cc/C) [(ptr i8)] (-> void))
 
 ;;; Native-rate, signed, per-channel extrema. The background scan keeps only
 ;;; a min/max tree of 256-sample leaves, not a decoded copy of a whole episode.
@@ -69,13 +70,15 @@
   (Range :low 0.0 :high 0.0))
 
 (defn merge-range [(a Range) (b Range)] (-> Range)
-  (Range :low (if (< (.low a) (.low b)) (.low a) (.low b))
+  (Range
+    :low (if (< (.low a) (.low b)) (.low a) (.low b))
     :high (if (> (.high a) (.high b)) (.high a) (.high b))))
 
 (defn entry [(w (ptr Waveform)) (ch i64) (node i64)] (-> (ptr Range))
   (index (.tree w) (+ (* ch (* (.base w) 2)) node)))
 
-(defn allocate-index [(w (ptr Waveform)) (frames i64) (channels i64) (rate f64)] (-> bool)
+(defn allocate-index [(w (ptr Waveform)) (frames i64) (channels i64) (rate f64)]
+  (-> bool)
   (let [(mut base) 1
         blocks (/ (+ frames (- BLOCK 1)) BLOCK)]
     (while (< (load base) blocks) (set! base (* (load base) 2)))
@@ -102,7 +105,7 @@
     (let [value (load (index data i))
           bin (entry w ch (+ (.base w) (/ (+ start i) BLOCK)))]
       ;; NaN has no useful amplitude; leave finite samples in its bin intact.
-      (when (p/fcmp-eq value value)
+      (when (= value value)
         (when (< value (.low bin)) (set! (.low bin) value))
         (when (> value (.high bin)) (set! (.high bin) value)))))
   0)
@@ -119,7 +122,8 @@
 
 ;;; O(log blocks), including every touched leaf. When used for overview pixels
 ;;; each leaf is smaller than a pixel, so this never hides a transient.
-(defn overview-range [(w (ptr Waveform)) (ch i64) (from i64) (to i64)] (-> Range)
+(defn overview-range [(w (ptr Waveform)) (ch i64) (from i64) (to i64)]
+  (-> Range)
   (let [a (max-i 0 (min-i from (.frames w)))
         b (max-i 0 (min-i to (.frames w)))
         (mut result) (empty-range)
@@ -194,7 +198,7 @@
                         (mut ok) (!= buffer (nil))]
                     (while (and (load ok)
                                 (< (load cursor) frames)
-                                (= (atomic/atomic-load (field w cancel)) 0))
+                                (= (atomic/read (field w cancel)) 0))
                       (if (not (read-buffer file
                                             buffer
                                             (min-i 65536
@@ -222,7 +226,7 @@
                     (release buffer)
                     (if (and (load ok)
                              (= (load cursor) frames)
-                             (= (atomic/atomic-load (field w cancel)) 0))
+                             (= (atomic/read (field w cancel)) 0))
                         (do (finish-index w) true)
                         false))))))))
 
@@ -231,13 +235,13 @@
         pool (new c"NSAutoreleasePool")
         ok (build-file w)]
     (release pool)
-    (atomic/atomic-store (field w completion) (if ok 1 -1)))
+    (atomic/store (field w completion) (if ok 1 -1)))
   (nil))
 
 (defn stop [(w (ptr Waveform))] (-> i64)
   (when (.running w)
-    (atomic/atomic-store (field w cancel) 1)
-    (assert (= (thread/thread-join (field w worker)) (cast i32 0)))
+    (atomic/store (field w cancel) 1)
+    (assert (= (join (field w worker)) (: 0 i32)))
     (set! (.running w) false))
   (when (!= (.tree w) (cast (ptr Range) 0)) (free (cast (ptr i8) (.tree w))) 0)
   (set! (.tree w) (cast (ptr Range) 0))
@@ -264,30 +268,30 @@
     (snprintf (index (field w path) 0) 2048 c"%s" path)
     (set! (.take w) take)
     (set! (.requested w) true)
-    (atomic/atomic-store (field w cancel) 0)
-    (atomic/atomic-store (field w completion) 0)
+    (atomic/store (field w cancel) 0)
+    (atomic/store (field w completion) 0)
     (if synchronous
         (do
           (worker (cast (ptr i8) w))
-          (set! (.ready w) (= (atomic/atomic-load (field w completion)) 1))
+          (set! (.ready w) (= (atomic/read (field w completion)) 1))
           0)
-        (if (= (thread/thread-spawn (field w worker)
-                                    (p/fnptr-of worker)
-                                    (cast (ptr i8) w))
-               (cast i32 0))
+        (if (= (thread/Thread::spawn (field w worker)
+                                     (fnptr-of worker)
+                                     (cast (ptr i8) w))
+               (: 0 i32))
             (do (set! (.running w) true) 0)
-            (do (atomic/atomic-store (field w completion) -1) 0))))
+            (do (atomic/store (field w completion) -1) 0))))
   0)
 
 ;;; Acquire the immutable completed index on the UI thread. The file is never
 ;;; used by both threads: join hands ownership to the detail reader.
 (defn poll [] (-> bool)
   (let [w (state)]
-    (if (and (.running w) (!= (atomic/atomic-load (field w completion)) 0))
+    (if (and (.running w) (!= (atomic/read (field w completion)) 0))
         (do
-          (assert (= (thread/thread-join (field w worker)) (cast i32 0)))
+          (assert (= (join (field w worker)) (: 0 i32)))
           (set! (.running w) false)
-          (set! (.ready w) (= (atomic/atomic-load (field w completion)) 1))
+          (set! (.ready w) (= (atomic/read (field w completion)) 1))
           true)
         false)))
 
@@ -368,10 +372,10 @@
   (if (not (.ready w))
       false
       (if (and (.prepared w)
-               (p/fcmp-eq start-ms (.view-start w))
-               (p/fcmp-eq zoom (.view-zoom w))
-               (p/fcmp-eq width (.view-width w))
-               (p/fcmp-eq scale (.view-scale w)))
+               (= start-ms (.view-start w))
+               (= zoom (.view-zoom w))
+               (= width (.view-width w))
+               (= scale (.view-scale w)))
           true
           (let [per-pixel (/ (.rate w) (* zoom scale))
                 samples (<= per-pixel 1.0)

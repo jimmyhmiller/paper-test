@@ -1,4 +1,5 @@
 (module papercut.material-performance)
+(import "coil.cc" :as cc)
 (import "papercut.material-workbench" :as gallery)
 (import "paper.scene" :as scene)
 (import "paper.platform" :as host)
@@ -8,7 +9,7 @@
 (import "paper.objc" :as o)
 (import "paper.ffi" :use [CACurrentMediaTime])
 
-(extern printf :cc c [(ptr i8) ...] (-> i32))
+(extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
 
 ;;; 2560 x 1840 24-material gallery frames, without startup, presentation, or PNG encoding.
 ;;; Scenario 0: moving light; 1: rotating all materials; 2: unchanged redraw.
@@ -27,14 +28,20 @@
         (let [frame-pool (o/new c"NSAutoreleasePool")
               start (CACurrentMediaTime)]
           (when (= scenario 0)
-            (set! (.x (.lighting (gallery/workbench))) (+ -0.2 (* (cast f64 frame) 0.045))))
-          (when (= scenario 1) (set! (.angle (gallery/workbench)) (* (cast f64 frame) 2.0)))
+            (set! (.x (.lighting (gallery/workbench)))
+                  (+ -0.2 (* (cast f64 frame) 0.045))))
+          (when (= scenario 1)
+            (set! (.angle (gallery/workbench)) (* (cast f64 frame) 2.0)))
           (gallery/draw)
           (render/render-frame false)
           (gpu/synchronize)
           (let [done (CACurrentMediaTime)]
             (when (>= frame 4)
-              (printf c"%lld,%lld,%.4f,%.4f\n" scenario frame (* 1000.0 (- done start)) (.gpu-ms (gpu/gpu)))))
+              (printf c"%lld,%lld,%.4f,%.4f\n"
+                      scenario
+                      frame
+                      (* 1000.0 (- done start))
+                      (.gpu-ms (gpu/gpu)))))
           (o/release frame-pool))))
     (workers/stop)
     (o/release pool))

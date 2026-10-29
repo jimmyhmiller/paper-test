@@ -13,7 +13,7 @@
   (let [pool (o/new c"NSAutoreleasePool")
         (mut path) (zeroed (array i8 128))
         variant
-          (if (> argc (cast i32 1))
+          (if (> argc (: 1 i32))
               (if (= (host/strcmp (load (index argv 1)) c"small") 0) 0 1)
               2)
         width (case variant 0 1280.0 1 1800.0 1480.0)
@@ -29,7 +29,11 @@
       (set! (.app (state/state)) app)
       (demo/draw)
       (render/render)
-      (host/snprintf (index path 0) 128 c"build/layout-gallery/size-%lld-app-%lld.png" variant app)
+      (host/snprintf (index path 0)
+                     128
+                     c"build/layout-gallery/size-%lld-app-%lld.png"
+                     variant
+                     app)
       (assert-eq (render/snapshot (index path 0)) 0))
     (when (= variant 2)
       (set! (.app (state/state)) 0)
@@ -37,7 +41,10 @@
         (set! (.agent-nav (state/state)) nav)
         (demo/draw)
         (render/render)
-        (host/snprintf (index path 0) 128 c"build/layout-gallery/agent-view-%lld.png" nav)
+        (host/snprintf (index path 0)
+                       128
+                       c"build/layout-gallery/agent-view-%lld.png"
+                       nav)
         (assert-eq (render/snapshot (index path 0)) 0))
       (set! (.agent-editor (state/state)) true)
       (set! (.agent-error (state/state)) true)
@@ -64,7 +71,8 @@
       (set! (.focus (host/host)) 0)
       (demo/draw)
       (render/render)
-      (assert-eq (render/snapshot c"build/layout-gallery/agent-directory-clean.png") 0)
+      (assert-eq (render/snapshot c"build/layout-gallery/agent-directory-clean.png")
+                 0)
       (set! (.hover (host/host)) 120)
       (demo/draw)
       (render/render)

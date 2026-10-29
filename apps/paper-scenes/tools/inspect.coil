@@ -8,14 +8,15 @@
 (import "paper.objc" :as o)
 
 (defn main [(argc i32) (argv (ptr (ptr i8)))] (-> i64)
-  (assert (= argc (cast i32 2)))
+  (assert (= argc (: 2 i32)))
   (let [pool (o/new c"NSAutoreleasePool")]
     (scene/init)
     (set! (.headless (host/host)) true)
     (set! (.width (scene/scene)) 2560)
     (set! (.height (scene/scene)) 1680)
     (render/setup)
-    (set! (.reference (masks/visibility)) (= (bench/setting c"PAPER_REFERENCE" 0) 1))
+    (set! (.reference (masks/visibility))
+          (= (bench/setting c"PAPER_REFERENCE" 0) 1))
     (bench/draw-case (bench/setting c"PAPER_BENCH_THEME" 0) 0 0 4)
     (render/render-frame true)
     (let [status (render/snapshot (load (index argv 1)))]

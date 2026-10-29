@@ -1,9 +1,10 @@
 (module papercut.layout-benchmark)
+(import "coil.cc" :as cc)
 (import "layout.core" :use *)
 (import "coil.alloc" :as alloc)
 (import "coil.time" :as time)
 
-(extern printf :cc c [(ptr i8) ...] (-> i32))
+(extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
 
 (defn now [] (-> f64)
   (let [(mut t) (zeroed time/Timespec)]
@@ -17,7 +18,11 @@
     (let [parent (if (= scenario 2) (- i 1) 0)
           width
             (if (or (= scenario 1) (= scenario 3))
-                (bounded (grow (if (= scenario 3) (+ 1.0 (cast f64 (% i 7))) 1.0)) 1.0 (+ 5.0 (cast f64 (% i 17))))
+                (bounded (grow (if (= scenario 3)
+                                   (+ 1.0 (cast f64 (% i 7)))
+                                   1.0))
+                         1.0
+                         (+ 5.0 (cast f64 (% i 17))))
                 (grow 1.0))]
       (add ctx parent (row width (grow 1.0) 1.0))))
   0)
@@ -31,27 +36,45 @@
             memory (alloc/alloc [Node] (alloc/malloc-allocator) count)]
         (match memory
           (Some [storage]
-                (let [(mut ctx) (layout (alloc/alloc-slice-data storage) count)
+                (let [(mut ctx) (layout (data storage) count)
                       (mut checksum) 0.0]
                   (for [sample 0 22]
                     (let [start (now)]
                       (for [i 0 iterations]
                         (build-tree ctx count scenario)
-                        (solve ctx (rect 0.0 0.0 (+ (* (cast f64 count) 8.0) (cast f64 (% i 2))) 800.0))
-                        (let [r (bounds ctx (- count 1))] (set! checksum (+ (load checksum) (.x r)))))
+                        (solve ctx
+                               (rect 0.0
+                                     0.0
+                                     (+ (* (cast f64 count) 8.0)
+                                        (cast f64 (% i 2)))
+                                     800.0))
+                        (let [r (bounds ctx (- count 1))]
+                          (set! checksum (+ (load checksum) (.x r)))))
                       (let [built (now)]
                         (for [i 0 iterations]
-                          (solve ctx (rect 0.0 0.0 (+ (* (cast f64 count) 8.0) (cast f64 (% i 2))) 800.0))
-                          (let [r (bounds ctx (- count 1))] (set! checksum (+ (load checksum) (.w r)))))
+                          (solve ctx
+                                 (rect 0.0
+                                       0.0
+                                       (+ (* (cast f64 count) 8.0)
+                                          (cast f64 (% i 2)))
+                                       800.0))
+                          (let [r (bounds ctx (- count 1))]
+                            (set! checksum (+ (load checksum) (.w r)))))
                         (let [done (now)]
                           (when (>= sample 2)
                             (printf c"%s,%lld,%lld,%lld,%.6f,%.6f,%lld,%.3f\n"
-                                    (case scenario 0 c"wide" 1 c"bounded" 2 c"deep" c"weighted")
+                                    (case scenario
+                                      0 c"wide"
+                                      1 c"bounded"
+                                      2 c"deep"
+                                      c"weighted")
                                     count
                                     (- sample 2)
                                     iterations
-                                    (/ (* 1000000.0 (- built start)) (cast f64 iterations))
-                                    (/ (* 1000000.0 (- done built)) (cast f64 iterations))
+                                    (/ (* 1000000.0 (- built start))
+                                       (cast f64 iterations))
+                                    (/ (* 1000000.0 (- done built))
+                                       (cast f64 iterations))
                                     (* count (sizeof Node))
                                     (load checksum)))))))
                   (alloc/free [Node] (alloc/malloc-allocator) storage)))

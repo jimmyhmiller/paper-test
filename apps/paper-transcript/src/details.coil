@@ -19,7 +19,8 @@
 
 ;;; Section headings contain ASCII capitals. Tracking is explicit in points,
 ;;; rather than depending on a monospace font's advance to suggest spacing.
-(defn tracked [(r Rect) (value (ptr i8)) (size f64) (spacing f64) (color u32)] (-> i64)
+(defn tracked [(r Rect) (value (ptr i8)) (size f64) (spacing f64) (color u32)]
+  (-> i64)
   (let [buffer (primitive/alloc-static (array i8 2))
         (mut i) 0
         (mut x) (.x r)]
@@ -57,82 +58,83 @@
 
 (defn icon [(kind i64) (x f64) (y f64) (z f64) (color u32)] (-> i64)
   (let [stock (smooth color)]
-    (case kind 1
-          (do
-            (stroke (+ x 3.0) (+ y 5.0) (+ x 17.0) (+ y 5.0) 1.5 z stock)
-            (stroke (+ x 7.0) (+ y 2.0) (+ x 13.0) (+ y 2.0) 1.5 z stock)
-            (stroke (+ x 5.0) (+ y 7.0) (+ x 5.0) (+ y 21.0) 1.5 z stock)
-            (stroke (+ x 15.0) (+ y 7.0) (+ x 15.0) (+ y 21.0) 1.5 z stock)
-            (stroke (+ x 5.0) (+ y 21.0) (+ x 15.0) (+ y 21.0) 1.5 z stock)
-            (stroke (+ x 8.5) (+ y 9.0) (+ x 8.5) (+ y 18.0) 1.0 z stock)
-            (stroke (+ x 11.5) (+ y 9.0) (+ x 11.5) (+ y 18.0) 1.0 z stock))
-            2
-          (do
-            (for [i 0 5]
-              (let [h (if (= i 2) 20.0 (if (or (= i 1) (= i 3)) 11.0 5.0))
-                    xx (+ x (+ 2.0 (* (cast f64 i) 4.0)))]
-                (stroke xx
-                        (+ y (- 12.0 (* h 0.5)))
-                        xx
-                        (+ y (+ 12.0 (* h 0.5)))
-                        1.4
-                        z
-                        stock)))
-            0)
-            3
-          (do
-            (stroke (+ x 2.0) (+ y 10.0) (+ x 2.0) (+ y 21.0) 1.4 z stock)
-            (stroke (+ x 2.0) (+ y 21.0) (+ x 18.0) (+ y 21.0) 1.4 z stock)
-            (stroke (+ x 18.0) (+ y 21.0) (+ x 18.0) (+ y 10.0) 1.4 z stock)
-            (stroke (+ x 10.0) (+ y 15.0) (+ x 10.0) (+ y 1.0) 1.4 z stock)
-            (stroke (+ x 5.0) (+ y 6.0) (+ x 10.0) (+ y 1.0) 1.4 z stock)
-            (stroke (+ x 15.0) (+ y 6.0) (+ x 10.0) (+ y 1.0) 1.4 z stock))
-            4
-          (do
-            (begin-sheet)
-            (move-to (+ x 16.0) (+ y 6.0))
-            (curve-to (+ x 3.0)
-                      (- y 2.0)
-                      (- x 4.0)
-                      (+ y 18.0)
-                      (+ x 9.0)
-                      (+ y 21.0))
-            (curve-to (+ x 14.0)
-                      (+ y 22.0)
-                      (+ x 19.0)
-                      (+ y 17.0)
-                      (+ x 18.0)
-                      (+ y 12.0))
-            (line-to (+ x 16.5) (+ y 12.0))
-            (curve-to (+ x 17.0)
-                      (+ y 17.0)
-                      (+ x 13.0)
-                      (+ y 20.0)
-                      (+ x 9.0)
-                      (+ y 19.5))
-            (curve-to (- x 1.0)
-                      (+ y 17.0)
-                      (+ x 4.0)
-                      (+ y 1.0)
-                      (+ x 15.0)
-                      (+ y 7.5))
-            (close-path)
-            (finish-sheet z stock)
-            (stroke (+ x 16.0) (+ y 2.0) (+ x 16.0) (+ y 8.0) 1.5 z stock)
-            (stroke (+ x 10.0) (+ y 8.0) (+ x 16.0) (+ y 8.0) 1.5 z stock))
-            5
-          (do
-            (begin-sheet)
-            (move-to (+ x 2.0) (+ y 1.0))
-            (line-to (+ x 20.0) (+ y 12.0))
-            (line-to (+ x 2.0) (+ y 23.0))
-            (close-path)
-            (finish-sheet (+ z 0.5) (t/paper-stock)))
-            6
-          (do
-            (panel (rect (+ x 3.0) (+ y 3.0) 5.0 18.0) 0.5 z stock)
-            (panel (rect (+ x 12.0) (+ y 3.0) 5.0 18.0) 0.5 z stock))
-            0))
+    (case kind
+      1
+        (do
+          (stroke (+ x 3.0) (+ y 5.0) (+ x 17.0) (+ y 5.0) 1.5 z stock)
+          (stroke (+ x 7.0) (+ y 2.0) (+ x 13.0) (+ y 2.0) 1.5 z stock)
+          (stroke (+ x 5.0) (+ y 7.0) (+ x 5.0) (+ y 21.0) 1.5 z stock)
+          (stroke (+ x 15.0) (+ y 7.0) (+ x 15.0) (+ y 21.0) 1.5 z stock)
+          (stroke (+ x 5.0) (+ y 21.0) (+ x 15.0) (+ y 21.0) 1.5 z stock)
+          (stroke (+ x 8.5) (+ y 9.0) (+ x 8.5) (+ y 18.0) 1.0 z stock)
+          (stroke (+ x 11.5) (+ y 9.0) (+ x 11.5) (+ y 18.0) 1.0 z stock))
+      2
+        (do
+          (for [i 0 5]
+            (let [h (if (= i 2) 20.0 (if (or (= i 1) (= i 3)) 11.0 5.0))
+                  xx (+ x (+ 2.0 (* (cast f64 i) 4.0)))]
+              (stroke xx
+                      (+ y (- 12.0 (* h 0.5)))
+                      xx
+                      (+ y (+ 12.0 (* h 0.5)))
+                      1.4
+                      z
+                      stock)))
+          0)
+      3
+        (do
+          (stroke (+ x 2.0) (+ y 10.0) (+ x 2.0) (+ y 21.0) 1.4 z stock)
+          (stroke (+ x 2.0) (+ y 21.0) (+ x 18.0) (+ y 21.0) 1.4 z stock)
+          (stroke (+ x 18.0) (+ y 21.0) (+ x 18.0) (+ y 10.0) 1.4 z stock)
+          (stroke (+ x 10.0) (+ y 15.0) (+ x 10.0) (+ y 1.0) 1.4 z stock)
+          (stroke (+ x 5.0) (+ y 6.0) (+ x 10.0) (+ y 1.0) 1.4 z stock)
+          (stroke (+ x 15.0) (+ y 6.0) (+ x 10.0) (+ y 1.0) 1.4 z stock))
+      4
+        (do
+          (begin-sheet)
+          (move-to (+ x 16.0) (+ y 6.0))
+          (curve-to (+ x 3.0)
+                    (- y 2.0)
+                    (- x 4.0)
+                    (+ y 18.0)
+                    (+ x 9.0)
+                    (+ y 21.0))
+          (curve-to (+ x 14.0)
+                    (+ y 22.0)
+                    (+ x 19.0)
+                    (+ y 17.0)
+                    (+ x 18.0)
+                    (+ y 12.0))
+          (line-to (+ x 16.5) (+ y 12.0))
+          (curve-to (+ x 17.0)
+                    (+ y 17.0)
+                    (+ x 13.0)
+                    (+ y 20.0)
+                    (+ x 9.0)
+                    (+ y 19.5))
+          (curve-to (- x 1.0)
+                    (+ y 17.0)
+                    (+ x 4.0)
+                    (+ y 1.0)
+                    (+ x 15.0)
+                    (+ y 7.5))
+          (close-path)
+          (finish-sheet z stock)
+          (stroke (+ x 16.0) (+ y 2.0) (+ x 16.0) (+ y 8.0) 1.5 z stock)
+          (stroke (+ x 10.0) (+ y 8.0) (+ x 16.0) (+ y 8.0) 1.5 z stock))
+      5
+        (do
+          (begin-sheet)
+          (move-to (+ x 2.0) (+ y 1.0))
+          (line-to (+ x 20.0) (+ y 12.0))
+          (line-to (+ x 2.0) (+ y 23.0))
+          (close-path)
+          (finish-sheet (+ z 0.5) (t/paper-stock)))
+      6
+        (do
+          (panel (rect (+ x 3.0) (+ y 3.0) 5.0 18.0) 0.5 z stock)
+          (panel (rect (+ x 12.0) (+ y 3.0) 5.0 18.0) 0.5 z stock))
+      0))
   0)
 
 (defn named-button [(id i64)

@@ -13,12 +13,23 @@
     path))
 
 (defn key [(path (ptr i8))] (-> masks/Key)
-  (masks/Key :path path :edges (o/nil) :text (o/nil) :x 0.0 :y 0.0 :width 0.0
-             :height 0.0 :size 0.0 :font 0 :kind 0))
+  (masks/Key
+    :path path
+    :edges (o/nil)
+    :text (o/nil)
+    :x 0.0
+    :y 0.0
+    :width 0.0
+    :height 0.0
+    :size 0.0
+    :font 0
+    :kind 0))
 
 (deftest mask-index-grows-resolves-bucket-collisions-and-resets
-  (let [pool (o/new c"NSAutoreleasePool") count 4097]
-    (scene/init) (masks/reset)
+  (let [pool (o/new c"NSAutoreleasePool")
+        count 4097]
+    (scene/init)
+    (masks/reset)
     ; Reserve keys without rasterization: this test isolates the owning index.
     (set! (.preparing (masks/cache)) true)
     (for [i 0 count]
@@ -46,19 +57,25 @@
     (assert (= (len (.buckets (masks/cache))) 0))
     (masks/lookup (key (triangle 0.125)) 16 16)
     (assert (= (.last-entry (masks/cache)) 0))
-    (masks/reset) (set! (.preparing (masks/cache)) false)
+    (masks/reset)
+    (set! (.preparing (masks/cache)) false)
     (o/release pool)))
 
 (deftest mask-key-hash-preserves-numeric-zero-equivalence
-  (let [positive (triangle 0.0) negative (triangle -0.0)]
+  (let [positive (triangle 0.0)
+        negative (triangle -0.0)]
     (assert (masks/equal (key positive) (key negative)))
     (assert (= (masks/key-hash (key positive) 16 16)
                (masks/key-hash (key negative) 16 16)))
-    (CGPathRelease positive) (CGPathRelease negative)))
+    (CGPathRelease positive)
+    (CGPathRelease negative)))
 
 (defn check-recency [] (-> i64)
-  (let [cache (masks/cache) (mut slot) (.oldest cache) (mut previous) -1
-        (mut visited) 0 (mut used) -1]
+  (let [cache (masks/cache)
+        (mut slot) (.oldest cache)
+        (mut previous) -1
+        (mut visited) 0
+        (mut used) -1]
     (while (>= (load slot) 0)
       (let [entry (get (.entries cache) (load slot))]
         (assert (= (.older entry) (load previous)))
@@ -74,7 +91,8 @@
 
 (deftest mask-lru-remaps-moved-slots-and-preserves-recent-keys
   (let [pool (o/new c"NSAutoreleasePool")]
-    (scene/init) (masks/reset)
+    (scene/init)
+    (masks/reset)
     (set! (.preparing (masks/cache)) true)
     (for [i 0 8] (masks/lookup (key (triangle (cast f64 i))) 16 16))
     (masks/lookup (key (triangle 0.0)) 16 16)
@@ -84,7 +102,8 @@
           expected (triangle 1.0)]
       (assert (CGPathEqualToPath (.path (.key first)) expected))
       (CGPathRelease expected))
-    (masks/evict-oldest) (masks/rebuild-index 32)
+    (masks/evict-oldest)
+    (masks/rebuild-index 32)
     (check-recency)
     (for [i 0 8]
       (when (!= i 1)
@@ -96,7 +115,8 @@
     (masks/lookup (key (triangle 0.0)) 16 16)
     (assert (= (len (.entries (masks/cache))) 1))
     (check-recency)
-    (masks/reset) (set! (.preparing (masks/cache)) false)
+    (masks/reset)
+    (set! (.preparing (masks/cache)) false)
     (o/release pool)))
 
 ;;; Eviction keeps the index exact by itself: no rebuild follows it here. Two
@@ -104,8 +124,10 @@
 ;;; into the gap are exercised at chain heads, in chain interiors, and with the
 ;;; evicted and the moved entry sharing one chain.
 (deftest mask-eviction-keeps-the-index-exact-without-a-rebuild
-  (let [pool (o/new c"NSAutoreleasePool") count 64]
-    (scene/init) (masks/reset)
+  (let [pool (o/new c"NSAutoreleasePool")
+        count 64]
+    (scene/init)
+    (masks/reset)
     (set! (.preparing (masks/cache)) true)
     (for [i 0 count] (masks/lookup (key (triangle (cast f64 i))) 16 16))
     (masks/rebuild-index 2)
@@ -122,5 +144,6 @@
     ; A key that was evicted is really gone: it comes back as a new entry.
     (masks/lookup (key (triangle 0.0)) 16 16)
     (assert (= (len (.entries (masks/cache))) 2))
-    (masks/reset) (set! (.preparing (masks/cache)) false)
+    (masks/reset)
+    (set! (.preparing (masks/cache)) false)
     (o/release pool)))

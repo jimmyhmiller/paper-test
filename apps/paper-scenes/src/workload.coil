@@ -14,8 +14,18 @@
   (let [w (/ (cast f64 (.width (scene/scene))) (.scale (scene/scene)))
         h (/ (cast f64 (.height (scene/scene))) (.scale (scene/scene)))
         phase (* (cast f64 frame) 0.065)]
-    (gallery/compose theme w h density (if (= scenario 2) (* 8.0 (sin phase)) 0.0)
-                     (if (= scenario 1) (% (/ frame 8) 4) 0) (if (= scenario 1) (= (% frame 2) 0) true))
-    (host/paper_light (if (= scenario 0) (+ (* w 0.5) (* w (* 0.5 (sin phase)))) 256.0)
-                      -220.0 700.0 0.45 0.8))
+    (gallery/compose theme
+                     w
+                     h
+                     density
+                     (if (= scenario 2) (* 8.0 (sin phase)) 0.0)
+                     (if (= scenario 1) (% (/ frame 8) 4) 0)
+                     (if (= scenario 1) (= (% frame 2) 0) true))
+    (host/paper_light (if (= scenario 0)
+                          (+ (* w 0.5) (* w (* 0.5 (sin phase))))
+                          256.0)
+                      -220.0
+                      700.0
+                      0.45
+                      0.8))
   0)
