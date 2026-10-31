@@ -19,7 +19,7 @@
   (let [next
           (+ value
              (* (- target value)
-                (- 1.0 (pow 0.001 (/ (clamp seconds 0.0 0.05) 0.18)))))]
+                (- 1.0 (pow 0.001 (/ (clamp seconds 0.0 0.05) 0.12)))))]
     (if (< (fabs (- target next)) 0.001) target next)))
 
 (defn begin [] (-> i64)
@@ -59,7 +59,7 @@
 ;;; Oblique projection of the *lift*, not a change in the bar's data height.
 ;;; The original rectangle remains the stationary quantitative footprint.
 (defn projected-face [(base Rect) (amount f64) (paper-depth f64)] (-> Rect)
-  (let [rise (* 11.0 amount paper-depth)]
+  (let [rise (* 3.0 amount paper-depth)]
     (rect (- (.x base) (* rise 0.35))
           (- (.y base) (* rise 0.8))
           (.w base)

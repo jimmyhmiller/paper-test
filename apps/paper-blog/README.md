@@ -26,7 +26,7 @@ compiler and Apple's command-line tools. No Python process runs inside the app.
   scale. Hover a band or index row to lift that post's sheet and show its full
   title, count, and daily history in the fixed detail area. The same paper color
   identifies the post in the stack, index, and isolated detail shape.
-- Daily and hourly bars visibly lift on hover with animated paper faces and exposed edges, then settle back. Their stationary footprints and hit regions retain the original count scale. Lift follows global paper depth and respects macOS Reduce Motion.
+- Daily and hourly bars visibly lift on hover with a single animated paper face and thin cut edge, then settle back. Their stationary footprints and hit regions retain the original count scale. Lift follows global paper depth and respects macOS Reduce Motion.
 - Hover the charts to inspect the exact local date and count. Inspecting the
   main chart also shows that day's count for the selected post.
 - Hover previews a post. Moving across sidebar gaps, gutters, or the scrollbar preserves the current preview; leaving the sidebar restores the all-post view. Click a post or paper band to pin it while inspecting graphs. A bordered row and “Pinned” status show the lock. Click the same post again to unpin, or click the total, empty space, or Escape to restore all posts. Click another post to switch the pin. Arrow keys move through

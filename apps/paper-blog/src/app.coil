@@ -329,28 +329,6 @@
            c"Daily views"))
   0)
 
-(defn bar-edge-face [(base Rect)
-                     (face Rect)
-                     (a f64)
-                     (b f64)
-                     (z f64)
-                     (stock Material)
-                     (right bool)] (-> i64)
-  (let [dx (- (.x face) (.x base))
-        dy (- (.y face) (.y base))
-        x (+ (.x base) (if right (.w base) 0.0))
-        y (+ (.y base) (if right 0.0 (.h base)))
-        end-x (+ (.x base) (.w base))
-        end-y (+ (.y base) (.h base))]
-    (begin-sheet)
-    (move-to (+ x (* dx a)) (+ y (* dy a)))
-    (line-to (+ x (* dx b)) (+ y (* dy b)))
-    (line-to (+ end-x (* dx b)) (+ end-y (* dy b)))
-    (line-to (+ end-x (* dx a)) (+ end-y (* dy a)))
-    (close-path)
-    (finish-sheet z stock))
-  0)
-
 (defn bar [(r Rect)
            (slot i64)
            (slots i64)
@@ -368,33 +346,12 @@
                 height)]
     (let [lift (motion/amount group slot (and active (> value 0)))]
       (when (> value 0)
-        (let [z (+ 21.0 (* 11.0 lift))
+        (let [z (+ 21.0 (* 3.0 lift))
               face (motion/projected-face bounds lift (.depth (scene/scene)))
-              edge (minimum 0.65 (* 0.2 (minimum (.w bounds) (.h bounds))))
+              edge (minimum 0.35 (* 0.2 (minimum (.w bounds) (.h bounds))))
               stock (t/paper color)]
-          (when (> lift 0.001)
-            ;; A quiet printed footprint retains the exact count and baseline.
-            (frame bounds 0.1 0.45 16.5 (tint stock t/POST 0.75))
-            ;; Connected side faces expose actual paper thickness as the face
-            ;; translates. The stationary footprint keeps hover targets stable.
-            (for [i 0 6]
-              (let [a (/ (cast f64 i) 6.0)
-                    b (/ (cast f64 (+ i 1)) 6.0)
-                    height (+ 20.8 (* 11.0 lift b))]
-                (bar-edge-face bounds
-                               face
-                               a
-                               b
-                               height
-                               (tint stock 0x211526 0.35)
-                               true)
-                (bar-edge-face bounds
-                               face
-                               a
-                               b
-                               height
-                               (tint stock 0xffc18a 0.20)
-                               false))))
+          ;; A single thin cut-paper face lifts clear of the mount. Its rim
+          ;; moves with it; no side-wall stack connects it back to the baseline.
           (panel face 0.2 (- z 0.1) (tint stock 0xffd8b0 0.20))
           (panel (inset face edge)
                  0.1
