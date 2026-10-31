@@ -330,6 +330,11 @@
            c"Daily views"))
   0)
 
+(defn projected-bar-stock [(stock Material) (scale f64)] (-> Material)
+  (let [(mut result) (load stock)]
+    (set! (.size (.pattern result)) (* (.size (.pattern result)) scale))
+    (load result)))
+
 (defn bar [(r Rect)
            (slot i64)
            (slots i64)
@@ -354,8 +359,10 @@
       (when (> value 0)
         (let [z (+ 21.0 (* (.hover-lift (tuning/state)) lift))
               face (motion/projected-face bounds lift (.depth (scene/scene)))
-              edge (minimum 0.35 (* 0.2 (minimum (.w bounds) (.h bounds))))
-              stock (t/paper color)]
+              scale (/ (.w face) (.w bounds))
+              edge
+                (minimum (* 0.35 scale) (* 0.2 (minimum (.w face) (.h face))))
+              stock (projected-bar-stock (t/paper color) scale)]
           ;; A single thin cut-paper face lifts clear of the mount. Its rim
           ;; moves with it; no side-wall stack connects it back to the baseline.
           (panel face 0.2 (- z 0.1) (tint stock 0xffd8b0 0.20))

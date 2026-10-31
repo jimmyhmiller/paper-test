@@ -57,11 +57,14 @@
   (when (active?) (host/paper_tick_interval (/ 1.0 60.0)))
   0)
 
-;;; Oblique projection of the *lift*, not a change in the bar's data height.
-;;; The original rectangle remains the stationary quantitative footprint.
+;;; A shallow approach toward the viewer, centered on the original bar. The
+;;; stationary footprint remains the quantitative rectangle and hover target.
 (defn projected-face [(base Rect) (amount f64) (paper-depth f64)] (-> Rect)
-  (let [rise (* (.hover-lift (tuning/state)) amount paper-depth)]
-    (rect (- (.x base) (* rise 0.35))
-          (- (.y base) (* rise 0.8))
-          (.w base)
-          (.h base))))
+  (let [rise (* (.hover-lift (tuning/state)) amount paper-depth)
+        scale (+ 1.0 (* rise 0.01))
+        width (* (.w base) scale)
+        height (* (.h base) scale)]
+    (rect (- (.x base) (* (- width (.w base)) 0.5))
+          (- (.y base) (* (- height (.h base)) 0.5))
+          width
+          height)))

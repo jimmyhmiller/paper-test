@@ -2,6 +2,7 @@
 (import "blog.bar-motion" :as motion)
 (import "blog.tuning" :as tuning)
 (import "paper.geometry" :use [rect])
+(import "paper.ffi" :use [fabs])
 
 (deftest bar-lift-eases-in-both-directions-and-settles
   (let [(mut value) 0.0]
@@ -18,7 +19,7 @@
         (set! value next)))
     (assert (= (load value) 0.0))))
 
-(deftest projected-paper-face-moves-without-changing-the-data-height
+(deftest projected-paper-face-expands-around-its-center-without-diagonal-drift
   (let [base (rect 100.0 100.0 20.0 80.0)
         resting (motion/projected-face base 0.0 1.0)
         lifted (motion/projected-face base 1.0 1.0)
@@ -31,10 +32,19 @@
     (assert (< (.y deeper) (.y lifted)))
     (assert (= (.x flat) (.x base)))
     (assert (= (.y flat) (.y base)))
-    (assert (= (.w lifted) (.w base)))
-    (assert (= (.h lifted) (.h base)))
-    (assert (= (.w deeper) (.w base)))
-    (assert (= (.h deeper) (.h base)))))
+    (assert (> (.w lifted) (.w base)))
+    (assert (> (.h lifted) (.h base)))
+    (assert (> (.w deeper) (.w lifted)))
+    (assert (> (.h deeper) (.h lifted)))
+    (assert (< (fabs (- (+ (.x lifted) (* (.w lifted) 0.5))
+                        (+ (.x base) (* (.w base) 0.5))))
+               0.000000001))
+    (assert (< (fabs (- (+ (.y lifted) (* (.h lifted) 0.5))
+                        (+ (.y base) (* (.h base) 0.5))))
+               0.000000001))
+    (assert (< (fabs (- (/ (.w lifted) (.w base))
+                        (/ (.h lifted) (.h base))))
+               0.000000001))))
 
 (deftest hover-movement-control-adjusts-and-can-disable-the-actual-projection
   (let [t (tuning/state)
@@ -46,6 +56,6 @@
       (assert (= (.y flat) (.y base))))
     (set! (.hover-lift t) 12.0)
     (let [lifted (motion/projected-face base 1.0 1.0)]
-      (assert (< (.y lifted) 91.0))
-      (assert (= (.h lifted) (.h base))))
+      (assert (< (.y lifted) (.y base)))
+      (assert (> (.h lifted) (.h base))))
     (set! (.hover-lift t) previous)))
