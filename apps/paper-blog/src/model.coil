@@ -25,6 +25,7 @@
    (totals (ptr i64))
    (heat (ptr i64))
    (hour-totals (ptr i64))
+   (observed (ptr i64))
    (hourly bool)
    (hour-peak i64)
    (cell-peak i64)
@@ -44,6 +45,7 @@
     :totals (cast (ptr i64) 0)
     :heat (cast (ptr i64) 0)
     :hour-totals (cast (ptr i64) 0)
+    :observed (cast (ptr i64) 0)
     :hourly false
     :hour-peak 0
     :cell-peak 0
@@ -65,6 +67,7 @@
   (n/free (cast (ptr i8) (.posts d)))
   (n/free (cast (ptr i8) (.totals d)))
   (n/free (cast (ptr i8) (.heat d)))
+  (n/free (cast (ptr i8) (.observed d)))
   (n/free (cast (ptr i8) (.hour-totals d)))
   (n/release (.root d))
   (n/release (.dates d))
@@ -93,7 +96,8 @@
 
 ;;; Parse into a separate dataset. Failure never modifies the currently shown
 ;;; snapshot. Counts and per-day series are reconciled before publication.
-(defn decode [(out (ptr Dataset)) (root (ptr i8)) (catalog (ptr i8))] (-> bool)
+(defn decode-utc [(out (ptr Dataset)) (root (ptr i8)) (catalog (ptr i8))]
+  (-> bool)
   (let [window (n/key root c"window")
         series (n/key root c"series")
         from (n/integer (n/key window c"from"))
@@ -283,11 +287,122 @@
          (< day (.days d))
          (>= hour 0)
          (< hour 24)
-         (>= ts (* (/ (.from d) HOUR) HOUR))
-         (<= ts (* (/ (.to d) HOUR) HOUR)))))
+         (if (!= (.observed d) (cast (ptr i64) 0))
+             (> (load (index (.observed d) (+ (* day 24) hour))) 0)
+             (and (>= ts (* (/ (.from d) HOUR) HOUR))
+                  (<= ts (* (/ (.to d) HOUR) HOUR)))))))
 
 (defn day-index [(d (ptr Dataset)) (timestamp i64)] (-> i64)
   (if (or (< timestamp (.start d))
           (>= timestamp (+ (.start d) (* (.days d) DAY))))
       -1
       (/ (- timestamp (.start d)) DAY)))
+
+;;; Project source UTC buckets onto local civil dates and hours. Repeated fall
+;;; hours sum into one cell; nonexistent spring hours remain unobserved.
+(defn localize [(d (ptr Dataset)) (zone (ptr i8))] (-> bool)
+  (let [start (bucket-start (n/wall-ms (.from d) zone))
+        days (+ 1 (/ (- (bucket-start (n/wall-ms (.to d) zone)) start) DAY))
+        cells (* days 24)
+        totals (cast (ptr i64) (n/calloc (cast u64 days) 8))
+        heat (cast (ptr i64) (n/calloc (cast u64 cells) 8))
+        observed (cast (ptr i64) (n/calloc (cast u64 cells) 8))
+        hours (cast (ptr i64) (n/calloc 24 8))
+        dates (n/new c"NSMutableArray")]
+    (if (or (= totals (cast (ptr i64) 0))
+            (= heat (cast (ptr i64) 0))
+            (= observed (cast (ptr i64) 0))
+            (= hours (cast (ptr i64) 0)))
+        (do
+          (n/free (cast (ptr i8) totals))
+          (n/free (cast (ptr i8) heat))
+          (n/free (cast (ptr i8) observed))
+          (n/free (cast (ptr i8) hours))
+          (n/release dates)
+          false)
+        (do
+          (for [day 0 days]
+            (n/msg i64
+                   dates
+                   (n/sel c"addObject:")
+                   [(ptr i8)]
+                   (n/date-text (+ start (* day DAY)) c"MMM d")))
+          (for [slot 0 (* (.days d) 24)]
+            (let [ts (+ (.start d) (* slot HOUR))
+                  local (n/wall-ms ts zone)
+                  target (/ (- local start) HOUR)]
+              (when (and (>= ts (* (/ (.from d) HOUR) HOUR))
+                         (<= ts (* (/ (.to d) HOUR) HOUR))
+                         (>= target 0)
+                         (< target cells))
+                (set! (index observed target) 1))))
+          (let [(mut ok) true]
+            (for [i 0 (.count d)]
+              (let [post (index (.posts d) i)
+                    values (cast (ptr i64) (n/calloc (cast u64 days) 8))
+                    cells-out (cast (ptr i64) (n/calloc (cast u64 cells) 8))]
+                (if (or (= values (cast (ptr i64) 0))
+                        (= cells-out (cast (ptr i64) 0)))
+                    (do
+                      (set! ok false)
+                      (n/free (cast (ptr i8) values))
+                      (n/free (cast (ptr i8) cells-out)))
+                    (do
+                      (for [slot 0 (* (.days d) 24)]
+                        (let [ts (+ (.start d) (* slot HOUR))
+                              local (n/wall-ms ts zone)
+                              target (/ (- local start) HOUR)
+                              amount (load (index (.hours post) slot))]
+                          (when (and (> amount 0)
+                                     (>= target 0)
+                                     (< target cells))
+                            (set! (index cells-out target)
+                                  (+ (load (index cells-out target)) amount))
+                            (let [day (/ target 24)
+                                  hour (% target 24)]
+                              (set! (index values day)
+                                    (+ (load (index values day)) amount))
+                              (set! (index totals day)
+                                    (+ (load (index totals day)) amount))
+                              (set! (index heat target)
+                                    (+ (load (index heat target)) amount))
+                              (set! (index hours hour)
+                                    (+ (load (index hours hour)) amount))))))
+                      (n/free (cast (ptr i8) (.values post)))
+                      (n/free (cast (ptr i8) (.hours post)))
+                      (set! (.values post) values)
+                      (set! (.hours post) cells-out)
+                      (set! (.peak post) 0)
+                      (for [day 0 days]
+                        (set! (.peak post)
+                              (maximum (.peak post) (load (index values day)))))))))
+            (n/free (cast (ptr i8) (.totals d)))
+            (n/free (cast (ptr i8) (.heat d)))
+            (n/free (cast (ptr i8) (.hour-totals d)))
+            (n/release (.dates d))
+            (set! (.totals d) totals)
+            (set! (.heat d) heat)
+            (set! (.hour-totals d) hours)
+            (set! (.observed d) observed)
+            (set! (.dates d) dates)
+            (set! (.start d) start)
+            (set! (.days d) days)
+            (set! (.peak d) 0)
+            (set! (.hour-peak d) 0)
+            (set! (.cell-peak d) 0)
+            (for [day 0 days]
+              (set! (.peak d) (maximum (.peak d) (load (index totals day)))))
+            (for [h 0 24]
+              (set! (.hour-peak d)
+                    (maximum (.hour-peak d) (load (index hours h)))))
+            (for [cell 0 cells]
+              (set! (.cell-peak d)
+                    (maximum (.cell-peak d) (load (index heat cell)))))
+            (load ok))))))
+
+(defn decode [(out (ptr Dataset)) (root (ptr i8)) (catalog (ptr i8))] (-> bool)
+  (let [(mut next) (empty)]
+    (if (and (decode-utc (mut next) root catalog)
+             (and (.hourly next) (localize (mut next) (n/local-zone))))
+        (do (clear out) (set! out (load next)) true)
+        (do (clear (mut next)) false))))

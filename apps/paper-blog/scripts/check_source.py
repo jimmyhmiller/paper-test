@@ -18,10 +18,10 @@ def run(*args, env=None, success=True):
 
 
 def main():
-    assert '15 views / 2 posts / 4 UTC buckets' in run('--fixture', 'tests/fixtures/sparse.json')
-    assert '0 views / 0 posts / 4 UTC buckets' in run('--fixture', 'tests/fixtures/empty.json')
-    assert '15 views / 2 posts / 4 UTC buckets' in run('--fixture', 'tests/fixtures/hourly.json')
-    assert '0 views / 0 posts / 4 UTC buckets' in run('--fixture', 'tests/fixtures/hourly-empty.json')
+    assert '15 views / 2 posts / 4 date buckets' in run('--fixture', 'tests/fixtures/sparse.json')
+    assert '0 views / 0 posts / 4 date buckets' in run('--fixture', 'tests/fixtures/empty.json')
+    assert '15 views / 2 posts / 4 date buckets' in run('--fixture', 'tests/fixtures/hourly.json')
+    assert '0 views / 0 posts / 4 date buckets' in run('--fixture', 'tests/fixtures/hourly-empty.json')
     assert 'Could not load' in run('--fixture', 'tests/fixtures/does-not-exist.json', success=False)
     with tempfile.TemporaryDirectory(prefix='paper-blog-check-') as temporary:
         cache = Path(temporary) / 'cache'
@@ -29,7 +29,7 @@ def main():
         env = dict(os.environ, PAPER_BLOG_CACHE_DIR=str(cache),
                    PAPER_BLOG_AUTH_CONFIG=str(Path(temporary) / 'missing-credentials'))
         assert 'Credentials missing' in run(env=env, success=False)
-        snapshot = (ROOT / 'tests/fixtures/sparse.json').read_bytes()
+        snapshot = (ROOT / 'tests/fixtures/hourly.json').read_bytes()
         (cache / 'timeline.json').write_bytes(snapshot)
         result = run(env=env, success=False)
         assert '15 views / 2 posts' in result

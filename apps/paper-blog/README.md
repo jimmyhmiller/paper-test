@@ -26,7 +26,7 @@ compiler and Apple's command-line tools. No Python process runs inside the app.
   scale. Hover a band or index row to lift that post's sheet and show its full
   title, count, and daily history in the fixed detail area. The same paper color
   identifies the post in the stack, index, and isolated detail shape.
-- Hover the charts to inspect the exact UTC date and count. Inspecting the
+- Hover the charts to inspect the exact local date and count. Inspecting the
   main chart also shows that day's count for the selected post.
 - Hover previews a post; leaving restores the all-post view. Click a post or paper band to pin it while inspecting graphs. A bordered row and “Pinned” status show the lock. Click the same post again to unpin, or click the total, empty space, or Escape to restore all posts. Click another post to switch the pin. Arrow keys move through
   the index. Tab, Shift-Tab, Space, and Return use the native Paper focus system.
@@ -59,8 +59,7 @@ use another curl configuration file.
 It requests `/analytics/timeline?prefix=/api/&n=all&bucket=hour&from=…&to=…`
 from `https://computer.jimmyhmiller.com`. This is the backend's blog-scoped
 endpoint, not the general multi-project request summaries. Both bounds are
-fixed epoch milliseconds, defining a rolling 30-day window. The first and last
-UTC calendar days can be partial.
+fixed epoch milliseconds, defining a rolling 30-day window. The first and last local calendar days can be partial. Source buckets are validated in UTC, then regrouped into the Mac’s current timezone before any chart is drawn. Daily totals use local midnight; hourly bars and heatmap rows use local hours. At daylight-saving transitions, repeated fall hours are combined and nonexistent spring hours stay unobserved. View counts are conserved. Legacy daily caches are refreshed from the hourly service because UTC daily totals cannot be accurately split into local days.
 
 The complete requested date axis is zero-filled, even if no post has views on
 a day. Each post's daily counts must add up to its reported total. Invalid JSON,

@@ -1,0 +1,37 @@
+{
+  "bucket_ms": 3600000,
+  "prefix": "/api/",
+  "window": {
+    "from": 1772946000000,
+    "to": 1772960400000
+  },
+  "series": [
+    {
+      "path": "/api/time-test",
+      "label": "time-test",
+      "total_views": 15,
+      "points": [
+        {
+          "bucket_start_ms": 1772946000000,
+          "views": 1
+        },
+        {
+          "bucket_start_ms": 1772949600000,
+          "views": 2
+        },
+        {
+          "bucket_start_ms": 1772953200000,
+          "views": 3
+        },
+        {
+          "bucket_start_ms": 1772956800000,
+          "views": 4
+        },
+        {
+          "bucket_start_ms": 1772960400000,
+          "views": 5
+        }
+      ]
+    }
+  ]
+}

@@ -13,7 +13,7 @@
 (deftest sparse-counts-align-to-full-utc-window-and-rank-correctly
   (let [pool (n/new c"NSAutoreleasePool")
         (mut d) (m/empty)]
-    (assert (m/decode (mut d) (sparse) (n/nil)))
+    (assert (m/decode-utc (mut d) (sparse) (n/nil)))
     (assert (= (.days d) 4))
     (assert (= (.count d) 2))
     (assert (= (.views d) 15))
@@ -31,9 +31,9 @@
 (deftest empty-period-is-valid-and-retains-zero-days
   (let [pool (n/new c"NSAutoreleasePool")
         (mut d) (m/empty)]
-    (assert (m/decode (mut d)
-                      (n/read-json c"tests/fixtures/empty.json")
-                      (n/nil)))
+    (assert (m/decode-utc (mut d)
+                          (n/read-json c"tests/fixtures/empty.json")
+                          (n/nil)))
     (assert (= (.count d) 0))
     (assert (= (.days d) 4))
     (assert (= (.views d) 0))
@@ -44,14 +44,14 @@
 (deftest malformed-refresh-preserves-the-entire-previous-snapshot
   (let [pool (n/new c"NSAutoreleasePool")
         (mut d) (m/empty)]
-    (assert (m/decode (mut d) (sparse) (n/nil)))
+    (assert (m/decode-utc (mut d) (sparse) (n/nil)))
     (let [posts (.posts d)
           root (.root d)]
-      (assert (not (m/decode (mut d) (n/parse-text c"{broken") (n/nil))))
-      (assert (not (m/decode (mut d) (n/parse-text c"[]") (n/nil))))
-      (assert (not (m/decode (mut d)
-                             (n/parse-text c"{\"error\":\"upstream failed\"}")
-                             (n/nil))))
+      (assert (not (m/decode-utc (mut d) (n/parse-text c"{broken") (n/nil))))
+      (assert (not (m/decode-utc (mut d) (n/parse-text c"[]") (n/nil))))
+      (assert (not (m/decode-utc (mut d)
+                                 (n/parse-text c"{\"error\":\"upstream failed\"}")
+                                 (n/nil))))
       (assert (= (.posts d) posts))
       (assert (= (.root d) root))
       (assert (= (.views d) 15)))
@@ -67,7 +67,7 @@
            c"{\"bucket_ms\":86400000,\"prefix\":\"/api/\",\"window\":{\"from\":0,\"to\":86400000},\"series\":[{\"path\":\"/api/a\",\"label\":\"a\",\"total_views\":1,\"points\":[{\"bucket_start_ms\":0,\"views\":1.5}]}]}"
            c"{\"bucket_ms\":86400000,\"prefix\":\"/api/\",\"window\":{\"from\":0,\"to\":86400000},\"series\":[{\"path\":\"/api/a\",\"label\":\"a\",\"total_views\":1,\"points\":[{\"bucket_start_ms\":172800000,\"views\":1}]}]}"]]
     (for [i 0 4]
-      (assert (not (m/decode (mut d) (n/parse-text (get values i)) (n/nil)))))
+      (assert (not (m/decode-utc (mut d) (n/parse-text (get values i)) (n/nil)))))
     (assert (= (.root d) (n/nil)))
     (m/clear (mut d))
     (n/release pool)))
@@ -81,7 +81,7 @@
            c"{\"bucket_ms\":86400000,\"prefix\":\"/api/\",\"window\":{\"from\":0,\"to\":null},\"series\":[]}"
            c"{\"bucket_ms\":86400000,\"prefix\":\"/api/\",\"window\":{\"from\":86400000,\"to\":0},\"series\":[]}"]]
     (for [i 0 4]
-      (assert (not (m/decode (mut d) (n/parse-text (get values i)) (n/nil)))))
+      (assert (not (m/decode-utc (mut d) (n/parse-text (get values i)) (n/nil)))))
     (m/clear (mut d))
     (n/release pool)))
 
@@ -90,7 +90,7 @@
         (mut d) (m/empty)
         root
           (n/parse-text c"{\"bucket_ms\":86400000,\"prefix\":\"/api/\",\"window\":{\"from\":0,\"to\":86400000},\"series\":[{\"path\":\"/api/a\",\"label\":\"a\",\"total_views\":0,\"points\":[]},{\"path\":\"/api/a\",\"label\":\"a\",\"total_views\":0,\"points\":[]}]}")]
-    (assert (not (m/decode (mut d) root (n/nil))))
+    (assert (not (m/decode-utc (mut d) root (n/nil))))
     (m/clear (mut d))
     (n/release pool)))
 
@@ -99,7 +99,7 @@
         (mut d) (m/empty)
         catalog
           (n/parse-text c"{\"/api/first\":\"The first essay\",\"@short:/api/first\":\"First essay\"}")]
-    (assert (m/decode (mut d) (sparse) catalog))
+    (assert (m/decode-utc (mut d) (sparse) catalog))
     (assert (= (strcmp (n/utf8 (.title (index (.posts d) 0)))
                        c"The first essay")
                0))
@@ -149,7 +149,7 @@
         d (field (source/state) data)
         ui (app/interaction)]
     (set! d (m/empty))
-    (assert (m/decode d (sparse) (n/nil)))
+    (assert (m/decode-utc d (sparse) (n/nil)))
     (app/select 1)
     (assert (= (.selected ui) 1))
     (app/select 10000)
@@ -168,9 +168,9 @@
 (deftest hourly-response-reconciles-every-chart-to-the-same-view-counts
   (let [pool (n/new c"NSAutoreleasePool")
         (mut d) (m/empty)]
-    (assert (m/decode (mut d)
-                      (n/read-json c"tests/fixtures/hourly.json")
-                      (n/nil)))
+    (assert (m/decode-utc (mut d)
+                          (n/read-json c"tests/fixtures/hourly.json")
+                          (n/nil)))
     (assert (.hourly d))
     (assert (= (.views d) 15))
     (assert (= (.days d) 4))
@@ -201,7 +201,7 @@
 (deftest daily-cache-is-explicitly-not-hourly-data
   (let [pool (n/new c"NSAutoreleasePool")
         (mut d) (m/empty)]
-    (assert (m/decode (mut d) (sparse) (n/nil)))
+    (assert (m/decode-utc (mut d) (sparse) (n/nil)))
     (assert (not (.hourly d)))
     (assert (= (.hour-peak d) 0))
     (m/clear (mut d))
@@ -210,12 +210,70 @@
 (deftest partial-window-hours-are-not-reported-as-observed-zero-counts
   (let [pool (n/new c"NSAutoreleasePool")
         (mut d) (m/empty)]
-    (assert (m/decode (mut d)
-                      (n/read-json c"tests/fixtures/hourly.json")
-                      (n/nil)))
+    (assert (m/decode-utc (mut d)
+                          (n/read-json c"tests/fixtures/hourly.json")
+                          (n/nil)))
     (assert (m/hour-in-window? (mut d) 0 0))
     (assert (m/hour-in-window? (mut d) 3 0))
     (assert (not (m/hour-in-window? (mut d) 3 1)))
     (assert (not (m/hour-in-window? (mut d) 4 0)))
+    (m/clear (mut d))
+    (n/release pool)))
+
+(defn eastern-zone [] (-> (ptr i8))
+  (n/msg (ptr i8)
+         (n/class c"NSTimeZone")
+         (n/sel c"timeZoneWithName:")
+         [(ptr i8)]
+         (n/ns c"America/Indiana/Indianapolis")))
+
+(deftest local-calendar-days-split-at-local-midnight-not-utc
+  (let [pool (n/new c"NSAutoreleasePool")
+        (mut d) (m/empty)]
+    (assert (m/decode-utc (mut d)
+                          (n/read-json c"tests/fixtures/local-midnight.json")
+                          (n/nil)))
+    (assert (m/localize (mut d) (eastern-zone)))
+    (assert (= (.days d) 2))
+    (assert (= (strcmp (m/date-label (mut d) 0) c"Oct 30") 0))
+    (assert (= (strcmp (m/date-label (mut d) 1) c"Oct 31") 0))
+    (assert (= (load (index (.totals d) 0)) 3))
+    (assert (= (load (index (.totals d) 1)) 12))
+    (assert (= (load (index (.heat d) 22)) 1))
+    (assert (= (load (index (.heat d) 24)) 3))
+    (assert (not (m/hour-in-window? (mut d) 0 21)))
+    (assert (m/hour-in-window? (mut d) 0 22))
+    (m/clear (mut d))
+    (n/release pool)))
+
+(deftest fall-back-combines-both-local-one-am-hours-without-losing-views
+  (let [pool (n/new c"NSAutoreleasePool")
+        (mut d) (m/empty)]
+    (assert (m/decode-utc (mut d)
+                          (n/read-json c"tests/fixtures/local-fall.json")
+                          (n/nil)))
+    (assert (m/localize (mut d) (eastern-zone)))
+    (assert (= (.days d) 1))
+    (assert (= (load (index (.heat d) 1)) 5))
+    (assert (= (load (index (.hour-totals d) 1)) 5))
+    (assert (= (load (index (.totals d) 0)) 15))
+    (assert (= (load (index (.values (index (.posts d) 0)) 0)) 15))
+    (assert (m/hour-in-window? (mut d) 0 1))
+    (m/clear (mut d))
+    (n/release pool)))
+
+(deftest spring-forward-skipped-local-hour-is-unobserved-not-a-false-zero
+  (let [pool (n/new c"NSAutoreleasePool")
+        (mut d) (m/empty)]
+    (assert (m/decode-utc (mut d)
+                          (n/read-json c"tests/fixtures/local-spring.json")
+                          (n/nil)))
+    (assert (m/localize (mut d) (eastern-zone)))
+    (assert (= (.days d) 1))
+    (assert (m/hour-in-window? (mut d) 0 1))
+    (assert (not (m/hour-in-window? (mut d) 0 2)))
+    (assert (m/hour-in-window? (mut d) 0 3))
+    (assert (= (load (index (.heat d) 3)) 3))
+    (assert (= (load (index (.totals d) 0)) 15))
     (m/clear (mut d))
     (n/release pool)))

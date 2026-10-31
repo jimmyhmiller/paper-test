@@ -145,3 +145,16 @@
             (msg (ptr i8) formatter (sel c"stringFromDate:") [(ptr i8)] date)]
       (release formatter)
       result)))
+
+(defn local-zone [] (-> (ptr i8))
+  (msg (ptr i8) (class c"NSTimeZone") (sel c"localTimeZone") []))
+
+(defn wall-ms [(ms i64) (zone (ptr i8))] (-> i64)
+  (let [date
+          (msg (ptr i8)
+               (class c"NSDate")
+               (sel c"dateWithTimeIntervalSince1970:")
+               [f64]
+               (/ (cast f64 ms) 1000.0))
+        offset (msg i64 zone (sel c"secondsFromGMTForDate:") [(ptr i8)] date)]
+    (+ ms (* offset 1000))))

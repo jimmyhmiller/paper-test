@@ -295,7 +295,10 @@
       (if (!= fixture (n/nil))
           (do
             (set! (.fixture s) true)
-            (if (m/decode (field s data) (n/read-json fixture) (.catalog s))
+            (if (let [root (n/read-json fixture)]
+                  (if (= (n/integer (n/key root c"bucket_ms")) m/HOUR)
+                      (m/decode (field s data) root (.catalog s))
+                      (m/decode-utc (field s data) root (.catalog s))))
                 (set! (.message s) c"Fixture preview · recorded page views")
                 (fail c"Could not load the requested fixture")))
           (do

@@ -14,9 +14,9 @@
   (let [s (source/state)
         ui (app/interaction)]
     (set! (.data s) (m/empty))
-    (assert (m/decode (field s data)
-                      (n/read-json c"tests/fixtures/sparse.json")
-                      (n/nil)))
+    (assert (m/decode-utc (field s data)
+                          (n/read-json c"tests/fixtures/sparse.json")
+                          (n/nil)))
     (set! (.message s) c"Test data")
     (set! (.selected ui) 0)
     (set! (.selection-locked ui) false)
@@ -117,7 +117,7 @@
     (setup)
     (let [d (field (source/state) data)
           ui (app/interaction)]
-      (assert (m/decode d (n/read-json c"tests/fixtures/many.json") (n/nil)))
+      (assert (m/decode-utc d (n/read-json c"tests/fixtures/many.json") (n/nil)))
       (set! (.scroll ui) 0.0)
       (let [l (v/layout 1560.0 1000.0 (.count d))]
         (app/event 7 60 0.0 -7.5)
@@ -145,7 +145,9 @@
     (setup)
     (let [d (field (source/state) data)
           ui (app/interaction)]
-      (assert (m/decode d (n/read-json c"tests/fixtures/hourly.json") (n/nil)))
+      (assert (m/decode-utc d
+                            (n/read-json c"tests/fixtures/hourly.json")
+                            (n/nil)))
       (let [l (v/layout 1560.0 1000.0 (.count d))
             r (.heat-plot l)
             x (+ (.x r) (* (.w r) (/ 2.5 4.0)))
@@ -172,7 +174,9 @@
   (let [pool (n/new c"NSAutoreleasePool")]
     (setup)
     (let [d (field (source/state) data)]
-      (assert (m/decode d (n/read-json c"tests/fixtures/hourly.json") (n/nil)))
+      (assert (m/decode-utc d
+                            (n/read-json c"tests/fixtures/hourly.json")
+                            (n/nil)))
       (app/select 0)
       (assert (= (app/selected-hour d 0) 9))
       (assert (= (app/selected-hour d 1) 3))
@@ -204,7 +208,7 @@
   (let [pool (n/new c"NSAutoreleasePool")]
     (setup)
     (let [d (field (source/state) data)]
-      (assert (m/decode d (n/read-json c"tests/fixtures/many.json") (n/nil)))
+      (assert (m/decode-utc d (n/read-json c"tests/fixtures/many.json") (n/nil)))
       (app/select 0)
       (assert (= (.hour-peak d) 100))
       (assert (= (app/selected-hour-peak d) 1))
@@ -260,7 +264,9 @@
     (setup)
     (let [d (field (source/state) data)
           ui (app/interaction)]
-      (assert (m/decode d (n/read-json c"tests/fixtures/hourly.json") (n/nil)))
+      (assert (m/decode-utc d
+                            (n/read-json c"tests/fixtures/hourly.json")
+                            (n/nil)))
       (for [post 0 (.count d)]
         (set! (.selected ui) post)
         (let [(mut sum) 0]
@@ -288,7 +294,9 @@
     (setup)
     (let [d (field (source/state) data)
           ui (app/interaction)]
-      (assert (m/decode d (n/read-json c"tests/fixtures/hourly.json") (n/nil)))
+      (assert (m/decode-utc d
+                            (n/read-json c"tests/fixtures/hourly.json")
+                            (n/nil)))
       (app/event 3 101 35.0 240.0)
       (assert (.selection-locked ui))
       (app/event 3 101 35.0 240.0)

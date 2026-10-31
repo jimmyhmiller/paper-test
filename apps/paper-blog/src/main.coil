@@ -15,7 +15,7 @@
         (while (.loading (source/state)) (source/poll) (n/usleep (: 20000 u32)))
         (let [s (source/state)
               failed (.failed s)]
-          (printf c"%lld views / %lld posts / %lld UTC buckets\n%s\n"
+          (printf c"%lld views / %lld posts / %lld date buckets\n%s\n"
                   (.views (.data s))
                   (.count (.data s))
                   (.days (.data s))
