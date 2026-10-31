@@ -518,7 +518,7 @@
            23.0
            t/INK
            1
-           c"By hour · local time")
+           c"By hour")
     (when (> (.count d) 0)
       (caption (rect (+ (.x mount) 24.0)
                      (+ (.y mount) 54.0)
@@ -538,7 +538,7 @@
               (cast i64
                     (snprintf text
                               2048
-                              c"%02lld:00 local time: %lld views · %s"
+                              c"%02lld:00: %lld views · %s"
                               hour
                               amount
                               (n/utf8 (.short-title (displayed-post d)))))
@@ -615,7 +615,7 @@
            23.0
            t/INK
            1
-           c"Views by day & hour · local time")
+           c"Views by day & hour")
     (when (> (.count d) 0)
       (caption (rect (+ (.x mount) 22.0)
                      (+ (.y mount) 47.0)
@@ -669,7 +669,7 @@
                   (cast i64
                         (snprintf text
                                   2048
-                                  c"%s · %02lld:00 local time · %lld views · %s"
+                                  c"%s · %02lld:00 · %lld views · %s"
                                   (m/date-label d (.day s))
                                   (.hour s)
                                   post-value
@@ -677,7 +677,7 @@
                   (cast i64
                         (snprintf text
                                   2048
-                                  c"%s · %02lld:00 local time · outside recorded window"
+                                  c"%s · %02lld:00 · outside recorded window"
                                   (m/date-label d (.day s))
                                   (.hour s))))
               (right-label (- (+ (.x mount) (.w mount)) 22.0)
