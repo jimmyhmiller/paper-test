@@ -1,0 +1,55 @@
+(module blog.main)
+(import "paper.platform" :as host)
+(import "paper.geometry" :use [clamp])
+(import "coil.cc" :as cc)
+(import "blog.app" :as app)
+(import "blog.native" :as n)
+(import "blog.source" :as source)
+
+(extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
+
+(defn run [] (-> i64)
+  (if (n/has-arg? c"--fetch-once")
+      (let [pool (n/new c"NSAutoreleasePool")]
+        (source/initialize)
+        (while (.loading (source/state)) (source/poll) (n/usleep (: 20000 u32)))
+        (let [s (source/state)
+              failed (.failed s)]
+          (printf c"%lld views / %lld posts / %lld UTC buckets\n%s\n"
+                  (.views (.data s))
+                  (.count (.data s))
+                  (.days (.data s))
+                  (.message s))
+          (source/shutdown)
+          (n/release pool)
+          (if failed 1 0)))
+      (let [width (n/arg c"--width")
+            height (n/arg c"--height")]
+        (host/paper_configure c"Paper Blog"
+                              (if (= width (n/nil))
+                                  1560.0
+                                  (clamp (n/msg f64
+                                                (n/ns width)
+                                                (n/sel c"doubleValue")
+                                                [])
+                                         1280.0
+                                         3840.0))
+                              (if (= height (n/nil))
+                                  1000.0
+                                  (clamp (n/msg f64
+                                                (n/ns height)
+                                                (n/sel c"doubleValue")
+                                                [])
+                                         900.0
+                                         2160.0)))
+        (host/paper_responsive 1280.0 900.0)
+        (host/paper_unified_window true)
+        (let [result (host/paper_run (fnptr-of app/draw) (fnptr-of app/event))]
+          (source/shutdown)
+          result))))
+
+(defn main [] (-> i64)
+  (let [pool (n/new c"NSAutoreleasePool")
+        result (run)]
+    (n/release pool)
+    result))

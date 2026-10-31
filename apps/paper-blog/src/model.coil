@@ -1,0 +1,293 @@
+(module blog.model)
+(import "paper.ffi" :use [floor strcmp])
+(import "blog.native" :as n)
+
+(const DAY 86400000)
+
+(const HOUR 3600000)
+
+(defn maximum [(a i64) (b i64)] (-> i64)
+  (if (> a b) a b))
+
+(defstruct Post
+  [(path (ptr i8))
+   (title (ptr i8))
+   (short-title (ptr i8))
+   (views i64)
+   (peak i64)
+   (values (ptr i64))
+   (hours (ptr i64))])
+
+(defstruct Dataset
+  [(root (ptr i8))
+   (dates (ptr i8))
+   (posts (ptr Post))
+   (totals (ptr i64))
+   (heat (ptr i64))
+   (hour-totals (ptr i64))
+   (hourly bool)
+   (hour-peak i64)
+   (cell-peak i64)
+   (count i64)
+   (days i64)
+   (start i64)
+   (from i64)
+   (to i64)
+   (views i64)
+   (peak i64)])
+
+(defn empty [] (-> Dataset)
+  (Dataset
+    :root (n/nil)
+    :dates (n/nil)
+    :posts (cast (ptr Post) 0)
+    :totals (cast (ptr i64) 0)
+    :heat (cast (ptr i64) 0)
+    :hour-totals (cast (ptr i64) 0)
+    :hourly false
+    :hour-peak 0
+    :cell-peak 0
+    :count 0
+    :days 0
+    :start 0
+    :from 0
+    :to 0
+    :views 0
+    :peak 0))
+
+(defn clear [(d (ptr Dataset))] (-> i64)
+  (for [i 0 (.count d)]
+    (let [post (index (.posts d) i)]
+      (n/release (.title post))
+      (n/release (.short-title post))
+      (n/free (cast (ptr i8) (.values post)))
+      (n/free (cast (ptr i8) (.hours post)))))
+  (n/free (cast (ptr i8) (.posts d)))
+  (n/free (cast (ptr i8) (.totals d)))
+  (n/free (cast (ptr i8) (.heat d)))
+  (n/free (cast (ptr i8) (.hour-totals d)))
+  (n/release (.root d))
+  (n/release (.dates d))
+  (set! d (empty))
+  0)
+
+;;; Zero-fill the ENTIRE requested UTC axis, including dates where no post has
+;;; any views. A missing bucket is zero, not a line connecting across the gap.
+(defn bucket-start [(ms i64)] (-> i64)
+  (* (cast i64 (floor (/ (cast f64 ms) (cast f64 DAY)))) DAY))
+
+(defn title-for [(catalog (ptr i8)) (path (ptr i8)) (label (ptr i8))]
+  (-> (ptr i8))
+  (let [known (n/key catalog (n/utf8 path))]
+    (if (n/string? known)
+        known
+        (n/msg (ptr i8)
+               (n/msg (ptr i8)
+                      label
+                      (n/sel c"stringByReplacingOccurrencesOfString:withString:")
+                      [(ptr i8) (ptr i8)]
+                      (n/ns c"-")
+                      (n/ns c" "))
+               (n/sel c"capitalizedString")
+               []))))
+
+;;; Parse into a separate dataset. Failure never modifies the currently shown
+;;; snapshot. Counts and per-day series are reconciled before publication.
+(defn decode [(out (ptr Dataset)) (root (ptr i8)) (catalog (ptr i8))] (-> bool)
+  (let [window (n/key root c"window")
+        series (n/key root c"series")
+        from (n/integer (n/key window c"from"))
+        to (n/integer (n/key window c"to"))
+        bucket (n/integer (n/key root c"bucket_ms"))
+        days (+ 1 (/ (- (bucket-start to) (bucket-start from)) DAY))]
+    (if (or (not (n/dict? root))
+            (not (n/array? series))
+            (not (n/number? (n/key window c"from")))
+            (not (n/number? (n/key window c"to")))
+            (< from 0)
+            (< to from)
+            (< days 1)
+            (> days 367)
+            (and (!= bucket DAY) (!= bucket HOUR))
+            (not (n/string? (n/key root c"prefix")))
+            (!= (strcmp (n/utf8 (n/key root c"prefix")) c"/api/") 0)
+            (> (n/count series) 100000))
+        false
+        (let [(mut next) (empty)
+              (mut ok) true
+              seen (n/new c"NSMutableSet")]
+          (set! (.root next) (n/retain root))
+          (set! (.count next) (n/count series))
+          (set! (.days next) days)
+          (set! (.from next) from)
+          (set! (.to next) to)
+          (set! (.start next) (bucket-start from))
+          (set! (.hourly next) (= bucket HOUR))
+          (set! (.dates next) (n/new c"NSMutableArray"))
+          (for [day 0 days]
+            (n/msg i64
+                   (.dates next)
+                   (n/sel c"addObject:")
+                   [(ptr i8)]
+                   (n/date-text (+ (.start next) (* day DAY)) c"MMM d")))
+          (set! (.posts next)
+                (cast (ptr Post)
+                      (n/calloc (cast u64 (maximum 1 (.count next)))
+                                (cast u64 (sizeof Post)))))
+          (set! (.totals next) (cast (ptr i64) (n/calloc (cast u64 days) 8)))
+          (set! (.heat next)
+                (cast (ptr i64) (n/calloc (cast u64 (* days 24)) 8)))
+          (set! (.hour-totals next) (cast (ptr i64) (n/calloc 24 8)))
+          (when (or (= (.posts next) (cast (ptr Post) 0))
+                    (= (.totals next) (cast (ptr i64) 0))
+                    (= (.heat next) (cast (ptr i64) 0))
+                    (= (.hour-totals next) (cast (ptr i64) 0)))
+            (set! ok false)
+            (set! (.count next) 0))
+          (for [i 0 (.count next)]
+            (let [entry (n/at series i)
+                  path (n/key entry c"path")
+                  label (n/key entry c"label")
+                  points (n/key entry c"points")
+                  post (index (.posts next) i)]
+              (set! (.values post)
+                    (cast (ptr i64) (n/calloc (cast u64 days) 8)))
+              (set! (.hours post)
+                    (cast (ptr i64) (n/calloc (cast u64 (* days 24)) 8)))
+              (if (or (not (n/string? path))
+                      (not (n/string? label))
+                      (not (n/array? points))
+                      (not (n/nonnegative-integer? (n/key entry c"total_views")))
+                      (= (.values post) (cast (ptr i64) 0))
+                      (= (.hours post) (cast (ptr i64) 0)))
+                  (set! ok false)
+                  (do
+                    (when (or (not (n/msg bool
+                                          path
+                                          (n/sel c"hasPrefix:")
+                                          [(ptr i8)]
+                                          (n/ns c"/api/")))
+                              (n/msg bool
+                                     seen
+                                     (n/sel c"containsObject:")
+                                     [(ptr i8)]
+                                     path))
+                      (set! ok false))
+                    (n/msg i64 seen (n/sel c"addObject:") [(ptr i8)] path)
+                    (set! (.path post) path)
+                    (set! (.title post)
+                          (n/retain (title-for catalog path label)))
+                    (let [short-key
+                            (n/msg (ptr i8)
+                                   (n/ns c"@short:")
+                                   (n/sel c"stringByAppendingString:")
+                                   [(ptr i8)]
+                                   path)
+                          short-title (n/key catalog (n/utf8 short-key))]
+                      (set! (.short-title post)
+                            (n/retain (if (n/string? short-title)
+                                          short-title
+                                          (.title post)))))
+                    (set! (.views post)
+                          (n/integer (n/key entry c"total_views")))
+                    (let [(mut sum) 0]
+                      (for [j 0 (n/count points)]
+                        (let [point (n/at points j)
+                              ts (n/integer (n/key point c"bucket_start_ms"))
+                              value (n/integer (n/key point c"views"))
+                              day (/ (- ts (.start next)) DAY)]
+                          (if (or (not (n/nonnegative-integer? (n/key point
+                                                                      c"views")))
+                                  (not (n/number? (n/key point
+                                                         c"bucket_start_ms")))
+                                  (!= (% ts bucket) 0)
+                                  (< ts (.start next))
+                                  (< ts (* (/ from bucket) bucket))
+                                  (> ts (* (/ to bucket) bucket))
+                                  (< day 0)
+                                  (>= day days))
+                              (set! ok false)
+                              (do
+                                (set! (index (.values post) day)
+                                      (+ (load (index (.values post) day))
+                                         value))
+                                (when (= bucket HOUR)
+                                  (let [slot (/ (- ts (.start next)) HOUR)
+                                        hour (% slot 24)]
+                                    (set! (index (.hours post) slot)
+                                          (+ (load (index (.hours post) slot))
+                                             value))
+                                    (set! (index (.heat next) slot)
+                                          (+ (load (index (.heat next) slot))
+                                             value))
+                                    (set! (index (.hour-totals next) hour)
+                                          (+ (load (index (.hour-totals next)
+                                                          hour))
+                                             value))))
+                                (set! sum (+ (load sum) value))))))
+                      (when (!= (load sum) (.views post)) (set! ok false)))
+                    (for [j 0 days]
+                      (let [value (load (index (.values post) j))]
+                        (set! (.peak post) (maximum (.peak post) value))
+                        (set! (index (.totals next) j)
+                              (+ (load (index (.totals next) j)) value))))
+                    (set! (.views next) (+ (.views next) (.views post)))))))
+          ;; Stable descending rank, using the path to break ties. Do not trust
+          ;; server iteration order to be a frontend sorting guarantee.
+          (when (load ok)
+            (for [i 1 (.count next)]
+              (let [(mut j) i]
+                (while (and (> (load j) 0)
+                            (let [a (index (.posts next) (- (load j) 1))
+                                  b (index (.posts next) (load j))]
+                              (or (< (.views a) (.views b))
+                                  (and (= (.views a) (.views b))
+                                       (> (strcmp (n/utf8 (.path a))
+                                                  (n/utf8 (.path b)))
+                                          0)))))
+                  (let [a (index (.posts next) (- (load j) 1))
+                        b (index (.posts next) (load j))
+                        swap (load a)]
+                    (set! a (load b))
+                    (set! b swap))
+                  (set! j (- (load j) 1)))))
+            (for [j 0 days]
+              (set! (.peak next)
+                    (maximum (.peak next) (load (index (.totals next) j)))))
+            (for [hour 0 24]
+              (set! (.hour-peak next)
+                    (maximum (.hour-peak next)
+                             (load (index (.hour-totals next) hour)))))
+            (for [slot 0 (* days 24)]
+              (set! (.cell-peak next)
+                    (maximum (.cell-peak next) (load (index (.heat next) slot))))))
+          (n/release seen)
+          (if (load ok)
+              (do (clear out) (set! out (load next)) true)
+              (do (clear (mut next)) false))))))
+
+(defn find-post [(d (ptr Dataset)) (path (ptr i8))] (-> i64)
+  (let [(mut found) -1]
+    (when (!= path (n/nil))
+      (for [i 0 (.count d)]
+        (when (= (strcmp (n/utf8 (.path (index (.posts d) i))) path) 0)
+          (set! found i))))
+    (load found)))
+
+(defn date-label [(d (ptr Dataset)) (day i64)] (-> (ptr i8))
+  (n/utf8 (n/at (.dates d) day)))
+
+(defn hour-in-window? [(d (ptr Dataset)) (day i64) (hour i64)] (-> bool)
+  (let [ts (+ (.start d) (* day DAY) (* hour HOUR))]
+    (and (>= day 0)
+         (< day (.days d))
+         (>= hour 0)
+         (< hour 24)
+         (>= ts (* (/ (.from d) HOUR) HOUR))
+         (<= ts (* (/ (.to d) HOUR) HOUR)))))
+
+(defn day-index [(d (ptr Dataset)) (timestamp i64)] (-> i64)
+  (if (or (< timestamp (.start d))
+          (>= timestamp (+ (.start d) (* (.days d) DAY))))
+      -1
+      (/ (- timestamp (.start d)) DAY)))

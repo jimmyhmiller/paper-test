@@ -1,0 +1,55 @@
+(module blog.theme)
+(import "paper.material"
+        :use
+        [Material stock tint pressed-paper texture-scale texture-seed])
+
+;;; Editable dyed-stock palette. Paper, ink and data have separate roles.
+(const BACK 0x211526)
+
+(const INDEX 0x542938)
+
+(const DAILY 0x25434f)
+
+(const POST 0x60334d)
+
+(const HOUR 0x194e50)
+
+(const HEAT 0x303953)
+
+(const INK 0xffc4ae)
+
+(const MUTED 0xd7a7aa)
+
+(const GOLD 0xf5af28)
+
+(const JADE 0x43bda6)
+
+(defn layer-color [(index i64)] (-> u32)
+  (cast u32
+        (case index
+          0 0xe76746
+          1 0x54bf9c
+          2 GOLD
+          3 0x329cbb
+          4 0xaa6fa8
+          5 0xd45d80
+          6 0x4c9483
+          0x668ac5)))
+
+;;; Fixed absolute-count thresholds keep heatmap colors comparable as the
+;;; rolling window refreshes, and expose ordinary traffic alongside spikes.
+(defn heat-level [(views i64)] (-> f64)
+  (cond (= views 0) 0.0
+        (< views 5) 0.25
+        (< views 15) 0.50
+        (< views 50) 0.75
+        :else 1.0))
+
+(defn paper [(pigment u32)] (-> Material)
+  (texture-seed (texture-scale (pressed-paper pigment) 1.6) 0.39))
+
+(defn heat-paper [(fraction f64)] (-> Material)
+  (cond (< fraction 0.25) (tint (paper 0x192e60) 0x17878e (* fraction 4.0))
+        (< fraction 0.55)
+          (tint (paper 0x17878e) 0x64cba2 (/ (- fraction 0.25) 0.30))
+        :else (tint (paper 0x64cba2) GOLD (/ (- fraction 0.55) 0.45))))

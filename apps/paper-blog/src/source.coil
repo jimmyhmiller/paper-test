@@ -1,0 +1,319 @@
+(module blog.source)
+(import "coil.primitive" :as p)
+(import "paper.ffi" :use [snprintf strcmp])
+(import "blog.native" :as n)
+(import "blog.model" :as m)
+
+(defstruct Source
+  [(data m/Dataset)
+   (task (ptr i8))
+   (catalog (ptr i8))
+   (directory (ptr i8))
+   (output (ptr i8))
+   (response (ptr i8))
+   (cache (ptr i8))
+   (loading bool)
+   (failed bool)
+   (fixture bool)
+   (last-attempt i64)
+   (message (ptr i8))])
+
+(defn state [] (-> (ptr Source))
+  (p/alloc-static Source))
+
+(defn buffer [] (-> (ptr (array i8 2048)))
+  (p/alloc-static (array i8 2048)))
+
+(defn error-buffer [] (-> (ptr (array i8 256)))
+  (p/alloc-static (array i8 256)))
+
+(defn manager [] (-> (ptr i8))
+  (n/msg (ptr i8) (n/class c"NSFileManager") (n/sel c"defaultManager") []))
+
+(defn append [(base (ptr i8)) (child (ptr i8))] (-> (ptr i8))
+  (n/msg (ptr i8)
+         base
+         (n/sel c"stringByAppendingPathComponent:")
+         [(ptr i8)]
+         (n/ns child)))
+
+(defn exists? [(path (ptr i8))] (-> bool)
+  (n/msg bool (manager) (n/sel c"fileExistsAtPath:") [(ptr i8)] path))
+
+(defn make-directory [(path (ptr i8))] (-> bool)
+  (let [(mut error) (n/nil)]
+    (n/msg bool
+           (manager)
+           (n/sel c"createDirectoryAtPath:withIntermediateDirectories:attributes:error:")
+           [(ptr i8) bool (ptr i8) (mut (ptr i8))]
+           path
+           true
+           (n/nil)
+           (mut error))))
+
+(defn remove-directory [] (-> i64)
+  (let [s (state)]
+    (when (!= (.directory s) (n/nil))
+      (let [(mut error) (n/nil)]
+        (n/msg bool
+               (manager)
+               (n/sel c"removeItemAtPath:error:")
+               [(ptr i8) (mut (ptr i8))]
+               (.directory s)
+               (mut error)))
+      (n/release (.directory s))
+      (n/release (.output s))
+      (n/release (.response s))
+      (set! (.directory s) (n/nil))
+      (set! (.output s) (n/nil))
+      (set! (.response s) (n/nil))))
+  0)
+
+(defn status-file [(path (ptr i8))] (-> (ptr i8))
+  (n/msg bool
+         (manager)
+         (n/sel c"createFileAtPath:contents:attributes:")
+         [(ptr i8) (ptr i8) (ptr i8)]
+         path
+         (n/nil)
+         (n/nil))
+  (n/msg (ptr i8)
+         (n/class c"NSFileHandle")
+         (n/sel c"fileHandleForWritingAtPath:")
+         [(ptr i8)]
+         path))
+
+(defn fail [(message (ptr i8))] (-> bool)
+  (set! (.failed (state)) true)
+  (set! (.message (state)) message)
+  false)
+
+;;; NSTask launches curl directly with separate argv entries: no shell, no
+;;; credentials in argv, no blocking UI, and bounded response size and time.
+;;; Use the existing Website curl config; never copy it into the bundle/cache.
+(defn request [] (-> bool)
+  (let [s (state)
+        text (index (buffer) 0)]
+    (if (or (.loading s) (.fixture s))
+        false
+        (do
+          (set! (.last-attempt s) (n/now-ms))
+          (cast i64
+                (snprintf text 2048 c"%s/.jim/dataflow/analytics.curl" (n/home)))
+          (let [auth (n/ns (n/env c"PAPER_BLOG_AUTH_CONFIG" text))]
+            (if (not (exists? auth))
+                (fail c"Credentials missing: ~/.jim/dataflow/analytics.curl · ⌘R to retry")
+                (do
+                  (let [url
+                          (n/msg (ptr i8)
+                                 (manager)
+                                 (n/sel c"temporaryDirectory")
+                                 [])]
+                    (cast i64
+                          (snprintf text
+                                    2048
+                                    c"%s/paper-blog-XXXXXX"
+                                    (n/utf8 (n/msg (ptr i8)
+                                                   url
+                                                   (n/sel c"path")
+                                                   [])))))
+                  (if (= (n/mkdtemp text) (n/nil))
+                      (fail c"Could not create a private download directory · ⌘R to retry")
+                      (do
+                        (set! (.directory s) (n/retain (n/ns text)))
+                        (set! (.output s)
+                              (n/retain (append (.directory s) c"timeline.json")))
+                        (set! (.response s)
+                              (n/retain (append (.directory s) c"http-status")))
+                        (let [to (n/now-ms)
+                              from (- to (* 30 m/DAY))
+                              args (n/new c"NSMutableArray")
+                              task (n/new c"NSTask")
+                              output (status-file (.response s))
+                              null
+                                (n/msg (ptr i8)
+                                       (n/class c"NSFileHandle")
+                                       (n/sel c"fileHandleWithNullDevice")
+                                       [])]
+                          (cast i64
+                                (snprintf text
+                                          2048
+                                          c"https://computer.jimmyhmiller.com/analytics/timeline?prefix=/api/&n=all&bucket=hour&from=%lld&to=%lld"
+                                          from
+                                          to))
+                          (let [values
+                                  [c"--config"
+                                   (n/utf8 auth)
+                                   c"--silent"
+                                   c"--show-error"
+                                   c"--fail"
+                                   c"--proto"
+                                   c"=https"
+                                   c"--connect-timeout"
+                                   c"10"
+                                   c"--max-time"
+                                   c"45"
+                                   c"--max-filesize"
+                                   c"16777216"
+                                   c"--output"
+                                   (n/utf8 (.output s))
+                                   c"--write-out"
+                                   c"%{http_code}"
+                                   text]]
+                            (for [i 0 18]
+                              (n/msg i64
+                                     args
+                                     (n/sel c"addObject:")
+                                     [(ptr i8)]
+                                     (n/ns (get values i)))))
+                          (n/msg i64
+                                 task
+                                 (n/sel c"setLaunchPath:")
+                                 [(ptr i8)]
+                                 (n/ns c"/usr/bin/curl"))
+                          (n/msg i64
+                                 task
+                                 (n/sel c"setArguments:")
+                                 [(ptr i8)]
+                                 args)
+                          (n/msg i64
+                                 task
+                                 (n/sel c"setStandardOutput:")
+                                 [(ptr i8)]
+                                 output)
+                          (n/msg i64
+                                 task
+                                 (n/sel c"setStandardError:")
+                                 [(ptr i8)]
+                                 null)
+                          (n/msg i64
+                                 task
+                                 (n/sel c"setStandardInput:")
+                                 [(ptr i8)]
+                                 null)
+                          (let [(mut error) (n/nil)
+                                launched
+                                  (n/msg bool
+                                         task
+                                         (n/sel c"launchAndReturnError:")
+                                         [(mut (ptr i8))]
+                                         (mut error))]
+                            (n/msg i64 output (n/sel c"closeFile") [])
+                            (n/release args)
+                            (if launched
+                                (do
+                                  (set! (.task s) task)
+                                  (set! (.loading s) true)
+                                  (set! (.message s)
+                                        c"Refreshing from your blog…")
+                                  true)
+                                (do
+                                  (n/release task)
+                                  (remove-directory)
+                                  (fail c"Could not launch the data request · ⌘R to retry"))))))))))))))
+
+;;; Only publish a complete, validated snapshot. A failed refresh preserves
+;;; last-good data and its original time range. Cache writes are atomic.
+(defn poll [] (-> bool)
+  (let [s (state)]
+    (if (or (not (.loading s)) (n/msg bool (.task s) (n/sel c"isRunning") []))
+        false
+        (let [code (n/msg i32 (.task s) (n/sel c"terminationStatus") [])
+              http-data (n/read-data (n/utf8 (.response s)))
+              http-text
+                (n/msg (ptr i8)
+                       (n/msg (ptr i8)
+                              (n/class c"NSString")
+                              (n/sel c"alloc")
+                              [])
+                       (n/sel c"initWithData:encoding:")
+                       [(ptr i8) i64]
+                       http-data
+                       4)
+              http
+                (if (= http-text (n/nil))
+                    0
+                    (n/msg i64 http-text (n/sel c"integerValue") []))
+              bytes (n/read-data (n/utf8 (.output s)))
+              root (n/parse-data bytes)]
+          (set! (.loading s) false)
+          (n/release (.task s))
+          (set! (.task s) (n/nil))
+          (n/release http-text)
+          (cond (or (= http 401) (= http 403))
+                  (fail c"Blog access was denied. Check your curl credentials · ⌘R to retry")
+                (!= code (: 0 i32))
+                  (let [text (index (error-buffer) 0)]
+                    (cast i64
+                          (snprintf text
+                                    256
+                                    c"Request failed (curl %d, HTTP %lld) · ⌘R to retry"
+                                    code
+                                    http))
+                    (fail text))
+                (or (< http 200) (>= http 300))
+                  (fail c"The blog API returned an unexpected HTTP response · ⌘R to retry")
+                (not (m/decode (field s data) root (.catalog s)))
+                  (fail c"The blog API returned invalid or inconsistent data · ⌘R to retry")
+                :else
+                  (do
+                    (set! (.failed s) false)
+                    (set! (.message s)
+                          c"Live data · updates every 5 min · ⌘R to refresh")
+                    (when (!= (.cache s) (n/nil))
+                      (when (not (n/msg bool
+                                        bytes
+                                        (n/sel c"writeToFile:atomically:")
+                                        [(ptr i8) bool]
+                                        (.cache s)
+                                        true))
+                        (set! (.message s)
+                              c"Live data · could not save offline cache · ⌘R to refresh")))
+                    true))
+          (remove-directory)
+          true))))
+
+(defn initialize [] (-> i64)
+  (let [s (state)
+        text (index (buffer) 0)
+        bundle (n/msg (ptr i8) (n/class c"NSBundle") (n/sel c"mainBundle") [])
+        resources (n/msg (ptr i8) bundle (n/sel c"resourcePath") [])
+        title-path (append resources c"titles.json")]
+    (set! (.catalog s) (n/retain (n/read-json (n/utf8 title-path))))
+    (when (= (.catalog s) (n/nil))
+      (set! (.catalog s) (n/retain (n/read-json c"resources/titles.json"))))
+    (set! (.data s) (m/empty))
+    (cast i64
+          (snprintf text
+                    2048
+                    c"%s/Library/Application Support/Paper Blog"
+                    (n/home)))
+    (let [directory (n/ns (n/env c"PAPER_BLOG_CACHE_DIR" text))]
+      (when (make-directory directory)
+        (set! (.cache s) (n/retain (append directory c"timeline.json")))))
+    (let [fixture (n/arg c"--fixture")]
+      (if (!= fixture (n/nil))
+          (do
+            (set! (.fixture s) true)
+            (if (m/decode (field s data) (n/read-json fixture) (.catalog s))
+                (set! (.message s) c"Fixture preview · recorded page views")
+                (fail c"Could not load the requested fixture")))
+          (do
+            (when (!= (.cache s) (n/nil))
+              (m/decode (field s data)
+                        (n/read-json (n/utf8 (.cache s)))
+                        (.catalog s)))
+            (request)))))
+  0)
+
+(defn shutdown [] (-> i64)
+  (let [s (state)]
+    (when (.loading s)
+      (n/msg i64 (.task s) (n/sel c"terminate") [])
+      (n/msg i64 (.task s) (n/sel c"waitUntilExit") [])
+      (n/release (.task s)))
+    (remove-directory)
+    (m/clear (field s data))
+    (n/release (.catalog s))
+    (n/release (.cache s)))
+  0)

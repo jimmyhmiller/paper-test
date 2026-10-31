@@ -1,0 +1,105 @@
+(module blog.view)
+(import "paper.flow" :use [Rect rect clamp minimum maximum])
+(import "paper.ffi" :use [floor])
+
+(defstruct Layout
+  [(width f64)
+   (height f64)
+   (sidebar Rect)
+   (list Rect)
+   (daily Rect)
+   (post Rect)
+   (hour Rect)
+   (heat Rect)
+   (plot Rect)
+   (post-plot Rect)
+   (hour-plot Rect)
+   (heat-plot Rect)
+   (row-height f64)
+   (visible i64)])
+
+(defn layout [(w f64) (h f64) (posts i64)] (-> Layout)
+  (let [side (clamp (* w 0.245) 310.0 410.0)
+        x (+ side 12.0)
+        width (- w (+ x 14.0))
+        top-h (* (- h 38.0) 0.355)
+        middle-y (+ 14.0 top-h 10.0)
+        mid-h (* (- h 48.0) 0.30)
+        bottom-y (+ middle-y mid-h 10.0)
+        half (- (* width 0.5) 5.0)
+        rows (cast i64 (floor (/ (- h 220.0) 32.0)))]
+    (Layout
+      :width w
+      :height h
+      :sidebar (rect 0.0 0.0 side h)
+      :list (rect 20.0 198.0 (- side 35.0) (* (cast f64 rows) 32.0))
+      :daily (rect x 14.0 width top-h)
+      :post (rect x middle-y half mid-h)
+      :hour (rect (+ x half 10.0) middle-y half mid-h)
+      :heat (rect x bottom-y width (- h (+ bottom-y 14.0)))
+      :plot (rect (+ x 58.0) 84.0 (- width 82.0) (- top-h 112.0))
+      :post-plot
+        (rect (+ x 58.0) (+ middle-y 103.0) (- half 82.0) (- mid-h 144.0))
+      :hour-plot
+        (rect (+ x half 68.0) (+ middle-y 90.0) (- half 82.0) (- mid-h 131.0))
+      :heat-plot
+        (rect (+ x 40.0)
+              (+ bottom-y 72.0)
+              (- width 60.0)
+              (- h (+ bottom-y 122.0)))
+      :row-height 32.0
+      :visible rows)))
+
+(defn row [(l Layout) (slot i64)] (-> Rect)
+  (rect (.x (.list l))
+        (+ (.y (.list l)) (* (cast f64 slot) (.row-height l)))
+        (.w (.list l))
+        (- (.row-height l) 1.0)))
+
+(defn bucket-at [(x f64) (bounds Rect) (days i64)] (-> i64)
+  (if (<= days 1)
+      0
+      (cast i64
+            (floor (+ 0.5
+                      (* (clamp (/ (- x (.x bounds)) (.w bounds)) 0.0 1.0)
+                         (cast f64 (- days 1))))))))
+
+(defn cell-at [(coordinate f64) (start f64) (size f64) (count i64)] (-> i64)
+  (cast i64
+        (floor (clamp (* (/ (- coordinate start) size) (cast f64 count))
+                      0.0
+                      (cast f64 (- count 1))))))
+
+(defn max-offset [(posts i64) (visible i64)] (-> i64)
+  (if (> posts visible) (- posts visible) 0))
+
+(defn clamped-offset [(offset i64) (posts i64) (visible i64)] (-> i64)
+  (if (< offset 0)
+      0
+      (if (> offset (max-offset posts visible))
+          (max-offset posts visible)
+          offset)))
+
+(defn slot-for [(post i64) (offset i64) (visible i64)] (-> i64)
+  (if (and (>= post offset) (< post (+ offset visible))) (- post offset) -1))
+
+(defn max-scroll [(l Layout) (posts i64)] (-> f64)
+  (maximum 0.0 (- (* (cast f64 posts) (.row-height l)) (.h (.list l)))))
+
+(defn scroll-thumb [(l Layout) (posts i64) (scroll f64)] (-> Rect)
+  (let [track (.list l)
+        height
+          (maximum 32.0
+                   (* (.h track)
+                      (minimum 1.0
+                               (/ (.h track)
+                                  (* (.row-height l)
+                                     (cast f64 (if (> posts 0) posts 1)))))))
+        travel (maximum 0.0 (- (.h track) height))
+        maximum-offset (max-scroll l posts)]
+    (rect (- (+ (.x (.sidebar l)) (.w (.sidebar l))) 10.0)
+          (+ (.y track)
+             (* travel
+                (/ scroll (if (> maximum-offset 0.0) maximum-offset 1.0))))
+          5.0
+          (minimum height (.h track)))))

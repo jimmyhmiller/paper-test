@@ -1,0 +1,147 @@
+(module blog.native)
+(import "coil.cc" :as cc)
+(import "paper.objc" :use * :reexport)
+(import "paper.ffi" :use [snprintf strcmp])
+
+(extern getenv :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
+
+(extern calloc :cc (cc/C) [u64 u64] (-> (ptr i8)))
+
+(extern free :cc (cc/C) [(ptr i8)] (-> void))
+
+(extern mkdtemp :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
+
+(extern usleep :cc (cc/C) [u32] (-> i32))
+
+(defn kind? [(obj (ptr i8)) (name (ptr i8))] (-> bool)
+  (and (!= obj (nil))
+       (msg bool obj (sel c"isKindOfClass:") [(ptr i8)] (class name))))
+
+(defn dict? [(obj (ptr i8))] (-> bool)
+  (kind? obj c"NSDictionary"))
+
+(defn array? [(obj (ptr i8))] (-> bool)
+  (kind? obj c"NSArray"))
+
+(defn string? [(obj (ptr i8))] (-> bool)
+  (kind? obj c"NSString"))
+
+(defn number? [(obj (ptr i8))] (-> bool)
+  (kind? obj c"NSNumber"))
+
+(defn key [(obj (ptr i8)) (name (ptr i8))] (-> (ptr i8))
+  (if (dict? obj)
+      (msg (ptr i8) obj (sel c"objectForKey:") [(ptr i8)] (ns name))
+      (nil)))
+
+(defn count [(obj (ptr i8))] (-> i64)
+  (if (array? obj) (msg i64 obj (sel c"count") []) 0))
+
+(defn at [(obj (ptr i8)) (i i64)] (-> (ptr i8))
+  (if (and (>= i 0) (< i (count obj)))
+      (msg (ptr i8) obj (sel c"objectAtIndex:") [i64] i)
+      (nil)))
+
+(defn integer [(obj (ptr i8))] (-> i64)
+  (if (number? obj) (msg i64 obj (sel c"longLongValue") []) -1))
+
+(defn nonnegative-integer? [(obj (ptr i8))] (-> bool)
+  (and (number? obj)
+       (>= (integer obj) 0)
+       (= (msg f64 obj (sel c"doubleValue") []) (cast f64 (integer obj)))
+       (< (integer obj) 1000000000000)))
+
+(defn parse-data [(bytes (ptr i8))] (-> (ptr i8))
+  (if (or (= bytes (nil)) (> (msg i64 bytes (sel c"length") []) 16777216))
+      (nil)
+      (let [(mut error) (nil)]
+        (msg (ptr i8)
+             (class c"NSJSONSerialization")
+             (sel c"JSONObjectWithData:options:error:")
+             [(ptr i8) i64 (mut (ptr i8))]
+             bytes
+             0
+             (mut error)))))
+
+(defn read-data [(path (ptr i8))] (-> (ptr i8))
+  (msg (ptr i8)
+       (class c"NSData")
+       (sel c"dataWithContentsOfFile:")
+       [(ptr i8)]
+       (ns path)))
+
+(defn read-json [(path (ptr i8))] (-> (ptr i8))
+  (parse-data (read-data path)))
+
+(defn parse-text [(text (ptr i8))] (-> (ptr i8))
+  (parse-data (msg (ptr i8) (ns text) (sel c"dataUsingEncoding:") [i64] 4)))
+
+(defn now-ms [] (-> i64)
+  (cast i64
+        (* 1000.0
+           (msg f64
+                (msg (ptr i8) (class c"NSDate") (sel c"date") [])
+                (sel c"timeIntervalSince1970")
+                []))))
+
+(defn env [(name (ptr i8)) (fallback (ptr i8))] (-> (ptr i8))
+  (let [value (getenv name)]
+    (if (or (= value (nil)) (= (load value) (: 0 i8))) fallback value)))
+
+(defn home [] (-> (ptr i8))
+  (env c"HOME" c"/tmp"))
+
+(defn arg [(name (ptr i8))] (-> (ptr i8))
+  (let [args
+          (msg (ptr i8)
+               (msg (ptr i8) (class c"NSProcessInfo") (sel c"processInfo") [])
+               (sel c"arguments")
+               [])
+        (mut result) (nil)]
+    (for [i 1 (- (count args) 1)]
+      (when (= (strcmp (utf8 (at args i)) name) 0)
+        (set! result (utf8 (at args (+ i 1))))))
+    (load result)))
+
+(defn has-arg? [(name (ptr i8))] (-> bool)
+  (let [args
+          (msg (ptr i8)
+               (msg (ptr i8) (class c"NSProcessInfo") (sel c"processInfo") [])
+               (sel c"arguments")
+               [])
+        (mut found) false]
+    (for [i 1 (count args)]
+      (when (= (strcmp (utf8 (at args i)) name) 0) (set! found true)))
+    (load found)))
+
+(defn date-text [(ms i64) (format (ptr i8))] (-> (ptr i8))
+  (let [formatter (new c"NSDateFormatter")
+        date
+          (msg (ptr i8)
+               (class c"NSDate")
+               (sel c"dateWithTimeIntervalSince1970:")
+               [f64]
+               (/ (cast f64 ms) 1000.0))]
+    (msg i64
+         formatter
+         (sel c"setLocale:")
+         [(ptr i8)]
+         (msg (ptr i8)
+              (class c"NSLocale")
+              (sel c"localeWithLocaleIdentifier:")
+              [(ptr i8)]
+              (ns c"en_US_POSIX")))
+    (msg i64
+         formatter
+         (sel c"setTimeZone:")
+         [(ptr i8)]
+         (msg (ptr i8)
+              (class c"NSTimeZone")
+              (sel c"timeZoneForSecondsFromGMT:")
+              [i64]
+              0))
+    (msg i64 formatter (sel c"setDateFormat:") [(ptr i8)] (ns format))
+    (let [result
+            (msg (ptr i8) formatter (sel c"stringFromDate:") [(ptr i8)] date)]
+      (release formatter)
+      result)))

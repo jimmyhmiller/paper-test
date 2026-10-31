@@ -1,0 +1,1040 @@
+(module blog.app)
+(import "coil.primitive" :as p)
+(import "paper.flow" :use *)
+(import "paper.platform" :as host)
+(import "paper.scene" :as scene)
+(import "paper.ffi" :use [snprintf strlen floor sqrt fabs CGPoint])
+(import "blog.native" :as n)
+(import "blog.model" :as m)
+(import "blog.source" :as source)
+(import "blog.view" :as v)
+(import "blog.stack" :as stack)
+(import "blog.theme" :as t)
+
+(defstruct Interaction
+  [(selected i64)
+   (last-hover i64)
+   (offset i64)
+   (scroll f64)
+   (day i64)
+   (detail-day i64)
+   (hour i64)
+   (layer i64)
+   (pinned-day i64)
+   (pinned-hour i64)
+   (dragging bool)
+   (drag-offset f64)
+   (keyboard-mode bool)
+   (pointer-known bool)
+   (pointer-x f64)
+   (pointer-y f64)])
+
+(defn interaction [] (-> (ptr Interaction))
+  (p/alloc-static Interaction))
+
+(defn text-buffer [] (-> (ptr (array i8 2048)))
+  (p/alloc-static (array i8 2048)))
+
+(defn number-buffer [] (-> (ptr (array i8 96)))
+  (p/alloc-static (array i8 96)))
+
+(defn reverse-buffer [] (-> (ptr (array i8 96)))
+  (p/alloc-static (array i8 96)))
+
+(defn formatted [(value i64)] (-> (ptr i8))
+  (let [out (index (number-buffer) 0)
+        rev (index (reverse-buffer) 0)
+        (mut rest) value
+        (mut used) 0
+        (mut digits) 0]
+    (while (or (> (load rest) 0) (= (load used) 0))
+      (when (= (load digits) 3)
+        (set! (index rev (load used)) (: 44 i8))
+        (set! used (+ (load used) 1))
+        (set! digits 0))
+      (set! (index rev (load used)) (cast i8 (+ 48 (% (load rest) 10))))
+      (set! rest (/ (load rest) 10))
+      (set! used (+ (load used) 1))
+      (set! digits (+ (load digits) 1)))
+    (for [i 0 (load used)]
+      (set! (index out i) (load (index rev (- (- (load used) 1) i)))))
+    (set! (index out (load used)) (: 0 i8))
+    out))
+
+(defn right-label [(right f64)
+                   (y f64)
+                   (size f64)
+                   (ink u32)
+                   (font i64)
+                   (text (ptr i8))] (-> i64)
+  (label (- right (text-width text size font)) y size ink font text))
+
+(defn spark [(r Rect)
+             (values (ptr i64))
+             (days i64)
+             (peak i64)
+             (thickness f64)
+             (z f64)
+             (stock Material)] (-> i64)
+  (when (> days 0)
+    (let [scale (cast f64 (if (> peak 0) peak 1))
+          count (if (> days 1) days 2)]
+      (begin-sheet)
+      (for [i 0 count]
+        (let [j (if (< i days) i 0)]
+          (let [x (+ (.x r) (* (.w r) (/ (cast f64 i) (cast f64 (- count 1)))))
+                y
+                  (+ (.y r)
+                     (* (.h r)
+                        (- 1.0 (/ (cast f64 (load (index values j))) scale))))]
+            (if (= i 0) (move-to x y) (line-to x y)))))
+      (for [i 0 count]
+        (let [j (- (- count 1) i)
+              k (if (< j days) j 0)]
+          (line-to (+ (.x r) (* (.w r) (/ (cast f64 j) (cast f64 (- count 1)))))
+                   (+ thickness
+                      (+ (.y r)
+                         (* (.h r)
+                            (- 1.0 (/ (cast f64 (load (index values k))) scale))))))))
+      (close-path)
+      (finish-sheet z stock)))
+  0)
+
+(defn area-shape [(r Rect)
+                  (values (ptr i64))
+                  (days i64)
+                  (peak i64)
+                  (z f64)
+                  (stock Material)] (-> i64)
+  (when (> days 0)
+    (let [scale (cast f64 (if (> peak 0) peak 1))
+          count (if (> days 1) days 2)]
+      (begin-sheet)
+      (move-to (.x r) (+ (.y r) (.h r)))
+      (for [i 0 count]
+        (let [j (if (< i days) i 0)]
+          (line-to (+ (.x r) (* (.w r) (/ (cast f64 i) (cast f64 (- count 1)))))
+                   (+ (.y r)
+                      (* (.h r)
+                         (- 1.0 (/ (cast f64 (load (index values j))) scale)))))))
+      (line-to (+ (.x r) (.w r)) (+ (.y r) (.h r)))
+      (close-path)
+      (finish-sheet z stock)))
+  0)
+
+(defn axis-peak [(peak i64)] (-> i64)
+  (cond (<= peak 2) 2
+        (<= peak 10) 10
+        (<= peak 50) 50
+        (<= peak 100) 100
+        (<= peak 250) 250
+        (<= peak 500) 500
+        (<= peak 1000) 1000
+        :else (* 1000 (+ 1 (/ (- peak 1) 1000)))))
+
+(defn band-path [(r Rect) (d (ptr m/Dataset)) (post i64) (peak i64)] (-> i64)
+  (let [count (if (> (.days d) 1) (.days d) 2)
+        denominator (cast f64 (- count 1))]
+    (begin-sheet)
+    (for [day 0 count]
+      (let [x (+ (.x r) (* (.w r) (/ (cast f64 day) denominator)))
+            y (stack/y r (stack/upper d post (if (< day (.days d)) day 0)) peak)]
+        (if (= day 0) (move-to x y) (line-to x y))))
+    (for [i 0 count]
+      (let [day (- (- count 1) i)]
+        (line-to (+ (.x r) (* (.w r) (/ (cast f64 day) denominator)))
+                 (stack/y r
+                          (stack/lower d post (if (< day (.days d)) day 0))
+                          peak))))
+    (close-path))
+  0)
+
+(defn open-post [] (-> i64)
+  (let [d (field (source/state) data)
+        selected (.selected (interaction))]
+    (when (and (>= selected 0) (< selected (.count d)))
+      (let [path (.path (index (.posts d) selected))
+            route (n/msg (ptr i8) path (n/sel c"substringFromIndex:") [i64] 5)
+            address
+              (n/msg (ptr i8)
+                     (n/ns c"https://jimmyhmiller.com/")
+                     (n/sel c"stringByAppendingString:")
+                     [(ptr i8)]
+                     route)
+            url
+              (n/msg (ptr i8)
+                     (n/class c"NSURL")
+                     (n/sel c"URLWithString:")
+                     [(ptr i8)]
+                     address)]
+        (n/msg bool
+               (n/msg (ptr i8)
+                      (n/class c"NSWorkspace")
+                      (n/sel c"sharedWorkspace")
+                      [])
+               (n/sel c"openURL:")
+               [(ptr i8)]
+               url))))
+  0)
+
+(defn detail-plot [(l v/Layout)] (-> Rect)
+  (.post-plot l))
+
+(defn limit-offset [(l v/Layout)] (-> i64)
+  (let [s (interaction)
+        count (.count (.data (source/state)))]
+    (set! (.scroll s) (clamp (.scroll s) 0.0 (v/max-scroll l count)))
+    (set! (.offset s) (cast i64 (floor (/ (.scroll s) (.row-height l))))))
+  0)
+
+(defn reveal-selection [(l v/Layout)] (-> i64)
+  (let [s (interaction)
+        top (* (cast f64 (.selected s)) (.row-height l))]
+    (when (< top (.scroll s)) (set! (.scroll s) top))
+    (when (> (+ top (.row-height l)) (+ (.scroll s) (.h (.list l))))
+      (set! (.scroll s) (- (+ top (.row-height l)) (.h (.list l))))))
+  (limit-offset l))
+
+(defn select [(index i64)] (-> i64)
+  (let [s (interaction)
+        d (field (source/state) data)]
+    (when (and (>= index 0) (< index (.count d)))
+      (set! (.selected s) index)
+      (reveal-selection (v/layout (host/logical-width)
+                                  (host/logical-height)
+                                  (.count d)))))
+  0)
+
+(defn paper-leaf [(r Rect) (pigment u32)] (-> i64)
+  (panel r 1.0 10.0 (tint (t/paper pigment) 0x140d20 0.25))
+  (panel (inset r 1.0) 0.5 14.0 (t/paper pigment))
+  ;; A narrow exposed dyed edge, without making the mount a plastic bezel.
+  (frame r 1.0 0.7 14.5 (tint (t/paper pigment) 0xe0a7b4 0.10))
+  0)
+
+(defn grid [(r Rect) (peak i64)] (-> i64)
+  (ink-height 14.0)
+  (for [i 0 3]
+    (let [y (+ (.y r) (* (.h r) (/ (cast f64 i) 2.0)))]
+      (host/paper_rule (.x r) y (.w r) 0.45 0x82707b)
+      (right-label (- (.x r) 12.0)
+                   (- y 6.0)
+                   10.5
+                   t/MUTED
+                   0
+                   (formatted (/ (* peak (- 2 i)) 2)))))
+  0)
+
+(defn date-axis [(r Rect) (d (ptr m/Dataset)) (cells bool)] (-> i64)
+  (ink-height 54.0)
+  (when (> (.days d) 0)
+    (for [i 0 5]
+      (let [day (/ (* i (- (.days d) 1)) 4)
+            x
+              (+ (.x r)
+                 (* (.w r)
+                    (/ (+ (cast f64 day) (if cells 0.5 0.0))
+                       (cast f64
+                             (if cells
+                                 (.days d)
+                                 (if (> (.days d) 1) (- (.days d) 1) 1))))))
+            text (m/date-label d day)]
+        (label (- x (* 0.5 (text-width text 10.5 0)))
+               (+ (.y r) (.h r) 10.0)
+               10.5
+               t/MUTED
+               0
+               text))))
+  0)
+
+(defn daily-chart [(l v/Layout) (d (ptr m/Dataset))] (-> i64)
+  (let [r (.plot l)
+        s (interaction)
+        peak (axis-peak (.peak d))
+        text (index (text-buffer) 0)]
+    (grid r peak)
+    (ink-height 14.0)
+    (for [day 0 (.days d)]
+      (let [step (/ (.w r) (cast f64 (if (> (.days d) 1) (- (.days d) 1) 1)))
+            x (+ (.x r) (* step (cast f64 day)))
+            left (maximum (.x r) (- x (* step 0.5)))
+            right (minimum (+ (.x r) (.w r)) (+ x (* step 0.5)))]
+        (cast i64
+              (snprintf text
+                        2048
+                        c"%s: %lld total views"
+                        (m/date-label d day)
+                        (load (index (.totals d) day))))
+        (host/paper_hit (+ 10000 day)
+                        left
+                        (.y r)
+                        (maximum 1.0 (- right left))
+                        (.h r)
+                        text
+                        0
+                        0.0)))
+    (for [i 0 (.count d)]
+      (let [post (index (.posts d) i)
+            active (= i (.selected s))
+            z
+              (if active
+                  46.0
+                  (+ 18.0
+                     (* 19.0
+                        (/ (cast f64 (- (.count d) i))
+                           (cast f64 (if (> (.count d) 0) (.count d) 1))))))
+            paper (t/paper (stack/color (.path post)))]
+        (band-path r d i peak)
+        (finish-sheet z (if active (tint paper 0xffc561 0.06) paper))
+        (cast i64
+              (snprintf text
+                        2048
+                        c"Paper layer: %s — %lld views"
+                        (n/utf8 (.title post))
+                        (.views post)))
+        (host/paper_path_hit (+ 30000 i) (.path (scene/scene)) text 0 0.0)))
+    (when (and (>= (.day s) 0) (< (.day s) (.days d)))
+      (let [x
+              (+ (.x r)
+                 (* (.w r)
+                    (/ (cast f64 (.day s))
+                       (cast f64 (if (> (.days d) 1) (- (.days d) 1) 1)))))]
+        (panel (rect (- x 0.4) (.y r) 0.8 (.h r)) 0.0 51.0 (t/paper t/INK)))
+      (cast i64
+            (snprintf text
+                      2048
+                      c"%s · %s views%s"
+                      (m/date-label d (.day s))
+                      (formatted (load (index (.totals d) (.day s))))
+                      (if (or (= (.day s) 0) (= (.day s) (- (.days d) 1)))
+                          c" · partial day"
+                          c"")))
+      (ink-height 54.0)
+      (right-label (- (+ (.x (.daily l)) (.w (.daily l))) 24.0)
+                   (+ (.y (.daily l)) 26.0)
+                   12.0
+                   t/INK
+                   0
+                   text))
+    (date-axis r d false)
+    (ink-height 54.0)
+    (label (+ (.x (.daily l)) 22.0)
+           (+ (.y (.daily l)) 18.0)
+           27.0
+           t/INK
+           1
+           c"Daily views"))
+  0)
+
+(defn bar [(r Rect)
+           (slot i64)
+           (slots i64)
+           (value i64)
+           (peak i64)
+           (color u32)
+           (active bool)] (-> Rect)
+  (let [step (/ (.w r) (cast f64 slots))
+        height (* (.h r) (/ (cast f64 value) (cast f64 (if (> peak 0) peak 1))))
+        bounds
+          (rect (+ (.x r) (* step (cast f64 slot)) 1.2)
+                (- (+ (.y r) (.h r)) height)
+                (maximum 1.0 (- step 2.4))
+                height)]
+    (when (> value 0)
+      (let [z (if active 28.0 21.0)
+            edge (minimum 0.65 (* 0.2 (minimum (.w bounds) (.h bounds))))
+            stock (t/paper color)]
+        ;; The outer cut edge still follows the exact quantitative rectangle.
+        ;; Its small inset top face exposes the paper thickness at the sides.
+        (panel bounds 0.2 (- z 1.2) (tint stock 0xffd8b0 0.20))
+        (panel (inset bounds edge)
+               0.1
+               z
+               (texture-offset stock (- edge) (- edge)))))
+    bounds))
+
+(defn post-chart [(l v/Layout) (d (ptr m/Dataset))] (-> i64)
+  (let [s (interaction)
+        mount (.post l)
+        r (.post-plot l)
+        text (index (text-buffer) 0)]
+    (ink-height 15.0)
+    (if (and (>= (.selected s) 0) (< (.selected s) (.count d)))
+        (let [post (index (.posts d) (.selected s))
+              peak (axis-peak (.peak post))
+              color (stack/color (.path post))]
+          (caption (rect (+ (.x mount) 22.0)
+                         (+ (.y mount) 14.0)
+                         (- (.w mount) 158.0)
+                         29.0)
+                   22.0
+                   t/INK
+                   1
+                   (n/utf8 (.short-title post)))
+          (caption (rect (+ (.x mount) 22.0)
+                         (+ (.y mount) 46.0)
+                         (- (.w mount) 44.0)
+                         34.0)
+                   12.0
+                   t/MUTED
+                   0
+                   (n/utf8 (.title post)))
+          (grid r peak)
+          (for [day 0 (.days d)]
+            (bar r
+                 day
+                 (.days d)
+                 (load (index (.values post) day))
+                 peak
+                 color
+                 (= day (.day s)))
+            (ink-height 26.0)
+            (let [step (/ (.w r) (cast f64 (.days d)))]
+              (cast i64
+                    (snprintf text
+                              2048
+                              c"%s: %lld views for %s"
+                              (m/date-label d day)
+                              (load (index (.values post) day))
+                              (n/utf8 (.short-title post))))
+              (host/paper_hit (+ 20000 day)
+                              (+ (.x r) (* step (cast f64 day)))
+                              (.y r)
+                              step
+                              (.h r)
+                              text
+                              0
+                              0.0)))
+          (ink-height 28.0)
+          (cast i64 (snprintf text 2048 c"%s views" (formatted (.views post))))
+          (right-label (- (+ (.x mount) (.w mount)) 22.0)
+                       (+ (.y mount) 17.0)
+                       15.0
+                       t/INK
+                       0
+                       text)
+          (when (and (>= (.day s) 0) (< (.day s) (.days d)))
+            (cast i64
+                  (snprintf text
+                            2048
+                            c"%s · %s views"
+                            (m/date-label d (.day s))
+                            (formatted (load (index (.values post) (.day s))))))
+            (right-label (- (+ (.x mount) (.w mount)) 22.0)
+                         (- (+ (.y mount) (.h mount)) 17.0)
+                         10.5
+                         t/INK
+                         0
+                         text))
+          (date-axis r d true))
+        (caption (rect (+ (.x mount) 22.0)
+                       (+ (.y mount) 20.0)
+                       (- (.w mount) 44.0)
+                       80.0)
+                 21.0
+                 t/INK
+                 1
+                 (if (.loading (source/state))
+                     c"Loading posts…"
+                     c"No views in this period."))))
+  0)
+
+(defn selected-hour [(d (ptr m/Dataset)) (hour i64)] (-> i64)
+  (let [s (interaction)
+        (mut sum) 0]
+    (when (and (>= (.selected s) 0) (< (.selected s) (.count d)))
+      (let [post (index (.posts d) (.selected s))]
+        (for [day 0 (.days d)]
+          (set! sum
+                (+ (load sum) (load (index (.hours post) (+ (* day 24) hour))))))))
+    (load sum)))
+
+(defn selected-hour-peak [(d (ptr m/Dataset))] (-> i64)
+  (let [(mut peak) 0]
+    (for [hour 0 24] (set! peak (m/maximum (load peak) (selected-hour d hour))))
+    (load peak)))
+
+(defn hour-chart [(l v/Layout) (d (ptr m/Dataset))] (-> i64)
+  (let [s (interaction)
+        mount (.hour l)
+        r (.hour-plot l)
+        peak (axis-peak (selected-hour-peak d))
+        text (index (text-buffer) 0)
+        color
+          (if (and (>= (.selected s) 0) (< (.selected s) (.count d)))
+              (stack/color (.path (index (.posts d) (.selected s))))
+              t/GOLD)]
+    (ink-height 15.0)
+    (label (+ (.x mount) 22.0)
+           (+ (.y mount) 17.0)
+           23.0
+           t/INK
+           1
+           c"By hour · UTC")
+    (when (and (>= (.selected s) 0) (< (.selected s) (.count d)))
+      (caption (rect (+ (.x mount) 24.0)
+                     (+ (.y mount) 54.0)
+                     (- (.w mount) 48.0)
+                     22.0)
+               12.0
+               t/MUTED
+               0
+               (n/utf8 (.short-title (index (.posts d) (.selected s))))))
+    (if (.hourly d)
+        (do
+          (grid r peak)
+          (for [hour 0 24]
+            (let [amount (selected-hour d hour)]
+              (bar r hour 24 amount peak color (= hour (.hour s)))
+              (ink-height 28.0)
+              (cast i64
+                    (snprintf text
+                              2048
+                              c"%02lld:00 UTC: %lld views for this post"
+                              hour
+                              amount))
+              (host/paper_hit (+ 40000 hour)
+                              (+ (.x r) (* (/ (.w r) 24.0) (cast f64 hour)))
+                              (.y r)
+                              (/ (.w r) 24.0)
+                              (.h r)
+                              text
+                              0
+                              0.0)))
+          (ink-height 28.0)
+          (for [i 0 5]
+            (let [hour (case i 0 0 1 6 2 12 3 18 23)
+                  x (+ (.x r) (* (.w r) (/ (+ (cast f64 hour) 0.5) 24.0)))]
+              (cast i64 (snprintf text 2048 c"%02lld" hour))
+              (label (- x 6.0) (+ (.y r) (.h r) 10.0) 10.5 t/MUTED 0 text)))
+          (when (>= (.hour s) 0)
+            (cast i64
+                  (snprintf text
+                            2048
+                            c"%02lld:00 · %s views"
+                            (.hour s)
+                            (formatted (selected-hour d (.hour s)))))
+            (right-label (- (+ (.x mount) (.w mount)) 22.0)
+                         (- (+ (.y mount) (.h mount)) 17.0)
+                         10.5
+                         t/INK
+                         0
+                         text)))
+        (caption (rect (+ (.x mount) 22.0)
+                       (+ (.y mount) 90.0)
+                       (- (.w mount) 44.0)
+                       55.0)
+                 15.0
+                 t/MUTED
+                 0
+                 c"Hourly data is not available in this saved snapshot.")))
+  0)
+
+(defn heat-tile [(bounds Rect) (level f64) (active bool) (guided bool)] (-> f64)
+  (let [sheets (+ 1 (cast i64 (* level 4.0)))
+        top (+ 17.0 (* (cast f64 (- sheets 1)) 4.0))
+        stock (t/heat-paper level)]
+    ;; Count bands add sheets without shifting the day/hour footprint.
+    (for [sheet 0 sheets]
+      (let [edge (* (cast f64 sheet) 0.14)
+            z (+ 17.0 (* (cast f64 sheet) 4.0))]
+        (panel (inset bounds edge)
+               0.1
+               z
+               (texture-offset (if (= sheet (- sheets 1))
+                                   stock
+                                   (tint stock 0x111326 0.20))
+                               (- edge)
+                               (- edge)))))
+    (when active (frame bounds 0.1 0.8 (+ top 1.0) (t/paper t/INK)))
+    (when guided (frame bounds 0.1 0.45 (+ top 1.0) (t/paper t/MUTED)))
+    top))
+
+(defn heat-chart [(l v/Layout) (d (ptr m/Dataset))] (-> i64)
+  (let [s (interaction)
+        mount (.heat l)
+        r (.heat-plot l)
+        text (index (text-buffer) 0)]
+    (ink-height 15.0)
+    (label (+ (.x mount) 22.0)
+           (+ (.y mount) 16.0)
+           23.0
+           t/INK
+           1
+           c"Views by day & hour · UTC")
+    (if (and (.hourly d) (> (.days d) 0))
+        (let [cell-w (/ (.w r) (cast f64 (.days d)))
+              cell-h (/ (.h r) 24.0)]
+          (for [day 0 (.days d)]
+            (for [hour 0 24]
+              (let [slot (+ (* day 24) hour)
+                    value (load (index (.heat d) slot))
+                    active (and (= day (.day s)) (= hour (.hour s)))
+                    guided
+                      (or (and (= day (.day s)) (< (.hour s) 0))
+                          (and (= hour (.hour s)) (< (.day s) 0)))
+                    bounds
+                      (rect (+ (.x r) (* cell-w (cast f64 day)) 0.45)
+                            (+ (.y r) (* cell-h (cast f64 hour)) 0.45)
+                            (- cell-w 0.9)
+                            (- cell-h 0.9))]
+                (if (m/hour-in-window? d day hour)
+                    (heat-tile bounds (t/heat-level value) active guided)
+                    (do (panel bounds 0.1 15.0 (t/paper t/HEAT)) 15.0)))))
+          (ink-height 40.0)
+          (host/paper_hit 50000
+                          (.x r)
+                          (.y r)
+                          (.w r)
+                          (.h r)
+                          c"Hourly view matrix. Hover a cell to inspect its exact day and hour."
+                          0
+                          0.0)
+          (for [i 0 5]
+            (let [hour (case i 0 0 1 6 2 12 3 18 23)]
+              (cast i64 (snprintf text 2048 c"%02lld" hour))
+              (right-label (- (.x r) 10.0)
+                           (+ (.y r) (* cell-h (+ (cast f64 hour) 0.1)))
+                           10.0
+                           t/MUTED
+                           0
+                           text)))
+          (date-axis r d true)
+          (when (and (>= (.day s) 0) (>= (.hour s) 0))
+            (let [slot (+ (* (.day s) 24) (.hour s))
+                  post-value
+                    (if (and (>= (.selected s) 0) (< (.selected s) (.count d)))
+                        (load (index (.hours (index (.posts d) (.selected s)))
+                                     slot))
+                        0)]
+              (if (m/hour-in-window? d (.day s) (.hour s))
+                  (cast i64
+                        (snprintf text
+                                  2048
+                                  c"%s · %02lld:00 UTC · %lld total · %lld this post"
+                                  (m/date-label d (.day s))
+                                  (.hour s)
+                                  (load (index (.heat d) slot))
+                                  post-value))
+                  (cast i64
+                        (snprintf text
+                                  2048
+                                  c"%s · %02lld:00 UTC · outside recorded window"
+                                  (m/date-label d (.day s))
+                                  (.hour s))))
+              (right-label (- (+ (.x mount) (.w mount)) 22.0)
+                           (- (+ (.y mount) (.h mount)) 16.0)
+                           10.5
+                           t/INK
+                           0
+                           text)))
+          (for [i 0 5]
+            (let [legend-x
+                    (+ (- (+ (.x mount) (.w mount)) 175.0)
+                       (* 30.0 (cast f64 i)))]
+              (heat-tile (rect legend-x (+ (.y mount) 32.0) 30.0 8.0)
+                         (/ (cast f64 i) 4.0)
+                         false
+                         false)
+              (ink-height 28.0)
+              (label legend-x
+                     (+ (.y mount) 16.0)
+                     9.0
+                     t/MUTED
+                     0
+                     (case i 0 c"0" 1 c"1–4" 2 c"5–14" 3 c"15–49" c"50+")))))
+        (caption (rect (+ (.x mount) 22.0)
+                       (+ (.y mount) 87.0)
+                       (- (.w mount) 44.0)
+                       50.0)
+                 15.0
+                 t/MUTED
+                 0
+                 c"Hourly data will appear after a successful refresh.")))
+  0)
+
+(defn index-row [(l v/Layout) (d (ptr m/Dataset)) (post-index i64) (slot i64)]
+  (-> i64)
+  (let [s (interaction)
+        base (v/row l slot)
+        remainder (- (.scroll s) (* (cast f64 (.offset s)) (.row-height l)))
+        r (rect (.x base) (- (.y base) remainder) (.w base) (.h base))
+        post (index (.posts d) post-index)
+        active (= post-index (.selected s))
+        color (stack/color (.path post))
+        text (index (text-buffer) 0)]
+    (when active (panel r 1.0 25.0 (t/paper color)))
+    (ink-height (if active 25.5 15.0))
+    (let [ink (cast u32 (if active 0x291b2c t/INK))]
+      (label (+ (.x r) 8.0)
+             (+ (.y r) 9.0)
+             10.5
+             ink
+             0
+             (formatted (+ post-index 1)))
+      (caption (rect (+ (.x r) 30.0) (+ (.y r) 6.0) (- (.w r) 104.0) 21.0)
+               14.0
+               ink
+               1
+               (n/utf8 (.short-title post)))
+      (right-label (- (+ (.x r) (.w r)) 10.0)
+                   (+ (.y r) 7.0)
+                   14.0
+                   ink
+                   3
+                   (formatted (.views post))))
+    (cast i64
+          (snprintf text
+                    2048
+                    c"%s — %lld views"
+                    (n/utf8 (.title post))
+                    (.views post)))
+    (host/paper_selection_hit 1
+                              (+ 100 post-index)
+                              (.x r)
+                              (.y r)
+                              (.w r)
+                              (.h r)
+                              text
+                              active))
+  0)
+
+(defn sidebar [(l v/Layout) (d (ptr m/Dataset))] (-> i64)
+  (let [s (interaction)
+        leaf (.sidebar l)
+        text (index (text-buffer) 0)]
+    (ink-height 14.0)
+    (host/paper_hit 60
+                    (.x (.list l))
+                    (.y (.list l))
+                    (.w (.list l))
+                    (.h (.list l))
+                    c"Post index, scroll to browse all posts"
+                    0
+                    0.0)
+    (label (+ (.x leaf) 22.0)
+           52.0
+           52.0
+           t/INK
+           1
+           (if (= (.root d) (n/nil)) c"—" (formatted (.views d))))
+    (label (+ (.x leaf) 22.0) 151.0 18.0 t/INK 1 c"jimmyhmiller.com")
+    (cast i64 (snprintf text 2048 c"%lld posts" (.count d)))
+    (right-label (- (+ (.x leaf) (.w leaf)) 28.0) 156.0 12.0 t/MUTED 0 text)
+    (when (or (.failed (source/state)) (.loading (source/state)))
+      (caption (rect (+ (.x leaf) 22.0) 116.0 (- (.w leaf) 44.0) 22.0)
+               10.0
+               t/INK
+               0
+               (.message (source/state))))
+    (with-clip (.list l)
+               (for [slot 0 (+ (.visible l) 1)]
+                 (let [post (+ (.offset s) slot)]
+                   (when (< post (.count d)) (index-row l d post slot)))))
+    (when (> (.count d) (.visible l))
+      (let [thumb (v/scroll-thumb l (.count d) (.scroll s))]
+        (panel (rect (.x thumb) (.y (.list l)) (.w thumb) (.h (.list l)))
+               2.0
+               15.0
+               (t/paper 0x713d4e))
+        (ink-height 16.0)
+        (host/paper_hit 71
+                        (- (.x thumb) 3.0)
+                        (.y (.list l))
+                        11.0
+                        (.h (.list l))
+                        c"Post index scroll track"
+                        0
+                        0.0)
+        (panel thumb 2.0 23.0 (t/paper 0xc9899c))
+        (ink-height 24.0)
+        (host/paper_hit 70
+                        (- (.x thumb) 3.0)
+                        (.y thumb)
+                        11.0
+                        (.h thumb)
+                        c"Drag to scroll posts"
+                        1
+                        (/ (.scroll s) (v/max-scroll l (.count d)))))))
+  0)
+
+(defn inspect-at [(l v/Layout) (d (ptr m/Dataset)) (id i64) (x f64) (y f64)]
+  (-> i64)
+  (let [s (interaction)]
+    (cond (and (>= id 30000) (< id (+ 30000 (.count d))))
+            (set! (.day s) (v/bucket-at x (.plot l) (.days d)))
+          (= id 50000)
+            (when (> (.days d) 0)
+              (set! (.day s)
+                    (v/cell-at x
+                               (.x (.heat-plot l))
+                               (.w (.heat-plot l))
+                               (.days d)))
+              (set! (.hour s)
+                    (v/cell-at y (.y (.heat-plot l)) (.h (.heat-plot l)) 24)))
+          :else 0))
+  0)
+
+(defn pointer-inspect [(d (ptr m/Dataset))] (-> i64)
+  (let [h (host/host)]
+    (when (and (!= (.window h) (n/nil)) (> (.window-w h) 0.0))
+      (let [point
+              (n/msg CGPoint
+                     (.window h)
+                     (n/sel c"mouseLocationOutsideOfEventStream")
+                     [])
+            l (v/layout (host/logical-width) (host/logical-height) (.count d))]
+        (inspect-at l
+                    d
+                    (.hover h)
+                    (* (/ (.x point) (.window-w h)) (host/logical-width))
+                    (* (- 1.0 (/ (.y point) (.window-h h)))
+                       (host/logical-height))))))
+  0)
+
+(defn track-pointer [] (-> i64)
+  (let [h (host/host)
+        s (interaction)]
+    (when (!= (.window h) (n/nil))
+      (let [point
+              (n/msg CGPoint
+                     (.window h)
+                     (n/sel c"mouseLocationOutsideOfEventStream")
+                     [])]
+        (when (and (.pointer-known s)
+                   (or (> (fabs (- (.x point) (.pointer-x s))) 0.5)
+                       (> (fabs (- (.y point) (.pointer-y s))) 0.5)))
+          (when (.keyboard-mode s) (set! (.last-hover s) -1))
+          (set! (.keyboard-mode s) false))
+        (set! (.pointer-x s) (.x point))
+        (set! (.pointer-y s) (.y point))
+        (set! (.pointer-known s) true))))
+  0)
+
+(defn update-hover [(d (ptr m/Dataset))] (-> i64)
+  (let [s (interaction)
+        (mut hovered) -1
+        (mut layer) -1]
+    (for [i 0 (.count d)]
+      (when (host/paper_hovered (+ 100 i)) (set! hovered i))
+      (when (host/paper_hovered (+ 30000 i)) (set! hovered i) (set! layer i)))
+    (when (and (>= (load hovered) 0)
+               (!= (load hovered) (.last-hover s))
+               (not (.dragging s))
+               (not (.keyboard-mode s)))
+      (set! (.selected s) (load hovered)))
+    (set! (.last-hover s) (load hovered))
+    (set! (.layer s) (load layer))
+    (set! (.day s) (.pinned-day s))
+    (set! (.hour s) (.pinned-hour s))
+    (set! (.detail-day s) -1)
+    (for [day 0 (.days d)]
+      (when (host/paper_hovered (+ 10000 day)) (set! (.day s) day))
+      (when (host/paper_hovered (+ 20000 day))
+        (set! (.day s) day)
+        (set! (.detail-day s) day)))
+    (for [hour 0 24]
+      (when (host/paper_hovered (+ 40000 hour)) (set! (.hour s) hour)))
+    (when (or (>= (.layer s) 0) (host/paper_hovered 50000))
+      (pointer-inspect d)
+      (host/paper_tick_interval 0.03)))
+  0)
+
+(defn draw [] (-> i64)
+  (let [source (source/state)
+        d (field source data)
+        s (interaction)
+        l (v/layout (host/logical-width) (host/logical-height) (.count d))]
+    (host/paper_begin t/BACK)
+    (host/paper_drag_area (rect 0.0 0.0 (.width l) 44.0))
+    (host/paper_light (* (.width l) 0.16) -180.0 760.0 1.05 1.0)
+    (track-pointer)
+    (limit-offset l)
+    (update-hover d)
+    (panel (rect 0.0 0.0 (.width l) (.height l)) 0.0 4.0 (t/paper t/BACK))
+    (paper-leaf (.sidebar l) t/INDEX)
+    (paper-leaf (.daily l) t/DAILY)
+    (paper-leaf (.post l) t/POST)
+    (paper-leaf (.hour l) t/HOUR)
+    (paper-leaf (.heat l) t/HEAT)
+    (sidebar l d)
+    (daily-chart l d)
+    (post-chart l d)
+    (hour-chart l d)
+    (heat-chart l d))
+  0)
+
+(defn poll-source [] (-> i64)
+  (let [s (source/state)
+        d (field s data)
+        ui (interaction)
+        old
+          (if (and (>= (.selected ui) 0) (< (.selected ui) (.count d)))
+              (n/retain (.path (index (.posts d) (.selected ui))))
+              (n/nil))
+        day (.day ui)
+        hour (.hour ui)
+        pinned-date
+          (if (>= (.pinned-day ui) 0)
+              (+ (.start d) (* (.pinned-day ui) m/DAY))
+              -1)]
+    (when (source/poll)
+      (let [found (m/find-post d (if (= old (n/nil)) (n/nil) (n/utf8 old)))]
+        (set! (.selected ui) (if (>= found 0) found 0)))
+      (when (>= pinned-date 0)
+        (set! (.pinned-day ui) (m/day-index d pinned-date))
+        (when (< (.pinned-day ui) 0) (set! (.pinned-hour ui) -1)))
+      (set! (.last-hover ui) -1)
+      (let [l (v/layout (host/logical-width) (host/logical-height) (.count d))]
+        (when (>= (v/slot-for (.selected ui) (.offset ui) (.visible l)) 0)
+          (host/paper_focus (+ 100 (.selected ui)))))
+      (host/paper_redraw))
+    (n/release old)
+    (when (and (not (.loading s))
+               (not (.fixture s))
+               (>= (- (n/now-ms) (.last-attempt s)) 300000))
+      (source/request)
+      (host/paper_redraw))
+    (when (or (>= (.layer ui) 0) (host/paper_hovered 50000))
+      (pointer-inspect d)
+      (when (or (!= day (.day ui)) (!= hour (.hour ui))) (host/paper_redraw)))
+    (host/paper_tick_interval (if (or (>= (.layer ui) 0)
+                                      (host/paper_hovered 50000))
+                                  0.03
+                                  (if (.loading s) 0.10 1.0))))
+  0)
+
+(defn drag-scroll [(l v/Layout) (d (ptr m/Dataset)) (y f64)] (-> i64)
+  (let [s (interaction)
+        thumb (v/scroll-thumb l (.count d) (.scroll s))
+        travel (- (.h (.list l)) (.h thumb))]
+    (when (> travel 0.0)
+      (set! (.scroll s)
+            (* (clamp (/ (- (- y (.y (.list l))) (.drag-offset s)) travel)
+                      0.0
+                      1.0)
+               (v/max-scroll l (.count d))))
+      (limit-offset l)))
+  0)
+
+(defn event [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
+  (let [d (field (source/state) data)
+        ui (interaction)
+        l (v/layout (host/logical-width) (host/logical-height) (.count d))]
+    (cond (= kind 0)
+            (do
+              (set! (.selected ui) 0)
+              (set! (.last-hover ui) -1)
+              (set! (.layer ui) -1)
+              (set! (.day ui) -1)
+              (set! (.detail-day ui) -1)
+              (set! (.hour ui) -1)
+              (set! (.pinned-day ui) -1)
+              (set! (.pinned-hour ui) -1)
+              (source/initialize)
+              (when (= (host/paper_arg_snapshot) 1)
+                (while (.loading (source/state))
+                  (source/poll)
+                  (n/usleep (: 20000 u32))))
+              (host/paper_tick_interval 0.10)
+              (host/paper_focus 100)
+              0)
+          (= kind 6) (poll-source)
+          (and (= kind 7)
+               (or (= id 60)
+                   (= id 70)
+                   (= id 71)
+                   (and (>= id 100) (< id (+ 100 (.count d))))))
+            (do
+              (set! (.keyboard-mode ui) false)
+              (set! (.scroll ui) (- (.scroll ui) y))
+              (limit-offset l)
+              (set! (.last-hover ui) -1)
+              (host/paper_redraw)
+              0)
+          (and (= kind 1) (or (= id 70) (= id 71)))
+            (do
+              (set! (.dragging ui) true)
+              (set! (.keyboard-mode ui) false)
+              (let [thumb (v/scroll-thumb l (.count d) (.scroll ui))]
+                (set! (.drag-offset ui)
+                      (if (= id 70) (- y (.y thumb)) (* (.h thumb) 0.5))))
+              (drag-scroll l d y)
+              (host/paper_redraw)
+              0)
+          (and (= kind 2) (.dragging ui))
+            (do (drag-scroll l d y) (host/paper_redraw) 0)
+          (and (= kind 3) (or (= id 70) (= id 71)))
+            (do (set! (.dragging ui) false) 0)
+          (and (= kind 3) (>= id 30000) (< id (+ 30000 (.count d))))
+            (do
+              (select (- id 30000))
+              (host/paper_focus (+ 100 (- id 30000)))
+              (host/paper_redraw)
+              0)
+          (and (= kind 3) (>= id 100) (< id (+ 100 (.count d))))
+            (do
+              (set! (.keyboard-mode ui) (and (= x 0.0) (= y 0.0)))
+              (select (- id 100))
+              (host/paper_focus id)
+              (host/paper_redraw)
+              0)
+          (and (= kind 3)
+               (or (and (>= id 10000) (< id (+ 10000 (.days d))))
+                   (and (>= id 20000) (< id (+ 20000 (.days d))))))
+            (do
+              (set! (.pinned-day ui)
+                    (if (>= id 20000) (- id 20000) (- id 10000)))
+              (host/paper_focus (+ 100 (.selected ui)))
+              (host/paper_redraw)
+              0)
+          (and (= kind 3) (>= id 40000) (< id 40024))
+            (do
+              (set! (.pinned-hour ui) (- id 40000))
+              (host/paper_focus (+ 100 (.selected ui)))
+              (host/paper_redraw)
+              0)
+          (and (= kind 3) (= id 50000))
+            (do
+              (inspect-at l d id x y)
+              (set! (.pinned-day ui) (.day ui))
+              (set! (.pinned-hour ui) (.hour ui))
+              (host/paper_focus (+ 100 (.selected ui)))
+              (host/paper_redraw)
+              0)
+          (and (= kind 4) (!= (& (host/paper_key_flags) 1048576) 0) (= id 15))
+            (do
+              (source/request)
+              (host/paper_tick_interval 0.10)
+              (host/paper_redraw)
+              1)
+          (and (= kind 4) (!= (& (host/paper_key_flags) 1048576) 0) (= id 31))
+            (do (open-post) 1)
+          (and (= kind 4) (= id 53))
+            (do
+              (set! (.pinned-day ui) -1)
+              (set! (.pinned-hour ui) -1)
+              (host/paper_redraw)
+              1)
+          (and (= kind 4) (or (= id 116) (= id 121)))
+            (do
+              (set! (.keyboard-mode ui) true)
+              (let [target
+                      (+ (.selected ui)
+                         (if (= id 121) (.visible l) (- (.visible l))))]
+                (select (v/clamped-offset target (.count d) 1))
+                (host/paper_focus (+ 100 (.selected ui))))
+              (host/paper_redraw)
+              1)
+          (and (= kind 4) (or (= id 125) (= id 126) (= id 123) (= id 124)))
+            (do
+              (set! (.keyboard-mode ui) true)
+              (when (> (.count d) 0)
+                (select (% (+ (.count d)
+                              (+ (.selected ui)
+                                 (if (or (= id 125) (= id 124)) 1 -1)))
+                           (.count d)))
+                (host/paper_focus (+ 100 (.selected ui))))
+              (host/paper_redraw)
+              1)
+          :else 0)))

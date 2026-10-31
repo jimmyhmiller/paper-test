@@ -1,0 +1,225 @@
+(module blog.interaction-test)
+(import "blog.native" :as n)
+(import "blog.model" :as m)
+(import "blog.source" :as source)
+(import "blog.app" :as app)
+(import "blog.view" :as v)
+(import "blog.stack" :as stack)
+(import "paper.platform" :as host)
+(import "paper.scene" :as scene)
+
+(defn setup [] (-> i64)
+  (scene/init)
+  (host/paper_configure c"Paper Blog tests" 1560.0 1000.0)
+  (let [s (source/state)
+        ui (app/interaction)]
+    (set! (.data s) (m/empty))
+    (assert (m/decode (field s data)
+                      (n/read-json c"tests/fixtures/sparse.json")
+                      (n/nil)))
+    (set! (.message s) c"Test data")
+    (set! (.selected ui) 0)
+    (set! (.last-hover ui) -1)
+    (set! (.day ui) -1)
+    (set! (.detail-day ui) -1))
+  (set! (.pinned-day (app/interaction)) -1)
+  (set! (.pinned-hour (app/interaction)) -1)
+  (set! (.hour (app/interaction)) -1)
+  (app/draw))
+
+(deftest hover-links-every-row-to-the-detail-and-leaving-retains-selection
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)
+          l (v/layout 1560.0 1000.0 (.count d))
+          r (v/row l 1)]
+      (assert (= (host/hit-test (+ (.x r) 10.0) (+ (.y r) 8.0)) 101))
+      (host/update-hover (+ (.x r) 10.0) (+ (.y r) 8.0))
+      (app/draw)
+      (assert (= (.selected (app/interaction)) 1))
+      (host/update-hover -1.0 -1.0)
+      (app/draw)
+      (assert (= (.selected (app/interaction)) 1))
+      (m/clear d))
+    (n/release pool)))
+
+(deftest main-and-detail-chart-hovers-map-to-exact-zero-filled-days
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)
+          l (v/layout 1560.0 1000.0 (.count d))
+          r (.plot l)
+          detail (app/detail-plot l)]
+      (host/update-hover (+ (.x r) (/ (.w r) 3.0)) (+ (.y r) 8.0))
+      (app/draw)
+      (assert (= (.day (app/interaction)) 1))
+      (assert (= (load (index (.totals d) (.day (app/interaction)))) 0))
+      (host/update-hover (+ (.x detail) (* (.w detail) (/ 2.0 3.0)))
+                         (+ (.y detail) 8.0))
+      (app/draw)
+      (assert (= (.detail-day (app/interaction)) 2))
+      (assert (= (.day (app/interaction)) 2))
+      (m/clear d))
+    (n/release pool)))
+
+(deftest selecting-a-post-requests-matching-keyboard-focus
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (app/event 3 101 0.0 0.0)
+    (assert (= (.selected (app/interaction)) 1))
+    (assert (= (.requested-focus (host/host)) 101))
+    (m/clear (field (source/state) data))
+    (n/release pool)))
+
+(deftest every-stacked-band-contains-exactly-that-posts-counts
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)]
+      (for [day 0 (.days d)]
+        (let [(mut sum) 0]
+          (for [post 0 (.count d)]
+            (let [upper (stack/upper d post day)
+                  lower (stack/lower d post day)
+                  views (load (index (.values (index (.posts d) post)) day))]
+              (assert (= (- upper lower) views))
+              (assert (>= lower 0))
+              (set! sum (+ (load sum) (- upper lower)))))
+          (assert (= (load sum) (load (index (.totals d) day))))))
+      (m/clear d))
+    (n/release pool)))
+
+(deftest actual-cut-paper-hit-regions-select-their-post-not-a-rectangle
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)
+          l (v/layout 1560.0 1000.0 (.count d))
+          r (.plot l)
+          peak (app/axis-peak (.peak d))
+          x (+ (.x r) (* (.w r) (/ 2.0 3.0)))
+          y (stack/y r 1 peak)]
+      ;; Only the second post has views on this date. A bounding-box hit for
+      ;; the first post would incorrectly win because that sheet is raised.
+      (assert (= (host/hit-test x y) 30001))
+      (host/update-hover x y)
+      (app/draw)
+      (assert (= (.selected (app/interaction)) 1))
+      (assert (= (.layer (app/interaction)) 1))
+      (assert (= (host/hit-test x y) 30001))
+      (app/event 3 30001 x y)
+      (assert (= (.requested-focus (host/host)) 101))
+      (m/clear d))
+    (n/release pool)))
+
+(deftest pixel-scrolling-and-thumb-drag-reach-the-last-post-without-changing-data
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)
+          ui (app/interaction)]
+      (assert (m/decode d (n/read-json c"tests/fixtures/many.json") (n/nil)))
+      (set! (.scroll ui) 0.0)
+      (let [l (v/layout 1560.0 1000.0 (.count d))]
+        (app/event 7 60 0.0 -7.5)
+        (assert (= (.scroll ui) 7.5))
+        (assert (= (.offset ui) 0))
+        (app/event 7 60 0.0 -10000.0)
+        (assert (= (.scroll ui) (v/max-scroll l (.count d))))
+        (app/draw)
+        (let [last (v/row l (- (.visible l) 1))]
+          (assert (= (host/hit-test (+ (.x last) 10.0) (+ (.y last) 8.0)) 199)))
+        (let [thumb (v/scroll-thumb l (.count d) (.scroll ui))]
+          (app/event 1 70 (.x thumb) (+ (.y thumb) 4.0))
+          (app/event 2 70 (.x thumb) (+ (.y (.list l)) 4.0))
+          (app/event 3 70 (.x thumb) (+ (.y (.list l)) 4.0)))
+        (assert (= (.scroll ui) 0.0))
+        (assert (not (.dragging ui)))
+        (app/select 99)
+        (assert (= (.scroll ui) (v/max-scroll l (.count d))))
+        (assert (= (.views d) 100)))
+      (m/clear d))
+    (n/release pool)))
+
+(deftest heatmap-cell-inspection-links-day-and-hour-and-can-be-pinned
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)
+          ui (app/interaction)]
+      (assert (m/decode d (n/read-json c"tests/fixtures/hourly.json") (n/nil)))
+      (let [l (v/layout 1560.0 1000.0 (.count d))
+            r (.heat-plot l)
+            x (+ (.x r) (* (.w r) (/ 2.5 4.0)))
+            y (+ (.y r) (* (.h r) (/ 12.5 24.0)))]
+        (app/inspect-at l d 50000 x y)
+        (assert (= (.day ui) 2))
+        (assert (= (.hour ui) 12))
+        (assert (= (load (index (.heat d) (+ (* (.day ui) 24) (.hour ui)))) 3))
+        (app/event 3 50000 x y)
+        (assert (= (.pinned-day ui) 2))
+        (assert (= (.pinned-hour ui) 12))
+        (host/update-hover -1.0 -1.0)
+        (app/draw)
+        (assert (= (.day ui) 2))
+        (assert (= (.hour ui) 12))
+        (app/event 4 53 0.0 0.0)
+        (app/draw)
+        (assert (= (.day ui) -1))
+        (assert (= (.hour ui) -1)))
+      (m/clear d))
+    (n/release pool)))
+
+(deftest hourly-bars-use-absolute-post-counts-and-selection-links-the-inlay
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)]
+      (assert (m/decode d (n/read-json c"tests/fixtures/hourly.json") (n/nil)))
+      (app/select 0)
+      (assert (= (app/selected-hour d 0) 9))
+      (assert (= (app/selected-hour d 1) 3))
+      (app/select 1)
+      (assert (= (app/selected-hour d 0) 0))
+      (assert (= (app/selected-hour d 12) 3))
+      (app/draw)
+      (let [r (.hour-plot (v/layout 1560.0 1000.0 (.count d)))]
+        (host/update-hover (+ (.x r) (* (.w r) (/ 12.5 24.0))) (+ (.y r) 5.0))
+        (app/draw)
+        (assert (= (.hour (app/interaction)) 12)))
+      (m/clear d))
+    (n/release pool)))
+
+(deftest keyboard-selection-is-not-overridden-by-a-stationary-pointer
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)
+          l (v/layout 1560.0 1000.0 (.count d))
+          first (v/row l 0)]
+      (app/event 3 101 0.0 0.0)
+      (host/update-hover (+ (.x first) 10.0) (+ (.y first) 8.0))
+      (app/draw)
+      (assert (= (.selected (app/interaction)) 1))
+      (m/clear d))
+    (n/release pool)))
+
+(deftest hourly-scale-follows-a-low-volume-post-without-aggregate-bars
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)]
+      (assert (m/decode d (n/read-json c"tests/fixtures/many.json") (n/nil)))
+      (app/select 0)
+      (assert (= (.hour-peak d) 100))
+      (assert (= (app/selected-hour-peak d) 1))
+      (assert (= (app/axis-peak (app/selected-hour-peak d)) 2))
+      (app/draw)
+      (let [r (.hour-plot (v/layout 1560.0 1000.0 (.count d)))
+            bounds (app/bar r 0 24 1 2 0xf5af28 false)]
+        (assert (> (.h bounds) 50.0)))
+      (assert (= (load (index (.hour-totals d) 0)) 100))
+      (m/clear d))
+    (n/release pool)))
+
+(deftest unified-window-drag-region-does-not-steal-index-or-chart-input
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (assert (host/window-drag-point? 800.0 20.0))
+    (assert (not (host/window-drag-point? 60.0 200.0)))
+    (assert (not (host/window-drag-point? 800.0 160.0)))
+    (m/clear (field (source/state) data))
+    (n/release pool)))

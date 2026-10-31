@@ -1,0 +1,30 @@
+(module blog.stack)
+(import "blog.model" :as m)
+(import "blog.native" :as n)
+(import "blog.theme" :as theme)
+(import "paper.flow" :use [Rect])
+(import "paper.ffi" :use [strlen])
+
+;;; Every post owns its actual band. Ranked posts run from the upper contour
+;;; downward; zero-view days collapse the band rather than inventing thickness.
+(defn upper [(d (ptr m/Dataset)) (post i64) (day i64)] (-> i64)
+  (let [(mut value) (load (index (.totals d) day))]
+    (for [i 0 post]
+      (set! value
+            (- (load value) (load (index (.values (index (.posts d) i)) day)))))
+    (load value)))
+
+(defn lower [(d (ptr m/Dataset)) (post i64) (day i64)] (-> i64)
+  (- (upper d post day) (load (index (.values (index (.posts d) post)) day))))
+
+(defn color [(path (ptr i8))] (-> u32)
+  (let [text (n/utf8 path)
+        (mut hash) 0]
+    (for [i 0 (cast i64 (strlen text))]
+      (set! hash
+            (% (+ (* (load hash) 31) (cast i64 (load (index text i)))) 104729)))
+    (theme/layer-color (% (load hash) 8))))
+
+(defn y [(r Rect) (value i64) (peak i64)] (-> f64)
+  (+ (.y r)
+     (* (.h r) (- 1.0 (/ (cast f64 value) (cast f64 (if (> peak 0) peak 1)))))))
