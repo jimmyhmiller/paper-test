@@ -1,7 +1,8 @@
 (module blog.theme)
+(import "blog.tuning" :as tuning)
 (import "paper.material"
         :use
-        [Material stock tint pressed-paper texture-scale texture-seed])
+        [Material tint pressed-paper])
 
 ;;; Editable dyed-stock palette. Paper, ink and data have separate roles.
 (const BACK 0x211526)
@@ -46,7 +47,14 @@
         :else 1.0))
 
 (defn paper [(pigment u32)] (-> Material)
-  (texture-seed (texture-scale (pressed-paper pigment) 1.6) 0.39))
+  (let [controls (tuning/state)
+        (mut material) (pressed-paper pigment)]
+    (set! (.size (.pattern material)) (.texture-size controls))
+    (set! (.relief (.pattern material)) (.texture-depth controls))
+    (set! (.angle (.pattern material))
+          (* (.texture-angle controls) 0.017453292519943295))
+    (set! (.seed material) 0.39)
+    (load material)))
 
 (defn heat-paper [(fraction f64)] (-> Material)
   (cond (< fraction 0.25) (tint (paper 0x192e60) 0x17878e (* fraction 4.0))

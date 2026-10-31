@@ -7,6 +7,8 @@
 (import "blog.view" :as v)
 (import "blog.stack" :as stack)
 (import "blog.sun" :as sun)
+(import "blog.theme" :as theme)
+(import "blog.tuning" :as tuning)
 (import "paper.lighting" :as light)
 (import "paper.platform" :as host)
 (import "paper.scene" :as scene)
@@ -366,12 +368,12 @@
       (assert (= (host/hit-test 35.0 240.0) (+ sun/BASE 6)))
       (app/event 3 100 35.0 208.0)
       (assert (= (.selected (app/interaction)) 1))
-      (let [track (light/track-bounds lighting 1)]
+      (let [track (sun/track-bounds lighting 3)]
         (app/event 1
-                   (+ sun/BASE 3)
+                   (+ sun/BASE 23)
                    (+ (.x track) (* (.w track) 0.5))
                    (.y track))
-        (assert (= (.depth lighting) 0.75)))
+        (assert (= (.depth lighting) 6.0)))
       (app/event 4 53 0.0 0.0)
       (assert (not (.open lighting)))
       (assert (.selection-locked (app/interaction)))
@@ -418,5 +420,49 @@
              (n/ns c"dev.coil.paper-blog.tests"))
       (set! (.animating s) false)
       (set! (.open s) false)
+      (m/clear (field (source/state) data)))
+    (n/release pool)))
+
+(deftest expanded-paper-parameters-reach-the-renderer-and-persist-at-extremes
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [s (sun/state)]
+      (for [i 0 sun/COUNT]
+        (sun/set-fraction s i 1.0)
+        (assert (= (sun/parameter-value s i) (sun/maximum-value i)))
+        (assert (= (sun/parameter-fraction s i) 1.0)))
+      (sun/save-settings s)
+      (for [i 0 sun/COUNT] (sun/set-parameter s i (sun/default-value s i)))
+      (sun/restore-settings s)
+      (for [i 0 sun/COUNT]
+        (assert (= (sun/parameter-value s i) (sun/maximum-value i))))
+      (sun/apply)
+      (assert (= (.depth (scene/scene)) 12.0))
+      (assert (= (.grain (scene/scene)) 10.0))
+      (assert (= (.elevation (scene/scene)) 20000.0))
+      (let [stock (theme/paper 0x123456)]
+        (assert (= (.size (.pattern stock)) 16.0))
+        (assert (= (.relief (.pattern stock)) 8.0)))
+      (assert (= (app/heat-tile (v/row (v/layout 1560.0 1000.0 2) 0)
+                                1.0
+                                false
+                                false)
+                 61.0))
+      (app/event 3 sun/BASE 0.0 0.0)
+      (app/draw)
+      (let [last (sun/track-bounds s (- sun/COUNT 1))]
+        (assert (< (+ (.y last) (.h last))
+                   (+ (.y (.bounds s)) (.h (.bounds s)))))
+        (assert (= (host/hit-test (+ (.x last) 10.0) (+ (.y last) 10.0))
+                   (+ sun/BASE 20 (- sun/COUNT 1)))))
+      (app/event 3 (+ sun/BASE 4) 0.0 0.0)
+      (for [i 0 sun/COUNT]
+        (assert (= (sun/parameter-value s i) (sun/default-value s i))))
+      (set! (.open s) false)
+      (n/msg i64
+             (test-preferences)
+             (n/sel c"removePersistentDomainForName:")
+             [(ptr i8)]
+             (n/ns c"dev.coil.paper-blog.tests"))
       (m/clear (field (source/state) data)))
     (n/release pool)))

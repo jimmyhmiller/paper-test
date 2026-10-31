@@ -11,6 +11,7 @@
 (import "blog.stack" :as stack)
 (import "blog.theme" :as t)
 (import "blog.sun" :as sun)
+(import "blog.tuning" :as tuning)
 
 (defstruct Interaction
   [(selected i64)
@@ -280,9 +281,9 @@
             active (= i (.selected s))
             z
               (if active
-                  46.0
+                  (maximum 46.0 (+ 19.0 (.graph-spacing (tuning/state))))
                   (+ 18.0
-                     (* 19.0
+                     (* (.graph-spacing (tuning/state))
                         (/ (cast f64 (- (.count d) i))
                            (cast f64 (if (> (.count d) 0) (.count d) 1))))))
             paper (t/paper (stack/color (.path post)))]
@@ -344,7 +345,9 @@
                 height)]
     (when (> value 0)
       (let [z (if active 28.0 21.0)
-            edge (minimum 0.65 (* 0.2 (minimum (.w bounds) (.h bounds))))
+            edge
+              (minimum (.cut-edge (tuning/state))
+                       (* 0.2 (minimum (.w bounds) (.h bounds))))
             stock (t/paper color)]
         ;; The outer cut edge still follows the exact quantitative rectangle.
         ;; Its small inset top face exposes the paper thickness at the sides.
@@ -568,12 +571,12 @@
 
 (defn heat-tile [(bounds Rect) (level f64) (active bool) (guided bool)] (-> f64)
   (let [sheets (+ 1 (cast i64 (* level 4.0)))
-        top (+ 17.0 (* (cast f64 (- sheets 1)) 4.0))
+        top (+ 17.0 (* (cast f64 (- sheets 1)) (.heat-step (tuning/state))))
         stock (t/heat-paper level)]
     ;; Count bands add sheets without shifting the day/hour footprint.
     (for [sheet 0 sheets]
       (let [edge (* (cast f64 sheet) 0.14)
-            z (+ 17.0 (* (cast f64 sheet) 4.0))]
+            z (+ 17.0 (* (cast f64 sheet) (.heat-step (tuning/state))))]
         (panel (inset bounds edge)
                0.1
                z

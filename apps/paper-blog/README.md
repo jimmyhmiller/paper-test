@@ -49,7 +49,22 @@ can always be selected through the index even when too thin to point at easily.
 
 The unified window keeps native traffic lights in their system positions. Rich dyed compressed-pulp stocks, exposed sheet edges, and directional shadows give the graphs physical paper relief. Hourly bars show only the selected post; the heatmap follows the selected post and shows its hourly views in fixed absolute-count bins. Hover links dates and hours across the charts; click to pin and Escape to clear.
 
-Click the small gold sun stamped into the upper-right corner of the daily-views sheet to adjust sun position, height, and paper relief. The matching plum paper popover can be dragged, closed with Escape, or dismissed by clicking outside. Settings are saved in macOS preferences and restored on launch; Reset persists the defaults immediately. The controls never change a pinned post.
+Click the small gold sun stamped into the upper-right corner of the daily-views sheet to open the persistent paper and sunlight editor. Each slider shows its value. Hold Shift while dragging for ten-times finer adjustment. The card can be dragged, closed with Escape, or dismissed by clicking outside; the post pin remains unchanged. Reset all restores and saves every default immediately.
+
+| Parameter | Range |
+| --- | --- |
+| Sun X / Y | −5 to +5 window widths / heights |
+| Sun height | 10–20,000 points; curved slider for low-height precision |
+| Shadow depth | 0–12× |
+| Grain strength | 0–10× |
+| Texture size | 0.25–16× |
+| Texture depth | 0–8× |
+| Texture angle | −180° to +180° |
+| Graph layer spacing | 0–42 paper points |
+| Heatmap step height | 0–11 paper points per count band |
+| Bar edge width | 0–4 points, bounded by the bar’s actual size |
+
+The controls edit real renderer/material parameters. Paper elevations stay within the renderer’s canonical 64-point stack; the independent depth multiplier permits exaggerated physical relief. Chart positions, counts, and selection paths do not change. New fields extend the existing preferences dictionary, preserving earlier saved lighting values.
 
 ## Live data and offline use
 

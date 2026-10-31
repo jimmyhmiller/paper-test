@@ -776,6 +776,34 @@
     (set! (.grain s) (clamp grain 0.0 2.0)))
   0)
 
+;;; Explicit extended lighting for material editors. Unlike paper_light's
+;;; convenience ranges, accepted values are applied without silent clipping.
+;;; Bounds keep CPU and Metal calculations finite while permitting exaggerated
+;;; relief, near-horizontal lighting, and very strong microtexture.
+(defn paper_light_extended [(x f64)
+                            (y f64)
+                            (elevation f64)
+                            (depth f64)
+                            (grain f64)]
+  (-> i64)
+  (assert (and (>= x -1000000000.0)
+               (<= x 1000000000.0)
+               (>= y -1000000000.0)
+               (<= y 1000000000.0)
+               (>= elevation 1.0)
+               (<= elevation 1000000.0)
+               (>= depth 0.0)
+               (<= depth 64.0)
+               (>= grain 0.0)
+               (<= grain 64.0)))
+  (let [s (scene)]
+    (set! (.light-x s) x)
+    (set! (.light-y s) y)
+    (set! (.elevation s) elevation)
+    (set! (.depth s) depth)
+    (set! (.grain s) grain))
+  0)
+
 (defn paper_redraw [] (-> i64)
   (set! (.dirty (scene)) true)
   0)
