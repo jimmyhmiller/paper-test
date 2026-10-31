@@ -2,8 +2,8 @@
 (import "coil.primitive" :as p)
 
 ;;; Shared paper treatment and hover motion for the whole dashboard.
-;;; User-selected setting, displayed as 1.00 in the control.
-(const DEFAULT_HOVER_LIFT 0.9991574754901961)
+;;; User-selected movement amount for the centered hover effect.
+(const DEFAULT_HOVER_LIFT 2.5)
 
 (defstruct Tuning
   [(initialized bool)
