@@ -19,6 +19,8 @@
                       (n/nil)))
     (set! (.message s) c"Test data")
     (set! (.selected ui) 0)
+    (set! (.selection-locked ui) false)
+    (set! (.keyboard-mode ui) false)
     (set! (.last-hover ui) -1)
     (set! (.day ui) -1)
     (set! (.detail-day ui) -1))
@@ -222,4 +224,61 @@
     (assert (not (host/window-drag-point? 60.0 200.0)))
     (assert (not (host/window-drag-point? 800.0 160.0)))
     (m/clear (field (source/state) data))
+    (n/release pool)))
+
+(deftest clicked-post-stays-locked-across-other-rows-and-chart-layers
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)
+          ui (app/interaction)
+          l (v/layout 1560.0 1000.0 (.count d))
+          other (v/row l 0)]
+      (app/event 3 101 35.0 240.0)
+      (assert (.selection-locked ui))
+      (host/update-hover (+ (.x other) 10.0) (+ (.y other) 8.0))
+      (app/draw)
+      (assert (= (.selected ui) 1))
+      (set! (.hover (host/host)) 30000)
+      (app/update-hover d)
+      (assert (= (.selected ui) 1))
+      (app/event 3 100 35.0 208.0)
+      (assert (= (.selected ui) 0))
+      (assert (.selection-locked ui))
+      (app/event 3 30001 800.0 200.0)
+      (assert (= (.selected ui) 1))
+      (assert (.selection-locked ui))
+      (app/event 4 53 0.0 0.0)
+      (assert (not (.selection-locked ui)))
+      (set! (.hover (host/host)) 100)
+      (app/update-hover d)
+      (assert (= (.selected ui) 0))
+      (m/clear d))
+    (n/release pool)))
+
+(deftest heatmap-counts-follow-hovered-and-locked-post-selection
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)
+          ui (app/interaction)]
+      (assert (m/decode d (n/read-json c"tests/fixtures/hourly.json") (n/nil)))
+      (for [post 0 (.count d)]
+        (set! (.selected ui) post)
+        (let [(mut sum) 0]
+          (for [day 0 (.days d)]
+            (for [hour 0 24]
+              (set! sum (+ (load sum) (app/selected-cell d day hour)))))
+          (assert (= (load sum) (.views (index (.posts d) post))))))
+      (set! (.selected ui) 0)
+      (set! (.hover (host/host)) 101)
+      (app/update-hover d)
+      (assert (= (.selected ui) 1))
+      (assert (= (app/selected-cell d 0 1)
+                 (load (index (.hours (index (.posts d) 1)) 1))))
+      (app/event 3 100 35.0 208.0)
+      (set! (.hover (host/host)) 101)
+      (app/update-hover d)
+      (assert (= (.selected ui) 0))
+      (assert (= (app/selected-cell d 0 1)
+                 (load (index (.hours (index (.posts d) 0)) 1))))
+      (m/clear d))
     (n/release pool)))

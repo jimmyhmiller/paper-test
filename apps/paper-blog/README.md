@@ -28,7 +28,7 @@ compiler and Apple's command-line tools. No Python process runs inside the app.
   identifies the post in the stack, index, and isolated detail shape.
 - Hover the charts to inspect the exact UTC date and count. Inspecting the
   main chart also shows that day's count for the selected post.
-- Click a post to select it for keyboard navigation; arrow keys move through
+- Click a post or paper band to lock its selection while inspecting other graphs. Hovering other posts will not replace a locked selection. Click another post to switch; Escape unlocks hover browsing and clears pinned dates/hours. Arrow keys move through
   the index. Tab, Shift-Tab, Space, and Return use the native Paper focus system.
 - **Command-R** refreshes the data. It also refreshes automatically every five
   minutes. Concurrent refreshes are coalesced.
@@ -47,7 +47,7 @@ the pointer moves within one layer, the exact-day readout updates without
 requiring a layer change. Low-count layers retain their true thickness; they
 can always be selected through the index even when too thin to point at easily.
 
-The unified window keeps native traffic lights in their system positions. Rich dyed compressed-pulp stocks, exposed sheet edges, and directional shadows give the graphs physical paper relief. Hourly bars show only the selected post; the heatmap shows all views in fixed absolute-count bins. Hover links dates and hours across the charts; click to pin and Escape to clear.
+The unified window keeps native traffic lights in their system positions. Rich dyed compressed-pulp stocks, exposed sheet edges, and directional shadows give the graphs physical paper relief. Hourly bars show only the selected post; the heatmap follows the selected post and shows its hourly views in fixed absolute-count bins. Hover links dates and hours across the charts; click to pin and Escape to clear.
 
 ## Live data and offline use
 

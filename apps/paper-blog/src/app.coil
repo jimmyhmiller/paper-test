@@ -13,6 +13,7 @@
 
 (defstruct Interaction
   [(selected i64)
+   (selection-locked bool)
    (last-hover i64)
    (offset i64)
    (scroll f64)
@@ -530,6 +531,18 @@
                  c"Hourly data is not available in this saved snapshot.")))
   0)
 
+(defn selected-cell [(d (ptr m/Dataset)) (day i64) (hour i64)] (-> i64)
+  (let [selected (.selected (interaction))]
+    (if (and (.hourly d)
+             (>= selected 0)
+             (< selected (.count d))
+             (>= day 0)
+             (< day (.days d))
+             (>= hour 0)
+             (< hour 24))
+        (load (index (.hours (index (.posts d) selected)) (+ (* day 24) hour)))
+        0)))
+
 (defn heat-tile [(bounds Rect) (level f64) (active bool) (guided bool)] (-> f64)
   (let [sheets (+ 1 (cast i64 (* level 4.0)))
         top (+ 17.0 (* (cast f64 (- sheets 1)) 4.0))
@@ -562,13 +575,22 @@
            t/INK
            1
            c"Views by day & hour · UTC")
+    (when (and (>= (.selected s) 0) (< (.selected s) (.count d)))
+      (caption (rect (+ (.x mount) 22.0)
+                     (+ (.y mount) 47.0)
+                     (- (.w mount) 44.0)
+                     18.0)
+               11.0
+               t/MUTED
+               0
+               (n/utf8 (.short-title (index (.posts d) (.selected s))))))
     (if (and (.hourly d) (> (.days d) 0))
         (let [cell-w (/ (.w r) (cast f64 (.days d)))
               cell-h (/ (.h r) 24.0)]
           (for [day 0 (.days d)]
             (for [hour 0 24]
               (let [slot (+ (* day 24) hour)
-                    value (load (index (.heat d) slot))
+                    value (selected-cell d day hour)
                     active (and (= day (.day s)) (= hour (.hour s)))
                     guided
                       (or (and (= day (.day s)) (< (.hour s) 0))
@@ -587,7 +609,7 @@
                           (.y r)
                           (.w r)
                           (.h r)
-                          c"Hourly view matrix. Hover a cell to inspect its exact day and hour."
+                          c"Selected post hourly view matrix. Hover a cell to inspect its exact day and hour."
                           0
                           0.0)
           (for [i 0 5]
@@ -820,6 +842,7 @@
       (when (host/paper_hovered (+ 30000 i)) (set! hovered i) (set! layer i)))
     (when (and (>= (load hovered) 0)
                (!= (load hovered) (.last-hover s))
+               (not (.selection-locked s))
                (not (.dragging s))
                (not (.keyboard-mode s)))
       (set! (.selected s) (load hovered)))
@@ -880,6 +903,7 @@
               -1)]
     (when (source/poll)
       (let [found (m/find-post d (if (= old (n/nil)) (n/nil) (n/utf8 old)))]
+        (when (< found 0) (set! (.selection-locked ui) false))
         (set! (.selected ui) (if (>= found 0) found 0)))
       (when (>= pinned-date 0)
         (set! (.pinned-day ui) (m/day-index d pinned-date))
@@ -924,6 +948,7 @@
     (cond (= kind 0)
             (do
               (set! (.selected ui) 0)
+              (set! (.selection-locked ui) false)
               (set! (.last-hover ui) -1)
               (set! (.layer ui) -1)
               (set! (.day ui) -1)
@@ -968,6 +993,7 @@
             (do (set! (.dragging ui) false) 0)
           (and (= kind 3) (>= id 30000) (< id (+ 30000 (.count d))))
             (do
+              (set! (.selection-locked ui) true)
               (select (- id 30000))
               (host/paper_focus (+ 100 (- id 30000)))
               (host/paper_redraw)
@@ -975,6 +1001,7 @@
           (and (= kind 3) (>= id 100) (< id (+ 100 (.count d))))
             (do
               (set! (.keyboard-mode ui) (and (= x 0.0) (= y 0.0)))
+              (set! (.selection-locked ui) true)
               (select (- id 100))
               (host/paper_focus id)
               (host/paper_redraw)
@@ -1012,12 +1039,16 @@
             (do (open-post) 1)
           (and (= kind 4) (= id 53))
             (do
+              (set! (.selection-locked ui) false)
+              (set! (.keyboard-mode ui) false)
+              (set! (.last-hover ui) -1)
               (set! (.pinned-day ui) -1)
               (set! (.pinned-hour ui) -1)
               (host/paper_redraw)
               1)
           (and (= kind 4) (or (= id 116) (= id 121)))
             (do
+              (set! (.selection-locked ui) true)
               (set! (.keyboard-mode ui) true)
               (let [target
                       (+ (.selected ui)
@@ -1028,6 +1059,7 @@
               1)
           (and (= kind 4) (or (= id 125) (= id 126) (= id 123) (= id 124)))
             (do
+              (set! (.selection-locked ui) true)
               (set! (.keyboard-mode ui) true)
               (when (> (.count d) 0)
                 (select (% (+ (.count d)
