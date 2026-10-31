@@ -2,7 +2,8 @@
 (import "coil.primitive" :as p)
 
 ;;; Shared paper treatment and hover motion for the whole dashboard.
-(const DEFAULT_HOVER_LIFT 3.0)
+;;; User-selected setting, displayed as 1.00 in the control.
+(const DEFAULT_HOVER_LIFT 0.9991574754901961)
 
 (defstruct Tuning
   [(initialized bool)
