@@ -4,6 +4,7 @@
 (import "paper.platform" :as host)
 (import "paper.ffi" :use [fabs pow])
 (import "blog.native" :as n)
+(import "blog.tuning" :as tuning)
 
 (defstruct Motion [(last f64) (seconds f64) (pending bool) (animate bool)])
 
@@ -59,7 +60,7 @@
 ;;; Oblique projection of the *lift*, not a change in the bar's data height.
 ;;; The original rectangle remains the stationary quantitative footprint.
 (defn projected-face [(base Rect) (amount f64) (paper-depth f64)] (-> Rect)
-  (let [rise (* 3.0 amount paper-depth)]
+  (let [rise (* (.hover-lift (tuning/state)) amount paper-depth)]
     (rect (- (.x base) (* rise 0.35))
           (- (.y base) (* rise 0.8))
           (.w base)

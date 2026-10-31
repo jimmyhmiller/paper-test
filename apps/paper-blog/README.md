@@ -61,6 +61,9 @@ Click the small gold sun stamped into the upper-right corner of the daily-views 
 | Texture size | 0.25–16× |
 | Texture depth | 0–8× |
 | Texture angle | −180° to +180° |
+| Hover movement | 0–30; zero disables bar movement |
+
+Hover movement adjusts the lift across both bar graphs and saves automatically. Its built-in default is defined by `DEFAULT_HOVER_LIFT` in `src/tuning.coil`.
 
 The controls edit real renderer/material parameters. Paper elevations stay within the renderer’s canonical 64-point stack; the independent depth multiplier permits exaggerated physical relief. Chart positions, counts, and selection paths do not change. New fields extend the existing preferences dictionary, preserving earlier saved lighting values.
 

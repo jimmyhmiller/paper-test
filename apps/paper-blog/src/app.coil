@@ -12,6 +12,7 @@
 (import "blog.theme" :as t)
 (import "blog.sun" :as sun)
 (import "blog.bar-motion" :as motion)
+(import "blog.tuning" :as tuning)
 
 (defstruct Interaction
   [(selected i64)
@@ -344,9 +345,14 @@
                 (- (+ (.y r) (.h r)) height)
                 (maximum 1.0 (- step 2.4))
                 height)]
-    (let [lift (motion/amount group slot (and active (> value 0)))]
+    (let [lift
+            (motion/amount group
+                           slot
+                           (and active
+                                (> value 0)
+                                (> (.hover-lift (tuning/state)) 0.0)))]
       (when (> value 0)
-        (let [z (+ 21.0 (* 3.0 lift))
+        (let [z (+ 21.0 (* (.hover-lift (tuning/state)) lift))
               face (motion/projected-face bounds lift (.depth (scene/scene)))
               edge (minimum 0.35 (* 0.2 (minimum (.w bounds) (.h bounds))))
               stock (t/paper color)]

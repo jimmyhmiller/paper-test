@@ -1,5 +1,6 @@
 (module blog.bar-motion-test)
 (import "blog.bar-motion" :as motion)
+(import "blog.tuning" :as tuning)
 (import "paper.geometry" :use [rect])
 
 (deftest bar-lift-eases-in-both-directions-and-settles
@@ -34,3 +35,17 @@
     (assert (= (.h lifted) (.h base)))
     (assert (= (.w deeper) (.w base)))
     (assert (= (.h deeper) (.h base)))))
+
+(deftest hover-movement-control-adjusts-and-can-disable-the-actual-projection
+  (let [t (tuning/state)
+        previous (.hover-lift (tuning/state))
+        base (rect 100.0 100.0 20.0 80.0)]
+    (set! (.hover-lift t) 0.0)
+    (let [flat (motion/projected-face base 1.0 1.0)]
+      (assert (= (.x flat) (.x base)))
+      (assert (= (.y flat) (.y base))))
+    (set! (.hover-lift t) 12.0)
+    (let [lifted (motion/projected-face base 1.0 1.0)]
+      (assert (< (.y lifted) 91.0))
+      (assert (= (.h lifted) (.h base))))
+    (set! (.hover-lift t) previous)))

@@ -1,12 +1,15 @@
 (module blog.tuning)
 (import "coil.primitive" :as p)
 
-;;; One material treatment shared by every sheet in this dashboard.
+;;; Shared paper treatment and hover motion for the whole dashboard.
+(const DEFAULT_HOVER_LIFT 3.0)
+
 (defstruct Tuning
   [(initialized bool)
    (texture-size f64)
    (texture-depth f64)
-   (texture-angle f64)])
+   (texture-angle f64)
+   (hover-lift f64)])
 
 (defn state [] (-> (ptr Tuning))
   (let [s (p/alloc-static Tuning)]
@@ -16,5 +19,6 @@
               :initialized true
               :texture-size 1.6
               :texture-depth 1.4
-              :texture-angle 0.0)))
+              :texture-angle 0.0
+              :hover-lift DEFAULT_HOVER_LIFT)))
     s))

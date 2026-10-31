@@ -33,7 +33,7 @@
           (if (and (>= amount low) (<= amount high)) amount fallback))
         fallback)))
 
-(const COUNT 8)
+(const COUNT 9)
 
 (defn parameter-name [(i i64)] (-> (ptr i8))
   (case i
@@ -44,7 +44,8 @@
     4 c"Paper grain"
     5 c"Texture size"
     6 c"Texture depth"
-    c"Texture angle"))
+    7 c"Texture angle"
+    c"Hover movement"))
 
 (defn parameter-key [(i i64)] (-> (ptr i8))
   (case i
@@ -55,13 +56,14 @@
     4 c"grain"
     5 c"texture-size"
     6 c"texture-depth"
-    c"texture-angle"))
+    7 c"texture-angle"
+    c"hover-lift"))
 
 (defn minimum-value [(i i64)] (-> f64)
   (case i 0 -5.0 1 -5.0 2 10.0 5 0.25 7 -180.0 0.0))
 
 (defn maximum-value [(i i64)] (-> f64)
-  (case i 0 5.0 1 5.0 2 20000.0 3 12.0 4 10.0 5 16.0 6 8.0 180.0))
+  (case i 0 5.0 1 5.0 2 20000.0 3 12.0 4 10.0 5 16.0 6 8.0 7 180.0 30.0))
 
 (defn default-value [(s (ptr light/Lighting)) (i i64)] (-> f64)
   (case i
@@ -72,7 +74,8 @@
     4 (.default-grain s)
     5 1.6
     6 1.4
-    0.0))
+    7 0.0
+    tuning/DEFAULT_HOVER_LIFT))
 
 (defn parameter-value [(s (ptr light/Lighting)) (i i64)] (-> f64)
   (let [t (tuning/state)]
@@ -84,7 +87,8 @@
       4 (.grain s)
       5 (.texture-size t)
       6 (.texture-depth t)
-      (.texture-angle t))))
+      7 (.texture-angle t)
+      (.hover-lift t))))
 
 (defn set-parameter [(s (ptr light/Lighting)) (i i64) (value f64)] (-> i64)
   (let [v (clamp value (minimum-value i) (maximum-value i))
@@ -97,7 +101,8 @@
       4 (set! (.grain s) v)
       5 (set! (.texture-size t) v)
       6 (set! (.texture-depth t) v)
-      (set! (.texture-angle t) v)))
+      7 (set! (.texture-angle t) v)
+      (set! (.hover-lift t) v)))
   0)
 
 (defn parameter-fraction [(s (ptr light/Lighting)) (i i64)] (-> f64)
@@ -248,7 +253,7 @@
     (hit BASE a c"Adjust paper and sunlight")
     (when (.open s)
       (let [width 350.0
-            height 650.0
+            height 694.0
             x
               (clamp (if (.positioned s)
                          (.x (.bounds s))
