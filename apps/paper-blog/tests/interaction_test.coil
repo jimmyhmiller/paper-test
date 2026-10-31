@@ -29,7 +29,7 @@
   (set! (.hour (app/interaction)) -1)
   (app/draw))
 
-(deftest hover-links-every-row-to-the-detail-and-leaving-retains-selection
+(deftest hover-previews-a-post-and-leaving-restores-all-posts
   (let [pool (n/new c"NSAutoreleasePool")]
     (setup)
     (let [d (field (source/state) data)
@@ -41,7 +41,7 @@
       (assert (= (.selected (app/interaction)) 1))
       (host/update-hover -1.0 -1.0)
       (app/draw)
-      (assert (= (.selected (app/interaction)) 1))
+      (assert (= (.selected (app/interaction)) -1))
       (m/clear d))
     (n/release pool)))
 
@@ -280,5 +280,45 @@
       (assert (= (.selected ui) 0))
       (assert (= (app/selected-cell d 0 1)
                  (load (index (.hours (index (.posts d) 0)) 1))))
+      (m/clear d))
+    (n/release pool)))
+
+(deftest unpin-total-and-background-restore-real-aggregate-charts
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)
+          ui (app/interaction)]
+      (assert (m/decode d (n/read-json c"tests/fixtures/hourly.json") (n/nil)))
+      (app/event 3 101 35.0 240.0)
+      (assert (.selection-locked ui))
+      (app/event 3 101 35.0 240.0)
+      (assert (not (.selection-locked ui)))
+      (assert (= (.selected ui) -1))
+      (set! (.hover (host/host)) 101)
+      (app/update-hover d)
+      (assert (= (.selected ui) -1))
+      (set! (.hover (host/host)) 0)
+      (app/update-hover d)
+      (set! (.hover (host/host)) 100)
+      (app/update-hover d)
+      (assert (= (.selected ui) 0))
+      (for [action 0 2]
+        (app/event 3 101 35.0 240.0)
+        (app/event 3 (if (= action 0) 62 61) 30.0 70.0)
+        (assert (= (.selected ui) -1))
+        (assert (not (.selection-locked ui)))
+        (let [(mut sum) 0]
+          (for [hour 0 24]
+            (assert (= (app/selected-hour d hour)
+                       (load (index (.hour-totals d) hour))))
+            (for [day 0 (.days d)]
+              (let [amount (app/selected-cell d day hour)]
+                (assert (= amount (load (index (.heat d) (+ (* day 24) hour)))))
+                (set! sum (+ (load sum) amount)))))
+          (assert (= (load sum) (.views d))))
+        (assert (= (.views (app/displayed-post d)) (.views d))))
+      (app/draw)
+      (assert (= (host/hit-test 40.0 75.0) 62))
+      (assert (= (host/hit-test 800.0 450.0) 61))
       (m/clear d))
     (n/release pool)))

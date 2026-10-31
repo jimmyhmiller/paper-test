@@ -28,7 +28,7 @@ compiler and Apple's command-line tools. No Python process runs inside the app.
   identifies the post in the stack, index, and isolated detail shape.
 - Hover the charts to inspect the exact UTC date and count. Inspecting the
   main chart also shows that day's count for the selected post.
-- Click a post or paper band to lock its selection while inspecting other graphs. Hovering other posts will not replace a locked selection. Click another post to switch; Escape unlocks hover browsing and clears pinned dates/hours. Arrow keys move through
+- Hover previews a post; leaving restores the all-post view. Click a post or paper band to pin it while inspecting graphs. A bordered row and “Pinned” status show the lock. Click the same post again to unpin, or click the total, empty space, or Escape to restore all posts. Click another post to switch the pin. Arrow keys move through
   the index. Tab, Shift-Tab, Space, and Return use the native Paper focus system.
 - **Command-R** refreshes the data. It also refreshes automatically every five
   minutes. Concurrent refreshes are coalesced.
