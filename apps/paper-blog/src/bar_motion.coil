@@ -1,0 +1,66 @@
+(module blog.bar-motion)
+(import "coil.primitive" :as p)
+(import "paper.flow" :use [Rect rect clamp])
+(import "paper.platform" :as host)
+(import "paper.ffi" :use [fabs pow])
+(import "blog.native" :as n)
+
+(defstruct Motion [(last f64) (seconds f64) (pending bool) (animate bool)])
+
+(defn state [] (-> (ptr Motion))
+  (p/alloc-static Motion))
+
+;;; Separate channels for daily and hourly bars. Day axes are limited to 367
+;;; dates by model validation; reserve 384 slots per graph.
+(defn levels [] (-> (ptr (array f64 768)))
+  (p/alloc-static (array f64 768)))
+
+(defn step [(value f64) (target f64) (seconds f64)] (-> f64)
+  (let [next
+          (+ value
+             (* (- target value)
+                (- 1.0 (pow 0.001 (/ (clamp seconds 0.0 0.05) 0.18)))))]
+    (if (< (fabs (- target next)) 0.001) target next)))
+
+(defn begin [] (-> i64)
+  (let [s (state)
+        now (host/CACurrentMediaTime)]
+    (set! (.seconds s)
+          (if (> (.last s) 0.0) (clamp (- now (.last s)) 0.0 0.05) (/ 1.0 60.0)))
+    (set! (.last s) now)
+    (set! (.pending s) false)
+    (set! (.animate s)
+          (and (not (.headless (host/host)))
+               (not (n/msg bool
+                           (n/msg (ptr i8)
+                                  (n/class c"NSWorkspace")
+                                  (n/sel c"sharedWorkspace")
+                                  [])
+                           (n/sel c"accessibilityDisplayShouldReduceMotion")
+                           [])))))
+  0)
+
+(defn amount [(group i64) (slot i64) (active bool)] (-> f64)
+  (let [s (state)
+        value (index (levels) (+ (* group 384) slot))
+        target (if active 1.0 0.0)
+        next (if (.animate s) (step (load value) target (.seconds s)) target)]
+    (set! value next)
+    (when (!= next target) (set! (.pending s) true))
+    next))
+
+(defn active? [] (-> bool)
+  (.pending (state)))
+
+(defn finish [] (-> i64)
+  (when (active?) (host/paper_tick_interval (/ 1.0 60.0)))
+  0)
+
+;;; Oblique projection of the *lift*, not a change in the bar's data height.
+;;; The original rectangle remains the stationary quantitative footprint.
+(defn projected-face [(base Rect) (amount f64) (paper-depth f64)] (-> Rect)
+  (let [rise (* 11.0 amount paper-depth)]
+    (rect (- (.x base) (* rise 0.35))
+          (- (.y base) (* rise 0.8))
+          (.w base)
+          (.h base))))

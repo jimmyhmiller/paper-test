@@ -1,0 +1,36 @@
+(module blog.bar-motion-test)
+(import "blog.bar-motion" :as motion)
+(import "paper.geometry" :use [rect])
+
+(deftest bar-lift-eases-in-both-directions-and-settles
+  (let [(mut value) 0.0]
+    (for [frame 0 20]
+      (let [next (motion/step (load value) 1.0 (/ 1.0 60.0))]
+        (assert (>= next (load value)))
+        (assert (<= next 1.0))
+        (set! value next)))
+    (assert (= (load value) 1.0))
+    (for [frame 0 20]
+      (let [next (motion/step (load value) 0.0 (/ 1.0 60.0))]
+        (assert (<= next (load value)))
+        (assert (>= next 0.0))
+        (set! value next)))
+    (assert (= (load value) 0.0))))
+
+(deftest projected-paper-face-moves-without-changing-the-data-height
+  (let [base (rect 100.0 100.0 20.0 80.0)
+        resting (motion/projected-face base 0.0 1.0)
+        lifted (motion/projected-face base 1.0 1.0)
+        deeper (motion/projected-face base 1.0 2.0)
+        flat (motion/projected-face base 1.0 0.0)]
+    (assert (= (.x resting) (.x base)))
+    (assert (= (.y resting) (.y base)))
+    (assert (< (.x lifted) (.x resting)))
+    (assert (< (.y lifted) (.y resting)))
+    (assert (< (.y deeper) (.y lifted)))
+    (assert (= (.x flat) (.x base)))
+    (assert (= (.y flat) (.y base)))
+    (assert (= (.w lifted) (.w base)))
+    (assert (= (.h lifted) (.h base)))
+    (assert (= (.w deeper) (.w base)))
+    (assert (= (.h deeper) (.h base)))))

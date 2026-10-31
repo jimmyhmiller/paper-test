@@ -238,7 +238,7 @@
       (assert (= (app/axis-peak (app/selected-hour-peak d)) 2))
       (app/draw)
       (let [r (.hour-plot (v/layout 1560.0 1000.0 (.count d)))
-            bounds (app/bar r 0 24 1 2 0xf5af28 false)]
+            bounds (app/bar r 0 24 1 2 0xf5af28 false 1)]
         (assert (> (.h bounds) 50.0)))
       (assert (= (load (index (.hour-totals d) 0)) 100))
       (m/clear d))
@@ -539,5 +539,31 @@
              (n/sel c"removePersistentDomainForName:")
              [(ptr i8)]
              (n/ns c"dev.coil.paper-blog.tests"))
+      (m/clear d))
+    (n/release pool)))
+
+(deftest raised-bars-keep-their-original-hover-target-and-view-count
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)
+          l (v/layout 1560.0 1000.0 (.count d))
+          r (.post-plot l)
+          x (+ (.x r) (* (.w r) 0.875))
+          y (+ (.y r) (* (.h r) 0.5))
+          was-headless (.headless (host/host))]
+      (set! (.headless (host/host)) true)
+      (assert (= (host/hit-test x y) 20003))
+      (host/update-hover x y)
+      (app/draw)
+      (assert (= (.day (app/interaction)) 3))
+      (assert (= (host/hit-test x y) 20003))
+      (let [rest (app/bar r 3 4 7 10 0xf5af28 false 0)
+            raised (app/bar r 3 4 7 10 0xf5af28 true 0)]
+        (assert (= (.x rest) (.x raised)))
+        (assert (= (.y rest) (.y raised)))
+        (assert (= (.w rest) (.w raised)))
+        (assert (= (.h rest) (.h raised))))
+      (assert (= (.views d) 15))
+      (set! (.headless (host/host)) was-headless)
       (m/clear d))
     (n/release pool)))

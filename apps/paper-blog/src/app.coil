@@ -11,6 +11,7 @@
 (import "blog.stack" :as stack)
 (import "blog.theme" :as t)
 (import "blog.sun" :as sun)
+(import "blog.bar-motion" :as motion)
 
 (defstruct Interaction
   [(selected i64)
@@ -312,7 +313,7 @@
                           c" · partial day"
                           c"")))
       (ink-height 54.0)
-      (right-label (- (+ (.x (.daily l)) (.w (.daily l))) 24.0)
+      (right-label (- (.x (sun/anchor (.daily l))) 12.0)
                    (+ (.y (.daily l)) 26.0)
                    12.0
                    t/INK
@@ -328,13 +329,36 @@
            c"Daily views"))
   0)
 
+(defn bar-edge-face [(base Rect)
+                     (face Rect)
+                     (a f64)
+                     (b f64)
+                     (z f64)
+                     (stock Material)
+                     (right bool)] (-> i64)
+  (let [dx (- (.x face) (.x base))
+        dy (- (.y face) (.y base))
+        x (+ (.x base) (if right (.w base) 0.0))
+        y (+ (.y base) (if right 0.0 (.h base)))
+        end-x (+ (.x base) (.w base))
+        end-y (+ (.y base) (.h base))]
+    (begin-sheet)
+    (move-to (+ x (* dx a)) (+ y (* dy a)))
+    (line-to (+ x (* dx b)) (+ y (* dy b)))
+    (line-to (+ end-x (* dx b)) (+ end-y (* dy b)))
+    (line-to (+ end-x (* dx a)) (+ end-y (* dy a)))
+    (close-path)
+    (finish-sheet z stock))
+  0)
+
 (defn bar [(r Rect)
            (slot i64)
            (slots i64)
            (value i64)
            (peak i64)
            (color u32)
-           (active bool)] (-> Rect)
+           (active bool)
+           (group i64)] (-> Rect)
   (let [step (/ (.w r) (cast f64 slots))
         height (* (.h r) (/ (cast f64 value) (cast f64 (if (> peak 0) peak 1))))
         bounds
@@ -342,19 +366,40 @@
                 (- (+ (.y r) (.h r)) height)
                 (maximum 1.0 (- step 2.4))
                 height)]
-    (when (> value 0)
-      (let [z (if active 28.0 21.0)
-            edge
-              (minimum 0.65
-                       (* 0.2 (minimum (.w bounds) (.h bounds))))
-            stock (t/paper color)]
-        ;; The outer cut edge still follows the exact quantitative rectangle.
-        ;; Its small inset top face exposes the paper thickness at the sides.
-        (panel bounds 0.2 (- z 1.2) (tint stock 0xffd8b0 0.20))
-        (panel (inset bounds edge)
-               0.1
-               z
-               (texture-offset stock (- edge) (- edge)))))
+    (let [lift (motion/amount group slot (and active (> value 0)))]
+      (when (> value 0)
+        (let [z (+ 21.0 (* 11.0 lift))
+              face (motion/projected-face bounds lift (.depth (scene/scene)))
+              edge (minimum 0.65 (* 0.2 (minimum (.w bounds) (.h bounds))))
+              stock (t/paper color)]
+          (when (> lift 0.001)
+            ;; A quiet printed footprint retains the exact count and baseline.
+            (frame bounds 0.1 0.45 16.5 (tint stock t/POST 0.75))
+            ;; Connected side faces expose actual paper thickness as the face
+            ;; translates. The stationary footprint keeps hover targets stable.
+            (for [i 0 6]
+              (let [a (/ (cast f64 i) 6.0)
+                    b (/ (cast f64 (+ i 1)) 6.0)
+                    height (+ 20.8 (* 11.0 lift b))]
+                (bar-edge-face bounds
+                               face
+                               a
+                               b
+                               height
+                               (tint stock 0x211526 0.35)
+                               true)
+                (bar-edge-face bounds
+                               face
+                               a
+                               b
+                               height
+                               (tint stock 0xffc18a 0.20)
+                               false))))
+          (panel face 0.2 (- z 0.1) (tint stock 0xffd8b0 0.20))
+          (panel (inset face edge)
+                 0.1
+                 z
+                 (texture-offset stock (- edge) (- edge))))))
     bounds))
 
 (defn displayed-post [(d (ptr m/Dataset))] (-> m/Post)
@@ -422,7 +467,8 @@
                  (load (index (.values post) day))
                  peak
                  color
-                 (= day (.day s)))
+                 (= day (.day s))
+                 0)
             (ink-height 26.0)
             (let [step (/ (.w r) (cast f64 (.days d)))]
               (cast i64
@@ -517,7 +563,7 @@
           (grid r peak)
           (for [hour 0 24]
             (let [amount (selected-hour d hour)]
-              (bar r hour 24 amount peak color (= hour (.hour s)))
+              (bar r hour 24 amount peak color (= hour (.hour s)) 1)
               (ink-height 28.0)
               (cast i64
                     (snprintf text
@@ -941,6 +987,7 @@
     (track-pointer)
     (limit-offset l)
     (when (not (.open (sun/state))) (update-hover d))
+    (motion/begin)
     (panel (rect 0.0 0.0 (.width l) (.height l)) 0.0 4.0 (t/paper t/BACK))
     (paper-leaf (.sidebar l) t/INDEX)
     (paper-leaf (.daily l) t/DAILY)
@@ -952,7 +999,8 @@
     (post-chart l d)
     (hour-chart l d)
     (heat-chart l d)
-    (sun/draw (.daily l)))
+    (sun/draw (.daily l))
+    (motion/finish))
   0)
 
 (defn poll-source [] (-> i64)
@@ -990,10 +1038,13 @@
     (when (or (>= (.layer ui) 0) (host/paper_hovered 50000))
       (pointer-inspect d)
       (when (or (!= day (.day ui)) (!= hour (.hour ui))) (host/paper_redraw)))
-    (host/paper_tick_interval (if (or (>= (.layer ui) 0)
-                                      (host/paper_hovered 50000))
-                                  0.03
-                                  (if (.loading s) 0.10 1.0))))
+    (when (motion/active?) (host/paper_redraw))
+    (host/paper_tick_interval (if (motion/active?)
+                                  (/ 1.0 60.0)
+                                  (if (or (>= (.layer ui) 0)
+                                          (host/paper_hovered 50000))
+                                      0.03
+                                      (if (.loading s) 0.10 1.0)))))
   0)
 
 (defn drag-scroll [(l v/Layout) (d (ptr m/Dataset)) (y f64)] (-> i64)
