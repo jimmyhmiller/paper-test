@@ -49,6 +49,8 @@ can always be selected through the index even when too thin to point at easily.
 
 The unified window keeps native traffic lights in their system positions. Rich dyed compressed-pulp stocks, exposed sheet edges, and directional shadows give the graphs physical paper relief. Hourly bars show only the selected post; the heatmap follows the selected post and shows its hourly views in fixed absolute-count bins. Hover links dates and hours across the charts; click to pin and Escape to clear.
 
+Click the small gold sun stamped into the upper-right corner of the daily-views sheet to adjust sun position, height, and paper relief. The matching plum paper popover can be dragged, closed with Escape, or dismissed by clicking outside. Settings are saved in macOS preferences and restored on launch; Reset persists the defaults immediately. The controls never change a pinned post.
+
 ## Live data and offline use
 
 The app launches curl directly, without a shell, using the existing credential

@@ -1,15 +1,34 @@
 (module blog.interaction-test)
 (import "blog.native" :as n)
+(import "coil.primitive" :as p)
 (import "blog.model" :as m)
 (import "blog.source" :as source)
 (import "blog.app" :as app)
 (import "blog.view" :as v)
 (import "blog.stack" :as stack)
+(import "blog.sun" :as sun)
+(import "paper.lighting" :as light)
 (import "paper.platform" :as host)
 (import "paper.scene" :as scene)
 
+(defn test-preferences [] (-> (ptr i8))
+  (let [slot (p/alloc-static (ptr i8))]
+    (when (= (load slot) (n/nil))
+      (set! slot
+            (n/msg (ptr i8)
+                   (n/msg (ptr i8)
+                          (n/class c"NSUserDefaults")
+                          (n/sel c"alloc")
+                          [])
+                   (n/sel c"initWithSuiteName:")
+                   [(ptr i8)]
+                   (n/ns c"dev.coil.paper-blog.tests"))))
+    (load slot)))
+
 (defn setup [] (-> i64)
   (scene/init)
+  (set! (sun/settings-store) (test-preferences))
+  (set! (.open (sun/state)) false)
   (host/paper_configure c"Paper Blog tests" 1560.0 1000.0)
   (let [s (source/state)
         ui (app/interaction)]
@@ -329,4 +348,75 @@
       (assert (= (host/hit-test 40.0 75.0) 62))
       (assert (= (host/hit-test 800.0 450.0) 61))
       (m/clear d))
+    (n/release pool)))
+
+(deftest sunlight-stamp-opens-modal-controls-without-changing-the-post-pin
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)
+          l (v/layout 1560.0 1000.0 (.count d))
+          anchor (sun/anchor (.daily l))
+          lighting (sun/state)]
+      (assert (= (host/hit-test (+ (.x anchor) 18.0) (+ (.y anchor) 18.0))
+                 sun/BASE))
+      (app/event 3 101 35.0 240.0)
+      (app/event 3 sun/BASE 0.0 0.0)
+      (app/draw)
+      (assert (.open lighting))
+      (assert (= (host/hit-test 35.0 240.0) (+ sun/BASE 6)))
+      (app/event 3 100 35.0 208.0)
+      (assert (= (.selected (app/interaction)) 1))
+      (let [track (light/track-bounds lighting 1)]
+        (app/event 1
+                   (+ sun/BASE 3)
+                   (+ (.x track) (* (.w track) 0.5))
+                   (.y track))
+        (assert (= (.depth lighting) 0.75)))
+      (app/event 4 53 0.0 0.0)
+      (assert (not (.open lighting)))
+      (assert (.selection-locked (app/interaction)))
+      (assert (= (.selected (app/interaction)) 1))
+      (m/clear d))
+    (n/release pool)))
+
+(deftest sunlight-settings-restore-and-reset-persist-without-changing-user-preferences
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [s (sun/state)
+          store (test-preferences)]
+      (set! (.x s) 0.31)
+      (set! (.y s) -0.4)
+      (set! (.height s) 1234.0)
+      (set! (.depth s) 0.65)
+      (sun/save-settings s)
+      (set! (.height s) 0.0)
+      (sun/state)
+      (assert (= (.x s) 0.31))
+      (assert (= (.y s) -0.4))
+      (assert (= (.height s) 1234.0))
+      (assert (= (.depth s) 0.65))
+      (app/event 3 sun/BASE 0.0 0.0)
+      (app/event 3 (+ sun/BASE 4) 0.0 0.0)
+      (let [saved
+              (n/msg (ptr i8)
+                     store
+                     (n/sel c"objectForKey:")
+                     [(ptr i8)]
+                     (n/ns c"paper-blog.sunlight.v1"))]
+        (assert (= (sun/saved-number saved c"depth" -1.0 0.0 1.5)
+                   (.default-depth s)))
+        (assert (= (sun/saved-number saved c"height" -1.0 200.0 2000.0)
+                   (.default-height s))))
+      (let [invalid (n/parse-text c"{\"depth\":99,\"height\":\"bad\"}")]
+        (assert (= (sun/saved-number invalid c"depth" 1.05 0.0 1.5) 1.05))
+        (assert (= (sun/saved-number invalid c"height" 760.0 200.0 2000.0)
+                   760.0)))
+      (n/msg i64
+             store
+             (n/sel c"removePersistentDomainForName:")
+             [(ptr i8)]
+             (n/ns c"dev.coil.paper-blog.tests"))
+      (set! (.animating s) false)
+      (set! (.open s) false)
+      (m/clear (field (source/state) data)))
     (n/release pool)))

@@ -1,0 +1,219 @@
+(module blog.sun)
+(import "coil.primitive" :as p)
+(import "paper.flow" :use *)
+(import "paper.platform" :as host)
+(import "paper.lighting" :as light)
+(import "blog.theme" :as t)
+(import "blog.native" :as n)
+
+(const BASE 800000)
+
+(defn settings-store [] (-> (ptr (ptr i8)))
+  (p/alloc-static (ptr i8)))
+
+(defn preferences [] (-> (ptr i8))
+  (let [override (load (settings-store))]
+    (if (!= override (n/nil))
+        override
+        (n/msg (ptr i8)
+               (n/class c"NSUserDefaults")
+               (n/sel c"standardUserDefaults")
+               []))))
+
+(defn saved-number [(settings (ptr i8))
+                    (key (ptr i8))
+                    (fallback f64)
+                    (low f64)
+                    (high f64)] (-> f64)
+  (let [value (n/key settings key)]
+    (if (n/number? value)
+        (let [amount (n/msg f64 value (n/sel c"doubleValue") [])]
+          (if (and (>= amount low) (<= amount high)) amount fallback))
+        fallback)))
+
+(defn restore-settings [(s (ptr light/Lighting))] (-> i64)
+  (let [saved
+          (n/msg (ptr i8)
+                 (preferences)
+                 (n/sel c"objectForKey:")
+                 [(ptr i8)]
+                 (n/ns c"paper-blog.sunlight.v1"))]
+    (when (n/dict? saved)
+      (set! (.x s) (saved-number saved c"x" (.x s) -1.0 2.0))
+      (set! (.y s) (saved-number saved c"y" (.y s) -1.0 2.0))
+      (set! (.height s) (saved-number saved c"height" (.height s) 200.0 2000.0))
+      (set! (.depth s) (saved-number saved c"depth" (.depth s) 0.0 1.5))
+      (set! (.grain s) (saved-number saved c"grain" (.grain s) 0.0 1.0))))
+  0)
+
+(defn save-settings [(s (ptr light/Lighting))] (-> i64)
+  (let [saved (n/new c"NSMutableDictionary")
+        keys [c"x" c"y" c"height" c"depth" c"grain"]
+        values [(.x s) (.y s) (.height s) (.depth s) (.grain s)]]
+    (for [i 0 5]
+      (n/msg i64
+             saved
+             (n/sel c"setObject:forKey:")
+             [(ptr i8) (ptr i8)]
+             (n/msg (ptr i8)
+                    (n/class c"NSNumber")
+                    (n/sel c"numberWithDouble:")
+                    [f64]
+                    (get values i))
+             (n/ns (get keys i))))
+    (n/msg i64
+           (preferences)
+           (n/sel c"setObject:forKey:")
+           [(ptr i8) (ptr i8)]
+           saved
+           (n/ns c"paper-blog.sunlight.v1"))
+    (n/release saved))
+  0)
+
+(defn state [] (-> (ptr light/Lighting))
+  (let [s (p/alloc-static light/Lighting)]
+    (when (<= (.height s) 0.0)
+      (set! s
+            (light/lighting 0.16
+                            (/ -180.0 (host/logical-height))
+                            760.0
+                            1.05
+                            1.0))
+      (restore-settings s))
+    s))
+
+(defn anchor [(sheet Rect)] (-> Rect)
+  (rect (- (+ (.x sheet) (.w sheet)) 56.0) (+ (.y sheet) 12.0) 36.0 36.0))
+
+(defn apply [] (-> i64)
+  (light/apply-light (state)
+                     (rect 0.0 0.0 (host/logical-width) (host/logical-height))))
+
+;;; App-owned dyed-stock skin; geometry and event handling remain shared with
+;;; Paper's accessible, draggable lighting controls.
+(defn draw [(sheet Rect)] (-> i64)
+  (let [s (state)
+        a (anchor sheet)
+        v (.viewport s)]
+    (ink-height 16.0)
+    (label (+ (.x a) 7.7) (+ (.y a) 4.8) 25.0 0x102630 0 c"☀")
+    (ink-height 17.0)
+    (label (+ (.x a) 7.0) (+ (.y a) 4.0) 25.0 t/GOLD 0 c"☀")
+    (hit BASE a c"Adjust sunlight and paper relief")
+    (when (.open s)
+      (let [width 310.0
+            height 310.0
+            x
+              (clamp (if (.positioned s)
+                         (.x (.bounds s))
+                         (- (+ (.x a) (.w a)) width))
+                     16.0
+                     (- (.w v) width 16.0))
+            y
+              (clamp (if (.positioned s)
+                         (.y (.bounds s))
+                         (+ (.y a) (.h a) 12.0))
+                     16.0
+                     (- (.h v) height 16.0))]
+        (set! (.bounds s) (rect x y width height)))
+      (host/paper_modal_scope)
+      (ink-height 60.0)
+      (hit (+ BASE 6) v c"Dismiss sunlight controls")
+      (let [r (.bounds s)
+            map (light/map-bounds s)]
+        (panel r 2.0 60.0 (t/paper t/POST))
+        (frame r 2.0 0.8 61.0 (t/paper 0x9b6075))
+        (ink-height 62.0)
+        (hit (+ BASE 5) r c"Sunlight controls")
+        (hit (+ BASE 7)
+             (rect (+ (.x r) 10.0) (+ (.y r) 8.0) (- (.w r) 65.0) 44.0)
+             c"Move sunlight controls")
+        (label (+ (.x r) 22.0) (+ (.y r) 20.0) 18.0 t/INK 1 c"Sunlight")
+        (label (- (+ (.x r) (.w r)) 40.0) (+ (.y r) 18.0) 20.0 t/INK 0 c"×")
+        (hit BASE
+             (rect (- (+ (.x r) (.w r)) 49.0) (+ (.y r) 9.0) 36.0 36.0)
+             c"Close sunlight controls")
+        (panel map 1.0 61.0 (t/paper t/BACK))
+        (frame (rect (+ (.x map) (* (.w map) 0.25))
+                     (+ (.y map) (* (.h map) 0.25))
+                     (* (.w map) 0.5)
+                     (* (.h map) 0.5))
+               0.0
+               0.7
+               62.0
+               (t/paper t/MUTED))
+        (disc (- (+ (.x map) (* (/ (+ (.x s) 1.0) 3.0) (.w map))) 6.0)
+              (- (+ (.y map) (* (/ (+ (.y s) 1.0) 3.0) (.h map))) 6.0)
+              12.0
+              66.0
+              (t/paper t/GOLD))
+        (ink-height 67.0)
+        (hit (+ BASE 1) map c"Sun position")
+        (for [i 0 2]
+          (let [track (light/track-bounds s i)
+                value
+                  (clamp (if (= i 0)
+                             (/ (- (.height s) 200.0) 1800.0)
+                             (/ (.depth s) 1.5))
+                         0.0
+                         1.0)]
+            (label (+ (.x r) 22.0)
+                   (+ (.y track) 4.0)
+                   12.0
+                   t/INK
+                   0
+                   (if (= i 0) c"Sun height" c"Paper relief"))
+            (panel (rect (.x track) (+ (.y track) 10.0) (.w track) 4.0)
+                   1.0
+                   62.0
+                   (t/paper t/BACK))
+            (panel (rect (.x track)
+                         (+ (.y track) 10.0)
+                         (* (.w track) value)
+                         4.0)
+                   1.0
+                   63.0
+                   (t/paper t/GOLD))
+            (disc (- (+ (.x track) (* (.w track) value)) 6.0)
+                  (+ (.y track) 6.0)
+                  12.0
+                  66.0
+                  (t/paper t/GOLD))
+            (host/paper_hit (+ (+ BASE 2) i)
+                            (.x track)
+                            (.y track)
+                            (.w track)
+                            (.h track)
+                            (if (= i 0) c"Sun height" c"Paper relief")
+                            1
+                            value)))
+        (label (+ (.x r) 22.0) (+ (.y r) (- (.h r) 28.0)) 11.0 t/INK 0 c"Reset")
+        (hit (+ BASE 4)
+             (rect (+ (.x r) 14.0) (+ (.y r) (- (.h r) 37.0)) 65.0 30.0)
+             c"Reset sunlight"))))
+  0)
+
+(defn handle [(kind i64) (id i64) (x f64) (y f64)] (-> bool)
+  (let [s (state)
+        old-x (.x s)
+        old-y (.y s)
+        old-height (.height s)
+        old-depth (.depth s)
+        old-grain (.grain s)
+        consumed (light/handle s BASE kind id x y)]
+    (if (and (= kind 3) (= id (+ BASE 4)))
+        (let [(mut defaults)
+                (light/lighting (.default-x s)
+                                (.default-y s)
+                                (.default-height s)
+                                (.default-depth s)
+                                (.default-grain s))]
+          (save-settings (mut defaults)))
+        (when (and (not (.animating s))
+                   (or (!= old-x (.x s))
+                       (!= old-y (.y s))
+                       (!= old-height (.height s))
+                       (!= old-depth (.depth s))
+                       (!= old-grain (.grain s))))
+          (save-settings s)))
+    consumed))
