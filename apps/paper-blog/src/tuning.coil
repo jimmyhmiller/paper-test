@@ -1,14 +1,12 @@
 (module blog.tuning)
 (import "coil.primitive" :as p)
 
+;;; One material treatment shared by every sheet in this dashboard.
 (defstruct Tuning
   [(initialized bool)
    (texture-size f64)
    (texture-depth f64)
-   (texture-angle f64)
-   (graph-spacing f64)
-   (heat-step f64)
-   (cut-edge f64)])
+   (texture-angle f64)])
 
 (defn state [] (-> (ptr Tuning))
   (let [s (p/alloc-static Tuning)]
@@ -18,8 +16,5 @@
               :initialized true
               :texture-size 1.6
               :texture-depth 1.4
-              :texture-angle 0.0
-              :graph-spacing 19.0
-              :heat-step 4.0
-              :cut-edge 0.65)))
+              :texture-angle 0.0)))
     s))

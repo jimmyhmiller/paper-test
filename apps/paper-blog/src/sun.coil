@@ -33,21 +33,18 @@
           (if (and (>= amount low) (<= amount high)) amount fallback))
         fallback)))
 
-(const COUNT 11)
+(const COUNT 8)
 
 (defn parameter-name [(i i64)] (-> (ptr i8))
   (case i
     0 c"Sun X"
     1 c"Sun Y"
     2 c"Sun height"
-    3 c"Shadow depth"
-    4 c"Grain strength"
+    3 c"Paper depth"
+    4 c"Paper grain"
     5 c"Texture size"
     6 c"Texture depth"
-    7 c"Texture angle"
-    8 c"Graph layer spacing"
-    9 c"Heatmap step height"
-    c"Bar edge width"))
+    c"Texture angle"))
 
 (defn parameter-key [(i i64)] (-> (ptr i8))
   (case i
@@ -58,27 +55,13 @@
     4 c"grain"
     5 c"texture-size"
     6 c"texture-depth"
-    7 c"texture-angle"
-    8 c"graph-spacing"
-    9 c"heat-step"
-    c"cut-edge"))
+    c"texture-angle"))
 
 (defn minimum-value [(i i64)] (-> f64)
   (case i 0 -5.0 1 -5.0 2 10.0 5 0.25 7 -180.0 0.0))
 
 (defn maximum-value [(i i64)] (-> f64)
-  (case i
-    0 5.0
-    1 5.0
-    2 20000.0
-    3 12.0
-    4 10.0
-    5 16.0
-    6 8.0
-    7 180.0
-    8 42.0
-    9 11.0
-    4.0))
+  (case i 0 5.0 1 5.0 2 20000.0 3 12.0 4 10.0 5 16.0 6 8.0 180.0))
 
 (defn default-value [(s (ptr light/Lighting)) (i i64)] (-> f64)
   (case i
@@ -89,10 +72,7 @@
     4 (.default-grain s)
     5 1.6
     6 1.4
-    7 0.0
-    8 19.0
-    9 4.0
-    0.65))
+    0.0))
 
 (defn parameter-value [(s (ptr light/Lighting)) (i i64)] (-> f64)
   (let [t (tuning/state)]
@@ -104,10 +84,7 @@
       4 (.grain s)
       5 (.texture-size t)
       6 (.texture-depth t)
-      7 (.texture-angle t)
-      8 (.graph-spacing t)
-      9 (.heat-step t)
-      (.cut-edge t))))
+      (.texture-angle t))))
 
 (defn set-parameter [(s (ptr light/Lighting)) (i i64) (value f64)] (-> i64)
   (let [v (clamp value (minimum-value i) (maximum-value i))
@@ -120,10 +97,7 @@
       4 (set! (.grain s) v)
       5 (set! (.texture-size t) v)
       6 (set! (.texture-depth t) v)
-      7 (set! (.texture-angle t) v)
-      8 (set! (.graph-spacing t) v)
-      9 (set! (.heat-step t) v)
-      (set! (.cut-edge t) v)))
+      (set! (.texture-angle t) v)))
   0)
 
 (defn parameter-fraction [(s (ptr light/Lighting)) (i i64)] (-> f64)
@@ -206,9 +180,59 @@
 (defn track-bounds [(s (ptr light/Lighting)) (i i64)] (-> Rect)
   (let [r (.bounds s)]
     (rect (+ (.x r) 22.0)
-          (+ (.y r) 78.0 (* (cast f64 i) 44.0))
+          (+ (.y r) 244.0 (* (cast f64 i) 44.0))
           (- (.w r) 44.0)
           20.0)))
+
+(defstruct SunMap [(low f64) (high f64) (dragging bool)])
+
+(defn map-state [] (-> (ptr SunMap))
+  (let [m (p/alloc-static SunMap)]
+    (when (<= (.high m) (.low m))
+      (set! m
+            (SunMap
+              :low -1.0
+              :high 2.0
+              :dragging false)))
+    m))
+
+(defn map-bounds [(s (ptr light/Lighting))] (-> Rect)
+  (let [r (.bounds s)]
+    (rect (+ (.x r) 22.0) (+ (.y r) 60.0) (- (.w r) 44.0) 132.0)))
+
+(defn draw-map [(s (ptr light/Lighting))] (-> i64)
+  (let [m (map-state)
+        r (map-bounds s)]
+    (when (not (.dragging m))
+      (set! (.low m)
+            (minimum (.low m) (minimum -1.0 (- (minimum (.x s) (.y s)) 0.25))))
+      (set! (.high m)
+            (maximum (.high m) (maximum 2.0 (+ (maximum (.x s) (.y s)) 0.25)))))
+    (let [span (- (.high m) (.low m))]
+      (panel r 1.0 63.2 (t/paper t/BACK))
+      ;; This outline represents the whole dashboard in the light's world.
+      (frame (rect (+ (.x r) (* (.w r) (/ (- (.low m)) span)))
+                   (+ (.y r) (* (.h r) (/ (- (.low m)) span)))
+                   (/ (.w r) span)
+                   (/ (.h r) span))
+             0.0
+             0.7
+             63.4
+             (t/paper t/MUTED))
+      (disc (- (+ (.x r) (* (.w r) (/ (- (.x s) (.low m)) span))) 6.0)
+            (- (+ (.y r) (* (.h r) (/ (- (.y s) (.low m)) span))) 6.0)
+            12.0
+            63.8
+            (t/paper t/GOLD)))
+    (ink-height 64.0)
+    (hit (+ BASE 1) r c"Drag the sun to light all paper in the dashboard")
+    (label (.x r)
+           (+ (.y r) (.h r) 10.0)
+           10.0
+           t/MUTED
+           0
+           c"Drag the sun · lights the whole dashboard"))
+  0)
 
 (defn value-buffer [] (-> (ptr (array i8 96)))
   (p/alloc-static (array i8 96)))
@@ -224,7 +248,7 @@
     (hit BASE a c"Adjust paper and sunlight")
     (when (.open s)
       (let [width 350.0
-            height 610.0
+            height 650.0
             x
               (clamp (if (.positioned s)
                          (.x (.bounds s))
@@ -254,6 +278,7 @@
         (hit BASE
              (rect (- (+ (.x r) (.w r)) 49.0) (+ (.y r) 9.0) 36.0 36.0)
              c"Close paper controls")
+        (draw-map s)
         (for [i 0 COUNT]
           (let [track (track-bounds s i)
                 value (parameter-fraction s i)
@@ -324,16 +349,48 @@
 (defn handle [(kind i64) (id i64) (x f64) (y f64)] (-> bool)
   (let [s (state)]
     (cond (and (.open s) (= kind 4) (= id 53))
-            (do (set! (.open s) false) (host/paper_redraw) true)
+            (do
+              (set! (.open s) false)
+              (set! (.dragging (map-state)) false)
+              (host/paper_redraw)
+              true)
           (and (= kind 3) (= id BASE))
             (do (set! (.open s) (not (.open s))) (host/paper_redraw) true)
           (and (.open s) (= kind 3) (= id (+ BASE 6)))
-            (do (set! (.open s) false) (host/paper_redraw) true)
+            (do
+              (set! (.open s) false)
+              (set! (.dragging (map-state)) false)
+              (host/paper_redraw)
+              true)
           (and (.open s) (= kind 3) (= id (+ BASE 4)))
             (do
               (for [i 0 COUNT] (set-parameter s i (default-value s i)))
+              (set! (.low (map-state)) -1.0)
+              (set! (.high (map-state)) 2.0)
+              (set! (.dragging (map-state)) false)
               (save-settings s)
               (host/paper_redraw)
+              true)
+          (and (.open s) (= id (+ BASE 1)))
+            (do
+              (when (= kind 1) (set! (.dragging (map-state)) true))
+              (when (or (= kind 1) (= kind 2))
+                (let [r (map-bounds s)
+                      m (map-state)
+                      span (- (.high m) (.low m))]
+                  (set-parameter s
+                                 0
+                                 (+ (.low m)
+                                    (* span
+                                       (clamp (/ (- x (.x r)) (.w r)) 0.0 1.0))))
+                  (set-parameter s
+                                 1
+                                 (+ (.low m)
+                                    (* span
+                                       (clamp (/ (- y (.y r)) (.h r)) 0.0 1.0))))
+                  (save-settings s)
+                  (host/paper_redraw)))
+              (when (= kind 3) (set! (.dragging (map-state)) false))
               true)
           (and (.open s) (>= id (+ BASE 20)) (< id (+ BASE 20 COUNT)))
             (do

@@ -31,6 +31,7 @@
   (scene/init)
   (set! (sun/settings-store) (test-preferences))
   (set! (.open (sun/state)) false)
+  (set! (.dragging (sun/map-state)) false)
   (host/paper_configure c"Paper Blog tests" 1560.0 1000.0)
   (let [s (source/state)
         ui (app/interaction)]
@@ -48,6 +49,7 @@
   (set! (.pinned-day (app/interaction)) -1)
   (set! (.pinned-hour (app/interaction)) -1)
   (set! (.hour (app/interaction)) -1)
+  (set! (.hover (host/host)) 100)
   (app/draw))
 
 (deftest hover-previews-a-post-and-leaving-restores-all-posts
@@ -447,7 +449,7 @@
                                 1.0
                                 false
                                 false)
-                 61.0))
+                 33.0))
       (app/event 3 sun/BASE 0.0 0.0)
       (app/draw)
       (let [last (sun/track-bounds s (- sun/COUNT 1))]
@@ -465,4 +467,77 @@
              [(ptr i8)]
              (n/ns c"dev.coil.paper-blog.tests"))
       (m/clear (field (source/state) data)))
+    (n/release pool)))
+
+(deftest sidebar-row-gaps-and-gutters-do-not-flash-the-all-post-view
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)
+          ui (app/interaction)
+          l (v/layout 1560.0 1000.0 (.count d))
+          row (v/row l 1)]
+      (host/update-hover (+ (.x row) 10.0) (+ (.y row) 10.0))
+      (app/draw)
+      (assert (= (.selected ui) 1))
+      (host/update-hover (+ (.x row) 10.0) (+ (.y row) 31.5))
+      (app/draw)
+      (assert (= (.selected ui) 1))
+      (assert (not (.selection-locked ui)))
+      (host/update-hover 5.0 (+ (.y row) 10.0))
+      (app/draw)
+      (assert (= (.selected ui) 1))
+      (set! (.hover (host/host)) 70)
+      (app/update-hover d)
+      (assert (= (.selected ui) 1))
+      (set! (.hover (host/host)) 100)
+      (app/update-hover d)
+      (assert (= (.selected ui) 0))
+      (set! (.hover (host/host)) 61)
+      (app/update-hover d)
+      (assert (= (.selected ui) -1))
+      (m/clear d))
+    (n/release pool)))
+
+(deftest restored-sun-map-drags-the-global-light-and-saves-its-position
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [s (sun/state)
+          d (field (source/state) data)]
+      (for [i 0 sun/COUNT] (sun/set-parameter s i (sun/default-value s i)))
+      (set! (.low (sun/map-state)) -1.0)
+      (set! (.high (sun/map-state)) 2.0)
+      (app/event 3 sun/BASE 0.0 0.0)
+      (app/draw)
+      (let [map (sun/map-bounds s)]
+        (assert (= (host/hit-test (+ (.x map) 10.0) (+ (.y map) 10.0))
+                   (+ sun/BASE 1)))
+        (app/event 1
+                   (+ sun/BASE 1)
+                   (+ (.x map) (* (.w map) 0.25))
+                   (+ (.y map) (* (.h map) 0.75)))
+        (assert (= (.x s) -0.25))
+        (assert (= (.y s) 1.25))
+        (app/draw)
+        (assert (= (.low (sun/map-state)) -1.0))
+        (assert (= (.high (sun/map-state)) 2.0))
+        (app/event 2
+                   (+ sun/BASE 1)
+                   (+ (.x map) (* (.w map) 0.5))
+                   (+ (.y map) (* (.h map) 0.5)))
+        (app/event 3 (+ sun/BASE 1) 0.0 0.0)
+        (assert (= (.x s) 0.5))
+        (assert (= (.y s) 0.5)))
+      (sun/apply)
+      (assert (= (.light-x (scene/scene)) (* 0.5 (host/logical-width))))
+      (sun/set-parameter s 0 0.0)
+      (sun/restore-settings s)
+      (assert (= (.x s) 0.5))
+      (app/event 3 (+ sun/BASE 4) 0.0 0.0)
+      (set! (.open s) false)
+      (n/msg i64
+             (test-preferences)
+             (n/sel c"removePersistentDomainForName:")
+             [(ptr i8)]
+             (n/ns c"dev.coil.paper-blog.tests"))
+      (m/clear d))
     (n/release pool)))

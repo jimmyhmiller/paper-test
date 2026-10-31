@@ -11,7 +11,6 @@
 (import "blog.stack" :as stack)
 (import "blog.theme" :as t)
 (import "blog.sun" :as sun)
-(import "blog.tuning" :as tuning)
 
 (defstruct Interaction
   [(selected i64)
@@ -281,9 +280,9 @@
             active (= i (.selected s))
             z
               (if active
-                  (maximum 46.0 (+ 19.0 (.graph-spacing (tuning/state))))
+                  46.0
                   (+ 18.0
-                     (* (.graph-spacing (tuning/state))
+                     (* 19.0
                         (/ (cast f64 (- (.count d) i))
                            (cast f64 (if (> (.count d) 0) (.count d) 1))))))
             paper (t/paper (stack/color (.path post)))]
@@ -346,7 +345,7 @@
     (when (> value 0)
       (let [z (if active 28.0 21.0)
             edge
-              (minimum (.cut-edge (tuning/state))
+              (minimum 0.65
                        (* 0.2 (minimum (.w bounds) (.h bounds))))
             stock (t/paper color)]
         ;; The outer cut edge still follows the exact quantitative rectangle.
@@ -571,12 +570,12 @@
 
 (defn heat-tile [(bounds Rect) (level f64) (active bool) (guided bool)] (-> f64)
   (let [sheets (+ 1 (cast i64 (* level 4.0)))
-        top (+ 17.0 (* (cast f64 (- sheets 1)) (.heat-step (tuning/state))))
+        top (+ 17.0 (* (cast f64 (- sheets 1)) 4.0))
         stock (t/heat-paper level)]
     ;; Count bands add sheets without shifting the day/hour footprint.
     (for [sheet 0 sheets]
       (let [edge (* (cast f64 sheet) 0.14)
-            z (+ 17.0 (* (cast f64 sheet) (.heat-step (tuning/state))))]
+            z (+ 17.0 (* (cast f64 sheet) 4.0))]
         (panel (inset bounds edge)
                0.1
                z
@@ -750,6 +749,14 @@
         leaf (.sidebar l)
         text (index (text-buffer) 0)]
     (ink-height 14.0)
+    (host/paper_hit 63
+                    (.x leaf)
+                    44.0
+                    (.w leaf)
+                    (- (.h leaf) 44.0)
+                    c"Post sidebar, click empty paper to show all posts"
+                    0
+                    0.0)
     (host/paper_hit 60
                     (.x (.list l))
                     (.y (.list l))
@@ -888,7 +895,12 @@
                (not (.keyboard-mode s)))
       (set! (.selected s) (load hovered)))
     (when (and (< (load hovered) 0)
-               (>= (.last-hover s) 0)
+               (>= (.selected s) 0)
+               (not (or (host/paper_hovered 60)
+                        (host/paper_hovered 62)
+                        (host/paper_hovered 63)
+                        (host/paper_hovered 70)
+                        (host/paper_hovered 71)))
                (not (.selection-locked s))
                (not (.keyboard-mode s)))
       (set! (.selected s) -1))
@@ -1025,6 +1037,7 @@
               (= kind 6) (poll-source)
               (and (= kind 7)
                    (or (= id 60)
+                       (= id 63)
                        (= id 70)
                        (= id 71)
                        (and (>= id 100) (< id (+ 100 (.count d))))))
@@ -1097,7 +1110,7 @@
                    (!= (& (host/paper_key_flags) 1048576) 0)
                    (= id 31))
                 (do (open-post) 1)
-              (or (and (= kind 3) (or (= id 61) (= id 62) (= id 60)))
+              (or (and (= kind 3) (or (= id 61) (= id 62) (= id 60) (= id 63)))
                   (and (= kind 4) (= id 53)))
                 (do
                   (clear-selection)
