@@ -1,0 +1,119 @@
+(module blog.overview)
+(import "coil.primitive" :as p)
+(import "blog.native" :as n)
+(import "blog.model" :as m)
+(import "blog.stack" :as stack)
+(import "paper.flow" :use *)
+(import "paper.scene" :as scene)
+(import "paper.ffi"
+        :use
+        [floor CGPathRelease CGPathCreateCopy CGPathCreateMutableCopy])
+
+;;; A validated dataset is immutable until the next successful refresh. Keep
+;;; its cumulative contours and full outlines, independent of the brush.
+(defstruct Cache
+  [(root (ptr i8))
+   (posts (ptr m/Post))
+   (days i64)
+   (count i64)
+   (plot Rect)
+   (peak i64)
+   (upper (ptr i64))
+   (paths (ptr (ptr i8)))])
+
+(defn cache [] (-> (ptr Cache))
+  (p/alloc-static Cache))
+
+(defn clear [] (-> i64)
+  (let [c (cache)]
+    (for [i 0 (.count c)] (CGPathRelease (load (index (.paths c) i))))
+    (n/free (cast (ptr i8) (.paths c)))
+    (n/free (cast (ptr i8) (.upper c)))
+    (n/release (.root c))
+    (set! c (zeroed Cache)))
+  0)
+
+(defn upper [(d (ptr m/Dataset)) (post i64) (day i64)] (-> i64)
+  (load (index (.upper (cache)) (+ (* post (.days d)) day))))
+
+(defn value [(d (ptr m/Dataset)) (post i64) (day i64) (bottom bool)] (-> i64)
+  (- (upper d post day)
+     (if bottom (load (index (.values (index (.posts d) post)) day)) 0)))
+
+(defn sample [(d (ptr m/Dataset)) (post i64) (position f64) (bottom bool)]
+  (-> f64)
+  (let [position (clamp position 0.0 (cast f64 (- (.days d) 1)))
+        lo (cast i64 (floor position))
+        hi (if (< (+ lo 1) (.days d)) (+ lo 1) lo)
+        a (cast f64 (value d post lo bottom))
+        b (cast f64 (value d post hi bottom))]
+    (+ a (* (- position (cast f64 lo)) (- b a)))))
+
+(defn point [(r Rect)
+             (d (ptr m/Dataset))
+             (post i64)
+             (position f64)
+             (peak i64)
+             (bottom bool)] (-> i64)
+  (line-to (+ (.x r)
+              (* (.w r) (/ position (cast f64 (m/maximum 1 (- (.days d) 1))))))
+           (+ (.y r)
+              (* (.h r)
+                 (- 1.0 (/ (sample d post position bottom) (cast f64 peak)))))))
+
+(defn prepare [(r Rect) (d (ptr m/Dataset)) (peak i64)] (-> i64)
+  (let [c (cache)]
+    (when (or (!= (.root c) (.root d))
+              (!= (.posts c) (.posts d))
+              (!= (.days c) (.days d))
+              (!= (.count c) (.count d))
+              (!= (.peak c) peak)
+              (!= (.x (.plot c)) (.x r))
+              (!= (.y (.plot c)) (.y r))
+              (!= (.w (.plot c)) (.w r))
+              (!= (.h (.plot c)) (.h r)))
+      (clear)
+      (set! (.root c) (n/retain (.root d)))
+      (set! (.posts c) (.posts d))
+      (set! (.days c) (.days d))
+      (set! (.count c) (.count d))
+      (set! (.plot c) r)
+      (set! (.peak c) peak)
+      (set! (.upper c)
+            (cast (ptr i64)
+                  (n/calloc (cast u64 (m/maximum 1 (* (.days d) (.count d)))) 8)))
+      (set! (.paths c)
+            (cast (ptr (ptr i8))
+                  (n/calloc (cast u64 (m/maximum 1 (.count d))) 8)))
+      (assert (!= (.upper c) (cast (ptr i64) 0)))
+      (assert (!= (.paths c) (cast (ptr (ptr i8)) 0)))
+      (for [day 0 (.days d)]
+        (let [(mut remaining) (load (index (.totals d) day))]
+          (for [post 0 (.count d)]
+            (set! (index (.upper c) (+ (* post (.days d)) day))
+                  (load remaining))
+            (set! remaining
+                  (- (load remaining)
+                     (load (index (.values (index (.posts d) post)) day)))))))
+      (for [post 0 (.count d)]
+        (begin-sheet)
+        (move-to (.x r) (stack/y r (upper d post 0) peak))
+        (for [day 1 (.days d)] (point r d post (cast f64 day) peak false))
+        (when (= (.days d) 1)
+          (line-to (+ (.x r) (.w r)) (stack/y r (upper d post 0) peak)))
+        (for [i 0 (.days d)]
+          (let [day (- (- (.days d) 1) i)]
+            (when (= (.days d) 1)
+              (line-to (+ (.x r) (.w r)) (stack/y r (value d post 0 true) peak)))
+            (point r d post (cast f64 day) peak true)))
+        (close-path)
+        (set! (index (.paths c) post) (CGPathCreateCopy (.path (scene/scene)))))))
+  0)
+
+(defn full-path [(r Rect) (d (ptr m/Dataset)) (post i64) (peak i64)] (-> i64)
+  (prepare r d peak)
+  (begin-sheet)
+  (CGPathRelease (.path (scene/scene)))
+  (set! (.path (scene/scene))
+        (CGPathCreateMutableCopy (load (index (.paths (cache)) post))))
+  0)

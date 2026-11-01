@@ -14,6 +14,8 @@
    ;; rejection test wants it and CoreGraphics recomputes it from the path
    ;; elements on each call, so it is measured once where the path is set.
    (bounds CGRect)
+   ;; A paint window reuses the full silhouette/mask without adding cut edges.
+   (paint-window CGRect)
    (z f64)
    (order i64)
    (color u32)

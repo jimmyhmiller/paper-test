@@ -143,7 +143,11 @@
    (mask-tiled f32)
    (mask-pad0 f32)
    (mask-pad1 f32)
-   (mask-pad2 f32)])
+   (mask-pad2 f32)
+   (window-x f32)
+   (window-y f32)
+   (window-w f32)
+   (window-h f32)])
 
 (defstruct ClearColor [(r f64) (g f64) (b f64) (a f64)])
 
@@ -1151,7 +1155,11 @@
             :mask-tiled 0.0
             :mask-pad0 0.0
             :mask-pad1 0.0
-            :mask-pad2 0.0)]
+            :mask-pad2 0.0
+            :window-x 0.0
+            :window-y 0.0
+            :window-w 0.0
+            :window-h 0.0)]
     (load params)))
 
 (defn draw-mask [(encoder (ptr i8))
@@ -1165,13 +1173,19 @@
                  (kind f32)
                  (pattern material/Pattern)
                  (finish material/Finish)
-                 (tiled bool)] (-> i64)
+                 (tiled bool)
+                 (window CGRect)] (-> i64)
   (let [(mut params)
           (draw-params bounds color z rough fiber seed kind pattern finish)
         micro
           (if (or (= texture (nil)) (.prepass (visibility)))
               (nil)
               (micro-region-lookup (load params)))]
+    (when (> (.w window) 0.0)
+      (set! (.window-x params) (cast f32 (* (.x window) (.scale (scene)))))
+      (set! (.window-y params) (cast f32 (* (.y window) (.scale (scene)))))
+      (set! (.window-w params) (cast f32 (* (.w window) (.scale (scene)))))
+      (set! (.window-h params) (cast f32 (* (.h window) (.scale (scene))))))
     (set! (.mask-tiled params) (if tiled 1.0 0.0))
     (set! (.pad1 params) (micro-mode micro))
     (set! (.finish-pad0 params) (.last-x (micro-cache)))
@@ -1288,7 +1302,8 @@
                      (if (.continuous item) -1.0 0.0)
                      (.pattern item)
                      (.finish item)
-                     (.tiled frame))))
+                     (.tiled frame)
+                     (.paint-window item))))
       (when (and (not (CGPathIsEmpty (.path item)))
                  (intersects (.bounds item) (canvas-bounds))
                  (intersects (.bounds item) (load (composition-region))))
@@ -1345,7 +1360,8 @@
                      (if (.continuous item) -1.0 0.0)
                      (.pattern item)
                      (.finish item)
-                     tiled))))
+                     tiled
+                     (.paint-window item)))))
   0)
 
 ;;; Distance fields are glyph-sized, independent of color, height and lighting.
@@ -1538,7 +1554,8 @@
                      1.0
                      (material/plain-pattern)
                      (material/matte-finish)
-                     (.tiled frame))))
+                     (.tiled frame)
+                     (cgrect 0.0 0.0 0.0 0.0))))
       (when (and (intersects (.bounds item) (canvas-bounds))
                  (intersects (.bounds item) (load (composition-region)))
                  (or (= (.clip item) (nil)) (not (CGPathIsEmpty (.clip item)))))
@@ -1580,7 +1597,8 @@
                  1.0
                  (material/plain-pattern)
                  (material/matte-finish)
-                 (.last-tiled (cache)))))
+                 (.last-tiled (cache))
+                 (cgrect 0.0 0.0 0.0 0.0))))
   0)
 
 (defn render [(region CGRect)] (-> i64)
@@ -1859,7 +1877,8 @@
                    0.0
                    (material/plain-pattern)
                    (material/matte-finish)
-                   false))
+                   false
+                   (cgrect 0.0 0.0 0.0 0.0)))
       (set! (.total (visibility))
             (+ (+ (len (.sheets s)) count) 1))
       (for [pass (if (.reference (visibility)) 1 0) 2]

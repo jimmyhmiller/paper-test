@@ -102,6 +102,19 @@ python3 scripts/update_titles.py /path/to/jimmyhmiller.github.io
 python3 scripts/build.py
 ```
 
+## Selection performance
+
+The overview retains cumulative contours and paper outlines until data or layout changes. Its date highlight repaints through a GPU coverage window on the original mask; it adds no cut edges. The heatmap batches each column's cells by paper stock and elevation, with backing-pixel-aligned column edges for coverage-cache reuse. Every cell and relief level remains present, and lower graphs update throughout dragging.
+
+Run the repeatable benchmark with the app's full-history cache or an explicit timeline fixture:
+
+```sh
+python3 scripts/benchmark_selection.py --native --frames 3600
+python3 scripts/benchmark_selection.py --frames 240 --fixture tests/fixtures/all-time.json
+```
+
+The native mode opens a window and drives selection creation, movement, resizing, and pinned-post ranges through actual app event handlers. It reports update intervals and CPU stage costs, plus CPU/memory samples. The offscreen mode synchronizes CPU/GPU work for each frame. Reports are CSV and JSON in `build/`; native `gpu_ms` is unused because native presentation remains asynchronous. These are measurements, not fixed pass/fail timing tests.
+
 ## Verification and previews
 
 ```sh

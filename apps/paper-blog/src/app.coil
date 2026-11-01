@@ -3,12 +3,16 @@
 (import "paper.flow" :use *)
 (import "paper.platform" :as host)
 (import "paper.scene" :as scene)
-(import "paper.ffi" :use [snprintf strlen floor sqrt fabs CGPoint])
+(import "paper.ffi"
+        :use
+        [snprintf strlen floor sqrt fabs CGPoint CGPathIsEmpty
+         CGPathGetPathBoundingBox])
 (import "blog.native" :as n)
 (import "blog.model" :as m)
 (import "blog.source" :as source)
 (import "blog.view" :as v)
 (import "blog.stack" :as stack)
+(import "blog.overview" :as overview)
 (import "blog.theme" :as t)
 (import "blog.sun" :as sun)
 (import "blog.bar-motion" :as motion)
@@ -148,21 +152,7 @@
         :else (* 1000 (+ 1 (/ (- peak 1) 1000)))))
 
 (defn band-path [(r Rect) (d (ptr m/Dataset)) (post i64) (peak i64)] (-> i64)
-  (let [count (if (> (.days d) 1) (.days d) 2)
-        denominator (cast f64 (- count 1))]
-    (begin-sheet)
-    (for [day 0 count]
-      (let [x (+ (.x r) (* (.w r) (/ (cast f64 day) denominator)))
-            y (stack/y r (stack/upper d post (if (< day (.days d)) day 0)) peak)]
-        (if (= day 0) (move-to x y) (line-to x y))))
-    (for [i 0 count]
-      (let [day (- (- count 1) i)]
-        (line-to (+ (.x r) (* (.w r) (/ (cast f64 day) denominator)))
-                 (stack/y r
-                          (stack/lower d post (if (< day (.days d)) day 0))
-                          peak))))
-    (close-path))
-  0)
+  (overview/full-path r d post peak))
 
 (defn open-post [] (-> i64)
   (let [d (field (source/state) data)
@@ -274,6 +264,7 @@
         s (interaction)
         peak (axis-peak (.peak d))
         text (index (text-buffer) 0)]
+    (overview/prepare r d peak)
     (grid r peak)
     (ink-height 14.0)
     (for [day 0 (.days d)]
@@ -312,17 +303,21 @@
                           (tint paper t/DAILY 0.65)
                           (if active (tint paper 0xffc561 0.06) paper)))
         (when (.active (range/state))
-          (with-clip (range/bounds r d)
-                     (band-path r d i peak)
-                     (finish-sheet z
-                                   (if active (tint paper 0xffc561 0.06) paper))))
+          (overview/full-path r d i peak)
+          (finish-windowed-sheet z
+                                 (if active (tint paper 0xffc561 0.06) paper)
+                                 (range/bounds r d)))
         (cast i64
               (snprintf text
                         2048
                         c"Paper layer: %s — %lld views"
                         (n/utf8 (.title post))
                         (.views post)))
-        (host/paper_path_hit (+ LAYER_BASE i) (.path (scene/scene)) text 0 0.0)))
+        (host/paper_path_hit (+ LAYER_BASE i)
+                             (load (index (.paths (overview/cache)) i))
+                             text
+                             0
+                             0.0)))
     (when (and (>= (.day s) 0) (< (.day s) (.days d)))
       (let [x
               (+ (.x r)
@@ -663,6 +658,76 @@
     (when guided (frame bounds 0.1 0.45 (+ top 1.0) (t/paper t/MUTED)))
     top))
 
+;;; Disjoint cutouts of the same dyed stock and elevation share one mask.
+;;; Keep every cell and every physical relief level; avoid one Metal texture
+;;; allocation per tiny rectangle when the date range changes its width.
+(defn heat-bounds [(r Rect) (first i64) (days i64) (day i64) (hour i64)]
+  (-> Rect)
+  (let [w (/ (.w r) (cast f64 days))
+        scale (.scale (scene/scene))
+        left
+          (/ (floor (+ 0.5 (* scale (+ (.x r) (* w (cast f64 (- day first)))))))
+             scale)
+        right
+          (/ (floor (+ 0.5
+                       (* scale (+ (.x r) (* w (cast f64 (+ 1 (- day first))))))))
+             scale)
+        gap (minimum 0.45 (* (- right left) 0.12))
+        h (/ (.h r) 24.0)]
+    (rect (+ left gap)
+          (+ (.y r) (* h (cast f64 hour)) 0.45)
+          (maximum 0.01 (- (- right left) (* gap 2.0)))
+          (- h 0.9))))
+
+(defn heat-sheets [(r Rect) (d (ptr m/Dataset))] (-> i64)
+  (let [post (displayed-post d)
+        first (range/first d)
+        days (range/count d)
+        s (interaction)]
+    (for [chunk 0 days]
+      (let [chunk-first (+ first chunk)
+            chunk-end (range/min-day (+ first days) (+ chunk-first 1))]
+        (for [band 0 5]
+          (let [level (/ (cast f64 band) 4.0)
+                stock (t/heat-paper level)]
+            (for [sheet 0 (+ band 1)]
+              (let [edge (* (cast f64 sheet) 0.14)
+                    z (+ 17.0 (* (cast f64 sheet) 4.0))]
+                (begin-sheet)
+                (for [day chunk-first chunk-end]
+                  (for [hour 0 24]
+                    (when (and (m/hour-in-window? d day hour)
+                               (= (t/heat-level (load (index (.hours post)
+                                                             (+ (* day 24) hour))))
+                                  level))
+                      (rounded-path (inset (heat-bounds r first days day hour)
+                                           edge)
+                                    0.1))))
+                (when (not (CGPathIsEmpty (.path (scene/scene))))
+                  (let [b (CGPathGetPathBoundingBox (.path (scene/scene)))]
+                    (finish-sheet z
+                                  (texture-offset (if (= sheet band)
+                                                      stock
+                                                      (tint stock 0x111326 0.20))
+                                                  (- (.x r) (.x b))
+                                                  (- (.y r) (.y b))))))))))))
+    ;; Window gaps and inspection marks stay separate from the shared stock.
+    (for [day first (+ first days)]
+      (for [hour 0 24]
+        (let [b (heat-bounds r first days day hour)
+              level
+                (t/heat-level (load (index (.hours post) (+ (* day 24) hour))))
+              top (+ 17.0 (* level 16.0))
+              active (and (= day (.day s)) (= hour (.hour s)))
+              guided
+                (or (and (= day (.day s)) (< (.hour s) 0))
+                    (and (= hour (.hour s)) (< (.day s) 0)))]
+          (when (not (m/hour-in-window? d day hour))
+            (panel b 0.1 15.0 (t/paper t/HEAT)))
+          (when active (frame b 0.1 0.8 (+ top 1.0) (t/paper t/INK)))
+          (when guided (frame b 0.1 0.45 (+ top 1.0) (t/paper t/MUTED))))))
+    0))
+
 (defn heat-chart [(l v/Layout) (d (ptr m/Dataset))] (-> i64)
   (let [s (interaction)
         mount (.heat l)
@@ -688,24 +753,7 @@
         (let [cell-w (/ (.w r) (cast f64 (range/count d)))
               gap (minimum 0.45 (* cell-w 0.12))
               cell-h (/ (.h r) 24.0)]
-          (for [day (range/first d) (+ (range/first d) (range/count d))]
-            (for [hour 0 24]
-              (let [slot (+ (* day 24) hour)
-                    value (selected-cell d day hour)
-                    active (and (= day (.day s)) (= hour (.hour s)))
-                    guided
-                      (or (and (= day (.day s)) (< (.hour s) 0))
-                          (and (= hour (.hour s)) (< (.day s) 0)))
-                    bounds
-                      (rect (+ (.x r)
-                               (* cell-w (cast f64 (- day (range/first d))))
-                               0.45)
-                            (+ (.y r) (* cell-h (cast f64 hour)) 0.45)
-                            (- cell-w (* 2.0 gap))
-                            (- cell-h 0.9))]
-                (if (m/hour-in-window? d day hour)
-                    (heat-tile bounds (t/heat-level value) active guided)
-                    (do (panel bounds 0.1 15.0 (t/paper t/HEAT)) 15.0)))))
+          (heat-sheets r d)
           (ink-height 40.0)
           (host/paper_hit HEAT_ID
                           (.x r)

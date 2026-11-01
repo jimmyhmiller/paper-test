@@ -138,7 +138,11 @@
   0)
 
 (defn sheet-equal [(a Sheet) (b Sheet)] (-> bool)
-  (and (= (.z a) (.z b))
+  (and (= (.x (.paint-window a)) (.x (.paint-window b)))
+       (= (.y (.paint-window a)) (.y (.paint-window b)))
+       (= (.w (.paint-window a)) (.w (.paint-window b)))
+       (= (.h (.paint-window a)) (.h (.paint-window b)))
+       (= (.z a) (.z b))
        (= (.continuous a) (.continuous b))
        (= (.color a) (.color b))
        (= (.rough a) (.rough b))

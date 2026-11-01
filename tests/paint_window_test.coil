@@ -1,0 +1,67 @@
+(module papercut.paint-window-test)
+(import "paper.ui" :use *)
+(import "paper.scene" :as scene)
+(import "paper.platform" :as host)
+(import "paper.objc" :as o)
+(import "paper.render" :as render)
+(import "paper.masks" :as masks)
+(import "paper.damage" :as damage)
+(import "paper.gpu" :as gpu)
+(import "paper.ffi" :use *)
+
+(extern memcpy :cc (cc/C) [(ptr u8) (ptr u8) u64] (-> (ptr u8)))
+
+(extern memcmp :cc (cc/C) [(ptr u8) (ptr u8) u64] (-> i32))
+
+(import "coil.cc" :as cc)
+(import "coil.alloc" :as alloc)
+
+(defn compose [(x f64)] (-> i64)
+  (host/paper_begin 0x211526)
+  (panel (rect 10.0 10.0 150.0 100.0) 4.0 24.0 (cotton 0x117733))
+  (begin-sheet)
+  (rounded-path (rect 10.0 10.0 150.0 100.0) 4.0)
+  (finish-windowed-sheet 24.0 (cotton 0xee3311) (rect x 25.5 40.5 30.25)))
+
+(defn pigment [(x i64) (y i64)] (-> u32)
+  (load (index (cast (ptr u32)
+                     (CGBitmapContextGetData (.color-context (scene/scene))))
+               (+ (* y 257) x))))
+
+(deftest paint-window-reuses-coverage-and-keeps-original-height-without-a-cut-edge
+  (let [pool (o/new c"NSAutoreleasePool")]
+    (scene/init)
+    (set! (.width (scene/scene)) 257)
+    (set! (.height (scene/scene)) 193)
+    (set! (.scale (scene/scene)) 1.0)
+    (render/setup)
+    (compose 20.25)
+    (render/render)
+    (let [left (pigment 30 40)
+          right (pigment 95 40)
+          entries (len (.entries (masks/cache)))
+          bytes (* 257 193)
+          copy (alloc/malloc (cast isize bytes))]
+      (assert (!= left right))
+      (memcpy copy
+              (CGBitmapContextGetData (.height-context (scene/scene)))
+              (cast u64 bytes))
+      (compose 85.25)
+      (render/render)
+      (assert (= (pigment 30 40) right))
+      (assert (= (pigment 95 40) left))
+      (when (.available (gpu/gpu))
+        (assert (= entries (len (.entries (masks/cache))))))
+      (assert (= (memcmp copy
+                         (CGBitmapContextGetData (.height-context (scene/scene)))
+                         (cast u64 bytes))
+                 (: 0 i32)))
+      ;; The CPU fallback respects the same window and leaves other paper alone.
+      (render/rasterize-contexts (cgrect 0.0 0.0 257.0 193.0)
+                                 (.color-context (scene/scene))
+                                 (.height-context (scene/scene))
+                                 (.material-context (scene/scene)))
+      (assert (= (pigment 30 40) right))
+      (assert (= (pigment 95 40) left))
+      (render/free (cast (ptr i8) copy)))
+    (o/release pool)))

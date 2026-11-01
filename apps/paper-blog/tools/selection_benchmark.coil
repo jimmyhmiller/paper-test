@@ -1,0 +1,111 @@
+(module blog.selection-benchmark)
+(import "coil.cc" :as cc)
+(import "coil.primitive" :as p)
+(import "blog.app" :as app)
+(import "blog.range-selection" :as range)
+(import "blog.source" :as source)
+(import "blog.model" :as m)
+(import "blog.native" :as n)
+(import "blog.view" :as v)
+(import "paper.platform" :as host)
+(import "paper.profile" :as profile)
+(import "paper.render" :as render)
+(import "paper.gpu" :as gpu)
+
+(extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
+
+(extern exit :cc (cc/C) [i32] (-> void))
+
+(defstruct Sample
+  [(frame i64) (draw f64) (event f64) (started f64) (drawn bool)])
+
+(defn sample [] (-> (ptr Sample))
+  (p/alloc-static Sample))
+
+(defn draw [] (-> i64)
+  (profile/measure-ms (.draw (sample)) (app/draw))
+  (set! (.drawn (sample)) true)
+  (host/paper_tick_interval 0.01)
+  0)
+
+(defn x-at [(r v/Layout) (d (ptr m/Dataset)) (day i64)] (-> f64)
+  (+ (.x (.plot r))
+     (* (.w (.plot r))
+        (/ (cast f64 day) (cast f64 (m/maximum 1 (- (.days d) 1)))))))
+
+(defn gesture [(frame i64)] (-> i64)
+  (let [d (field (source/state) data)
+        l (v/layout 1560.0 1000.0 (.count d))
+        phase (% (/ (- frame 1) 60) 4)
+        step (% (- frame 1) 60)
+        half (/ (.days d) 2)
+        quarter (/ (.days d) 4)
+        wave (if (< step 30) step (- 59 step))
+        (mut id) app/DAY_BASE]
+    (when (= step 0)
+      (range/reset)
+      (set! (.selected (app/interaction)) (if (= phase 2) 0 -1))
+      (set! (.selection-locked (app/interaction)) (= phase 2))
+      (when (= phase 1) (range/set-range d quarter (+ quarter half)))
+      (when (= phase 2)
+        (range/set-range d half (m/maximum half (- (.days d) 1))))
+      (when (= phase 3) (range/set-range d 0 (- (.days d) 1)))
+      (set! id
+            (case phase 1 range/MOVE 2 range/RIGHT 3 range/LEFT app/DAY_BASE))
+      (set! (.drag (host/host)) (load id))
+      (app/event 1
+                 (load id)
+                 (x-at l d (case phase 1 quarter 2 (- (.days d) 1) 3 0 quarter))
+                 (.y (.plot l))))
+    (app/event 2
+               (.drag (host/host))
+               (x-at l
+                     d
+                     (case phase
+                       0
+                         (m/maximum quarter
+                                    (range/min-day (- (.days d) 1)
+                                                   (+ half wave)))
+                       1 (+ quarter wave)
+                       2 (range/min-day (- (.days d) 1) (+ half 1 wave))
+                       wave))
+               (.y (.plot l))))
+  0)
+
+(defn event [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
+  (let [s (sample)]
+    (if (= kind 6)
+        (do
+          (when (or (= (.frame s) 0) (.drawn s))
+            (when (> (.frame s) 0)
+              (let [c (render/frame-cost)]
+                (printf c"%lld,%.3f,%.3f,%.3f,%.3f,%.3f\n"
+                        (.frame s)
+                        (.event s)
+                        (.draw s)
+                        (.raster c)
+                        (.gpu-ms (gpu/gpu))
+                        (* 1000.0 (- (profile/now) (.started s))))))
+            (when (>= (.frame s)
+                      (n/msg i64
+                             (n/ns (n/env c"PAPER_BLOG_BENCHMARK_FRAMES" c"240"))
+                             (n/sel c"integerValue")
+                             []))
+              (let [stats (host/present-stats)]
+                (printf c"# presented=%lld late=%lld held=%lld dropped=%lld\n"
+                        (.presented stats)
+                        (.late stats)
+                        (.held stats)
+                        (.dropped stats)))
+              (exit 0))
+            (set! (.frame s) (+ (.frame s) 1))
+            (set! (.drawn s) false)
+            (set! (.started s) (profile/now))
+            (profile/measure-ms (.event s) (gesture (.frame s))))
+          0)
+        (app/event kind id x y))))
+
+(defn main [] (-> i64)
+  (printf c"frame,event_ms,draw_ms,raster_ms,gpu_ms,interval_ms\n")
+  (host/paper_configure c"Paper Blog selection performance" 1560.0 1000.0)
+  (host/paper_run (fnptr-of draw) (fnptr-of event)))

@@ -511,6 +511,7 @@
                       (load pattern)
                       :finish
                       (.finish stock)
+                      :paint-window (cgrect 0.0 0.0 0.0 0.0)
                       :relief
                       (cast (ptr relief/Panel) 0)))))
 
@@ -2431,6 +2432,7 @@
                      :continuous false
                      :pattern (material/plain-pattern)
                      :finish (material/matte-finish)
+                     :paint-window (cgrect 0.0 0.0 0.0 0.0)
                      :relief (cast (ptr relief/Panel) 0)
                      :edges (nil))))
       (CGPathRelease path)

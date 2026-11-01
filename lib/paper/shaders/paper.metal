@@ -517,10 +517,10 @@ fragment float4 paper_fragment(ScreenVertex v [[stage_in]], texture2d<float> pap
     return paper.sample(filtered, v.uv);
 }
 
-struct MaskDraw { float4 rect; float4 pigment_height; float4 material_kind; float2 canvas; float2 padding; float4 pattern; float4 origin_scale_seed; float4 finish_shape; float4 finish_weight; float4 mask_info; };
+struct MaskDraw { float4 rect; float4 pigment_height; float4 material_kind; float2 canvas; float2 padding; float4 pattern; float4 origin_scale_seed; float4 finish_shape; float4 finish_weight; float4 mask_info; float4 paint_window; };
 // Lossless coverage: constant tiles need no storage, mixed tiles preserve the
 // exact original RG8 samples and backing-pixel phase.
-inline float2 mask_coverage(float2 uv, constant MaskDraw& d, texture2d<float, access::read> mask) {
+inline float2 raw_mask_coverage(float2 uv, constant MaskDraw& d, texture2d<float, access::read> mask) {
     if (d.mask_info.x < 0.5f) {
         uint2 size(mask.get_width(), mask.get_height());
         return mask.read(min(uint2(uv * float2(size)), size - 1)).rg;
@@ -537,6 +537,17 @@ inline float2 mask_coverage(float2 uv, constant MaskDraw& d, texture2d<float, ac
     uint header = (columns * rows + 1023) / 1024;
     return mask.read(uint2((id % 16) * 64 + pixel.x % 64,
                            header + (id / 16) * 64 + pixel.y % 64)).rg;
+}
+// A paint window clips coverage, not geometry: it adds no cut-edge bevel.
+inline float2 mask_coverage(float2 uv, constant MaskDraw& d, texture2d<float, access::read> mask) {
+    float2 coverage = raw_mask_coverage(uv, d, mask);
+    if (d.paint_window.z > 0.0f) {
+        float2 center = d.rect.xy + uv * d.rect.zw;
+        float2 overlap = clamp(min(center + 0.5f, d.paint_window.xy + d.paint_window.zw)
+                             - max(center - 0.5f, d.paint_window.xy), 0.0f, 1.0f);
+        coverage *= overlap.x * overlap.y;
+    }
+    return coverage;
 }
 struct MaskVertex { float4 position [[position]]; float2 uv; };
 vertex MaskVertex mask_vertex(uint id [[vertex_id]], constant MaskDraw& d [[buffer(0)]]) {

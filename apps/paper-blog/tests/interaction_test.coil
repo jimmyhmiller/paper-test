@@ -7,12 +7,17 @@
 (import "blog.range-selection" :as range)
 (import "blog.view" :as v)
 (import "blog.stack" :as stack)
+(import "blog.overview" :as overview)
+(import "paper.ffi"
+        :use
+        [CGPathRetain CGPathRelease CGPathContainsPoint CGAffine CGPoint])
 (import "blog.sun" :as sun)
 (import "blog.theme" :as theme)
 (import "blog.tuning" :as tuning)
 (import "paper.lighting" :as light)
 (import "paper.platform" :as host)
 (import "paper.scene" :as scene)
+(import "paper.flow" :use [rect])
 
 (defn test-preferences [] (-> (ptr i8))
   (let [slot (p/alloc-static (ptr i8))]
@@ -717,5 +722,74 @@
       (app/draw)
       (app/event 4 53 0.0 0.0)
       (assert (not (.active (range/state))))
+      (m/clear d))
+    (n/release pool)))
+
+(deftest cached-overview-keeps-exact-contours-and-reuses-them-across-range-changes
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)
+          r (.plot (v/layout 1560.0 1000.0 (.count d)))
+          peak (app/axis-peak (.peak d))]
+      (overview/prepare r d peak)
+      (let [path (CGPathRetain (load (index (.paths (overview/cache)) 0)))]
+        (for [post 0 (.count d)]
+          (for [day 0 (.days d)]
+            (assert (= (overview/upper d post day) (stack/upper d post day)))))
+        (range/set-range d 1 2)
+        (app/draw)
+        (assert (= path (load (index (.paths (overview/cache)) 0))))
+        (overview/prepare r d peak)
+        (assert (= path (load (index (.paths (overview/cache)) 0))))
+        (overview/prepare (rect (+ (.x r) 1.0) (.y r) (.w r) (.h r)) d peak)
+        (assert (!= path (load (index (.paths (overview/cache)) 0))))
+        (CGPathRelease path))
+      (range/reset)
+      (m/clear d)
+      (overview/clear))
+    (n/release pool)))
+
+(deftest batched-heatmap-preserves-every-cell-color-and-physical-relief
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)
+          ui (app/interaction)]
+      (m/clear d)
+      (assert (m/decode-utc d
+                            (n/read-json c"tests/fixtures/hourly.json")
+                            (n/nil)))
+      (set! (.selected ui) -1)
+      (set! (.hover (host/host)) 0)
+      (app/draw)
+      (let [r (.heat-plot (v/layout 1560.0 1000.0 (.count d)))]
+        (for [day 0 (.days d)]
+          (for [hour 0 24]
+            (let [b (app/heat-bounds r 0 (.days d) day hour)
+                  point
+                    (CGPoint
+                      :x (+ (.x b) (* (.w b) 0.5))
+                      :y (+ (.y b) (* (.h b) 0.5)))
+                  level (theme/heat-level (app/selected-cell d day hour))
+                  expected
+                    (if (m/hour-in-window? d day hour)
+                        (+ 17.0 (* level 16.0))
+                        15.0)
+                  stock
+                    (if (m/hour-in-window? d day hour)
+                        (theme/heat-paper level)
+                        (theme/paper theme/HEAT))
+                  (mut height) 0.0
+                  (mut color) (: 0 u32)]
+              (for [i 0 (len (.sheets (scene/scene)))]
+                (let [sheet (get (.sheets (scene/scene)) i)]
+                  (when (and (>= (.z sheet) (load height))
+                             (CGPathContainsPoint (.path sheet)
+                                                  (cast (ptr CGAffine) 0)
+                                                  point
+                                                  true))
+                    (set! height (.z sheet))
+                    (set! color (.color sheet)))))
+              (assert (= (load height) expected))
+              (assert (= (load color) (.pigment stock)))))))
       (m/clear d))
     (n/release pool)))
