@@ -1,0 +1,1023 @@
+;;; What `memview.transform` leaves running inside an instrumented application.
+;;;
+;;; The transform records Metal resources at the calls that make them. Everything
+;;; that reaches malloc, including CoreText, AppKit and the Metal driver, arrives
+;;; through libmalloc's `malloc_logger` hook with the stack that asked for it. A
+;;; thread streams the ledger as tab-separated lines over a Unix socket to the
+;;; Paper Memview window, which runs as its own process so its memory is not
+;;; counted here.
+;;;
+;;; Everything reachable from `logger` runs inside malloc and must not allocate.
+(module memview.runtime)
+(import "coil.primitive" :as primitive)
+(import "coil.cc" :as cc)
+(import "coil.atomic" :as atomic)
+(import "coil.socket" :as socket)
+(import "coil.os" :as os)
+(import "coil.str" :as str)
+(import "paper.objc" :use [msg sel class nil])
+
+(extern mmap :cc (cc/C) [(ptr i8) i64 i32 i32 i32 i64] (-> (ptr i8)))
+(extern backtrace :cc (cc/C) [(ptr (ptr i8)) i32] (-> i32))
+(extern dladdr :cc (cc/C) [(ptr i8) (ptr DlInfo)] (-> i32))
+(extern dlsym :cc (cc/C) [(ptr i8) (ptr i8)] (-> (ptr i8)))
+(extern pthread_key_create :cc (cc/C) [(ptr u64) (ptr i8)] (-> i32))
+(extern pthread_getspecific :cc (cc/C) [u64] (-> (ptr i8)))
+(extern pthread_setspecific :cc (cc/C) [u64 (ptr i8)] (-> i32))
+(extern pthread_create
+        :cc (cc/C)
+        [(ptr u64) (ptr i8) (fnptr (cc/C) [(ptr i8)] (ptr i8)) (ptr i8)]
+        (-> i32))
+(extern pthread_detach :cc (cc/C) [u64] (-> i32))
+(extern pthread_setname_np :cc (cc/C) [(ptr i8)] (-> i32))
+(extern os_unfair_lock_lock :cc (cc/C) [(ptr u32)] (-> void))
+(extern os_unfair_lock_unlock :cc (cc/C) [(ptr u32)] (-> void))
+(extern strcmp :cc (cc/C) [(ptr i8) (ptr i8)] (-> i32))
+(extern strncmp :cc (cc/C) [(ptr i8) (ptr i8) u64] (-> i32))
+(extern strlen :cc (cc/C) [(ptr i8)] (-> u64))
+(extern strrchr :cc (cc/C) [(ptr i8) i32] (-> (ptr i8)))
+(extern getprogname :cc (cc/C) [] (-> (ptr i8)))
+(extern getuid :cc (cc/C) [] (-> u32))
+(extern mkdir :cc (cc/C) [(ptr i8) u16] (-> i32))
+(extern unlink :cc (cc/C) [(ptr i8)] (-> i32))
+(extern atexit :cc (cc/C) [(fnptr (cc/C) [] void)] (-> i32))
+(extern poll :cc (cc/C) [(ptr PollFd) u32 i32] (-> i32))
+(extern snprintf :cc (cc/C) [(ptr i8) u64 (ptr i8) ...] (-> i32))
+(extern access :cc (cc/C) [(ptr i8) i32] (-> i32))
+(extern write :cc (cc/C) [i32 (ptr i8) u64] (-> i64))
+(extern abort :cc (cc/C) [] (-> never))
+(extern waitpid :cc (cc/C) [i32 (ptr i32) i32] (-> i32))
+(extern posix_spawn
+        :cc (cc/C)
+        [(ptr i32) (ptr i8) (ptr i8) (ptr i8) (ptr (ptr i8)) (ptr (ptr i8))]
+        (-> i32))
+(extern _NSGetArgc :cc (cc/C) [] (-> (ptr i32)))
+(extern _NSGetArgv :cc (cc/C) [] (-> (ptr (ptr (ptr i8)))))
+(extern _NSGetEnviron :cc (cc/C) [] (-> (ptr (ptr (ptr i8)))))
+(extern malloc_get_all_zones :cc (cc/C) [u32 (ptr i8) (ptr (ptr u64)) (ptr u32)] (-> i32))
+(extern malloc_zone_statistics :cc (cc/C) [(ptr i8) (ptr MallocStatistics)] (-> void))
+(extern malloc_get_zone_name :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
+(extern objc_allocateClassPair :cc (cc/C) [(ptr i8) (ptr i8) u64] (-> (ptr i8)))
+(extern objc_registerClassPair :cc (cc/C) [(ptr i8)] (-> void))
+(extern class_addMethod :cc (cc/C) [(ptr i8) (ptr i8) (ptr i8) (ptr i8)] (-> bool))
+(extern class_createInstance :cc (cc/C) [(ptr i8) u64] (-> (ptr i8)))
+(extern class_getInstanceMethod :cc (cc/C) [(ptr i8) (ptr i8)] (-> (ptr i8)))
+(extern method_getImplementation :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
+(extern object_getIndexedIvars :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
+(extern objc_setAssociatedObject :cc (cc/C) [(ptr i8) (ptr i8) (ptr i8) u64] (-> void))
+
+(defstruct DlInfo
+  [(fname (ptr i8)) (fbase (ptr i8)) (sname (ptr i8)) (saddr (ptr i8))])
+(defstruct MallocStatistics
+  [(blocks u32) (used u64) (peak u64) (allocated u64)])
+(defstruct PollFd [(fd i32) (events i16) (revents i16)])
+
+(const MAX-FRAMES 32)
+(const IDENTITY-FRAMES 12)
+(const SITE-SLOTS 65536)
+(const SITE-LIMIT 57344)
+(const SHARD-COUNT 64)
+(const SIZE-SHIFT 20)
+(const SITE-MASK 1048575)
+(const GROUP-SLOTS 16384)
+(const RESOURCE-LIMIT 262144)
+(const RESOURCE-GROUPS 512)
+(const ROW-LIMIT 200)
+(const OUT-CAPACITY 1048576)
+(const CLIENT-LIMIT 8)
+
+(defn map-bytes [(bytes i64)] (-> (ptr i8))
+  ;; PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON. Zero-filled and untouched until used.
+  (let [memory (mmap (nil) bytes 3 4098 -1 0)]
+    (when (= (cast i64 memory) -1)
+      (write 2 c"memview: mmap failed\n" 21)
+      (abort))
+    memory))
+
+;; ---- Allocation sites ----------------------------------------------------
+
+(defstruct Site
+  [(depth i64)
+   (live-bytes i64)
+   (live-blocks i64)
+   (total-bytes i64)
+   (pcs (array (ptr i8) 32))])
+
+(defstruct SiteSlot [(hash i64) (site i64)])
+
+(defstruct Live [(pointer u64) (size-and-site u64)])
+
+(defstruct Shard [(lock u32) (slots (ptr Live)) (capacity i64) (count i64)])
+
+(defstruct State
+  [(guard-key u64)
+   (ready bool)
+   (sites (ptr Site))
+   (slots (ptr SiteSlot))
+   (site-lock u32)
+   (site-count i64)
+   (probe-bytes i64)
+   (tracked-bytes i64)
+   (tracked-blocks i64)
+   (total-allocs i64)
+   (total-frees i64)
+   (shards (array Shard 64))])
+
+(defn state [] (-> (ptr State))
+  (primitive/alloc-static State))
+
+(defn guarded? [] (-> bool)
+  (!= (cast i64 (pthread_getspecific (.guard-key (state)))) 0))
+
+(defn set-guard [(on bool)] (-> i64)
+  (pthread_setspecific (.guard-key (state)) (cast (ptr i8) (if on 1 0)))
+  0)
+
+;;; Sites are handed out in order, so only pages for sites in use become dirty;
+;;; all the random access lands in the much smaller slot index. Site 0 collects
+;;; whatever arrives after the table fills, so nothing leaves the totals. Only the
+;;; innermost frames identify a site: they decide who gets the blame, and telling
+;;; apart every outer caller would multiply the sites without changing the answer.
+(defn site-for-stack [(pcs (ptr (ptr i8))) (depth i64)] (-> i64)
+  (let [s (state)
+        (mut hash) (: -3750763034362895579 i64)]
+    (for [i 0 (if (< depth IDENTITY-FRAMES) depth IDENTITY-FRAMES)]
+      (set! hash (primitive/imul (^ (load hash) (cast i64 (load (index pcs i))))
+                                 1099511628211)))
+    (when (= (load hash) 0) (set! hash 1))
+    (let [(mut at) (& (>> (load hash) 32) (- SITE-SLOTS 1))
+          (mut found) -1
+          (mut tried) 0]
+      (while (and (< (load found) 0) (< (load tried) SITE-SLOTS))
+        (let [slot (index (.slots s) (load at))
+              seen (atomic/read (field slot hash))]
+          (cond (= seen (load hash)) (set! found (.site slot))
+                (= seen 0)
+                  (do
+                    (os_unfair_lock_lock (field s site-lock))
+                    (let [again (.hash slot)]
+                      (cond (= again (load hash)) (set! found (.site slot))
+                            (= again 0)
+                              (let [site (+ (.site-count s) 1)]
+                                (if (>= site SITE-LIMIT)
+                                    (set! found 0)
+                                    (let [entry (index (.sites s) site)]
+                                      (set! (.depth entry) depth)
+                                      (for [i 0 depth]
+                                        (set! (index (field entry pcs) i) (load (index pcs i))))
+                                      (set! (.site slot) site)
+                                      (set! (.site-count s) site)
+                                      (atomic/store (field slot hash) (load hash))
+                                      (set! found site))))
+                            :else 0))
+                    (os_unfair_lock_unlock (field s site-lock)))
+                :else 0))
+        (set! at (& (+ (load at) 1) (- SITE-SLOTS 1)))
+        (set! tried (+ (load tried) 1)))
+      (if (< (load found) 0) 0 (load found)))))
+
+;; ---- Live malloc blocks --------------------------------------------------
+
+(defn pointer-hash [(pointer u64)] (-> u64)
+  (primitive/imul (>> pointer (: 4 u64)) (: 11400714819323198485 u64)))
+
+(defn shard-of [(pointer u64)] (-> (ptr Shard))
+  (index (field (state) shards) (cast i64 (>> (pointer-hash pointer) (: 58 u64)))))
+
+(defn shard-put [(slots (ptr Live)) (capacity i64) (entry Live)] (-> i64)
+  (let [mask (- capacity 1)
+        (mut at) (& (cast i64 (pointer-hash (.pointer entry))) mask)]
+    (while (!= (.pointer (index slots (load at))) (: 0 u64))
+      (set! at (& (+ (load at) 1) mask)))
+    (store! (index slots (load at)) entry)
+    0))
+
+(extern send :cc (cc/C) [i32 (ptr i8) i64 i32] (-> i64))
+(extern munmap :cc (cc/C) [(ptr i8) i64] (-> i32))
+(extern memcpy :cc (cc/C) [(ptr i8) (ptr i8) u64] (-> (ptr i8)))
+
+(defn shard-grow [(shard (ptr Shard))] (-> i64)
+  (let [old-capacity (.capacity shard)
+        capacity (if (= old-capacity 0) 1024 (* old-capacity 2))
+        bytes (* capacity (primitive/sizeof Live))
+        slots (cast (ptr Live) (map-bytes bytes))]
+    (atomic/add (field (state) probe-bytes) bytes)
+    (for [i 0 old-capacity]
+      (when (!= (.pointer (index (.slots shard) i)) (: 0 u64))
+        (shard-put slots capacity (load (index (.slots shard) i)))))
+    (when (> old-capacity 0)
+      (let [old-bytes (* old-capacity (primitive/sizeof Live))]
+        (munmap (cast (ptr i8) (.slots shard)) old-bytes)
+        (atomic/sub (field (state) probe-bytes) old-bytes)))
+    (set! (.slots shard) slots)
+    (set! (.capacity shard) capacity)
+    0))
+
+(defn live-insert [(pointer u64) (size u64) (site i64)] (-> i64)
+  (let [shard (shard-of pointer)]
+    (os_unfair_lock_lock (field shard lock))
+    (when (>= (* (+ (.count shard) 1) 10) (* (.capacity shard) 7))
+      (shard-grow shard))
+    (shard-put (.slots shard)
+               (.capacity shard)
+               (Live :pointer pointer
+                     :size-and-site (| (<< size (: 20 u64)) (cast u64 site))))
+    (set! (.count shard) (+ (.count shard) 1))
+    (os_unfair_lock_unlock (field shard lock))
+    0))
+
+;;; Linear probing with backward-shift deletion, so the table never fills with
+;;; tombstones however much the application churns. Answers 0 for an unknown block.
+(defn live-remove [(pointer u64)] (-> u64)
+  (let [shard (shard-of pointer)
+        (mut found) (: 0 u64)]
+    (os_unfair_lock_lock (field shard lock))
+    (when (> (.capacity shard) 0)
+      (let [mask (- (.capacity shard) 1)
+            slots (.slots shard)
+            (mut at) (& (cast i64 (pointer-hash pointer)) mask)
+            (mut searching) true]
+        (while (and (load searching) (!= (.pointer (index slots (load at))) (: 0 u64)))
+          (if (= (.pointer (index slots (load at))) pointer)
+              (let [(mut hole) (load at)
+                    (mut next) (& (+ (load at) 1) mask)]
+                (set! found (.size-and-site (index slots (load at))))
+                (while (!= (.pointer (index slots (load next))) (: 0 u64))
+                  (let [home (& (cast i64 (pointer-hash (.pointer (index slots (load next))))) mask)]
+                    (when (>= (& (- (load next) home) mask) (& (- (load next) (load hole)) mask))
+                      (store! (index slots (load hole)) (load (index slots (load next))))
+                      (set! hole (load next))))
+                  (set! next (& (+ (load next) 1) mask)))
+                (set! (.pointer (index slots (load hole))) (: 0 u64))
+                (set! (.count shard) (- (.count shard) 1))
+                (set! searching false))
+              (set! at (& (+ (load at) 1) mask))))))
+    (os_unfair_lock_unlock (field shard lock))
+    (load found)))
+
+(defn record-alloc [(pointer u64) (size u64)] (-> i64)
+  (let [s (state)
+        (mut frames) (primitive/zeroed (array (ptr i8) 32))
+        pcs (cast (ptr (ptr i8)) (mut frames))
+        depth (cast i64 (backtrace pcs 32))
+        site (site-for-stack pcs depth)
+        entry (index (.sites s) site)
+        bytes (cast i64 size)]
+    (live-insert pointer size site)
+    (atomic/add (field entry live-bytes) bytes)
+    (atomic/add (field entry live-blocks) 1)
+    (atomic/add (field entry total-bytes) bytes)
+    (atomic/add (field s tracked-bytes) bytes)
+    (atomic/add (field s tracked-blocks) 1)
+    (atomic/add (field s total-allocs) 1)
+    0))
+
+(defn record-free [(pointer u64)] (-> i64)
+  (let [found (live-remove pointer)]
+    (when (!= found (: 0 u64))
+      (let [s (state)
+            bytes (cast i64 (>> found (: 20 u64)))
+            entry (index (.sites s) (cast i64 (& found (: 1048575 u64))))]
+        (atomic/sub (field entry live-bytes) bytes)
+        (atomic/sub (field entry live-blocks) 1)
+        (atomic/sub (field s tracked-bytes) bytes)
+        (atomic/sub (field s tracked-blocks) 1)
+        (atomic/add (field s total-frees) 1)))
+    0))
+
+;;; The signature libmalloc calls. Type bits: 2 allocates, 4 frees, 8 has a zone.
+;;; malloc is (2|8, zone, size, 0, block). free is (4|8, zone, block, 0, 0).
+;;; realloc is (2|4|8, zone, old, size, block).
+(defn logger [(type u32) (zone u64) (second u64) (third u64) (result u64) (skip u32)] (-> void)
+  (let [kind (cast i64 type)
+        allocates (!= (& kind 2) 0)
+        frees (!= (& kind 4) 0)]
+    (when (and (!= (& kind 8) 0)
+               (not (and allocates frees (= result (: 0 u64)))))
+      (when (and frees (!= second (: 0 u64))) (record-free second))
+      (when (and allocates (!= result (: 0 u64)) (not (guarded?)))
+        (set-guard true)
+        (record-alloc result (if frees third second))
+        (set-guard false)))))
+
+;; ---- Metal resources -----------------------------------------------------
+
+(defstruct Resource
+  [(kind i64)
+   (site (slice u8))
+   (name (slice u8))
+   (line i64)
+   (bytes i64)
+   (width i64)
+   (height i64)
+   (mips i64)
+   (format i64)
+   (storage i64)
+   (next-free i64)
+   (live bool)])
+
+(defstruct Ledger
+  [(lock u32)
+   (resources (ptr Resource))
+   (high i64)
+   (free-head i64)
+   (live-bytes i64)
+   (live-count i64)
+   (watcher (ptr i8))
+   (dealloc (fnptr (cc/C) [(ptr i8) (ptr i8)] void))
+   (device (ptr i8))])
+
+(defn ledger [] (-> (ptr Ledger))
+  (primitive/alloc-static Ledger))
+
+(defn association-key [] (-> (ptr i8))
+  (cast (ptr i8) (primitive/alloc-static i64)))
+
+;;; Runs as the Metal object dies: its associated objects are released with it.
+(defn watcher-dealloc [(self (ptr i8)) (selector (ptr i8))] (-> void)
+  (let [l (ledger)
+        at (load (cast (ptr i64) (object_getIndexedIvars self)))]
+    (os_unfair_lock_lock (field l lock))
+    (let [resource (index (.resources l) at)]
+      (set! (.live-bytes l) (- (.live-bytes l) (.bytes resource)))
+      (set! (.live-count l) (- (.live-count l) 1))
+      (set! (.live resource) false)
+      (set! (.next-free resource) (.free-head l))
+      (set! (.free-head l) at))
+    (os_unfair_lock_unlock (field l lock))
+    (call-ptr (.dealloc l) self selector)))
+
+(defn watcher-class [] (-> (ptr i8))
+  (let [l (ledger)]
+    (when (= (.watcher l) (nil))
+      (let [root (class c"NSObject")
+            made (objc_allocateClassPair root c"MemviewWatcher" 0)]
+        (set! (.dealloc l)
+              (cast (fnptr (cc/C) [(ptr i8) (ptr i8)] void)
+                    (method_getImplementation
+                      (class_getInstanceMethod root (sel c"dealloc")))))
+        (class_addMethod made
+                         (sel c"dealloc")
+                         (cast (ptr i8) (fnptr-of watcher-dealloc))
+                         c"v@:")
+        (objc_registerClassPair made)
+        (set! (.watcher l) made)))
+    (.watcher l)))
+
+(defn claim-resource [] (-> i64)
+  (let [l (ledger)]
+    (if (>= (.free-head l) 0)
+        (let [at (.free-head l)]
+          (set! (.free-head l) (.next-free (index (.resources l) at)))
+          at)
+        (do
+          (when (>= (.high l) RESOURCE-LIMIT)
+            (write 2 c"memview: more than 262144 live Metal resources\n" 47)
+            (abort))
+          (set! (.high l) (+ (.high l) 1))
+          (- (.high l) 1)))))
+
+(defn empty-name [] (-> (slice u8))
+  "")
+
+;;; `kind` is 1 texture, 2 buffer, 3 heap. A failed allocation is nil, and passes through.
+(defn track-resource [(kind i64) (object (ptr i8)) (site (slice u8)) (line i64)] (-> (ptr i8))
+  (when (and (.ready (state)) (!= object (nil)))
+    (let [l (ledger)
+          was-guarded (guarded?)
+          texture (= kind 1)
+          bytes (msg i64 object
+                     (sel (if (= kind 3) c"size" c"allocatedSize"))
+                     [])]
+      (set-guard true)
+      (let [cls (watcher-class)
+            watcher (class_createInstance cls 8)
+            width (if texture (msg i64 object (sel c"width") []) 0)
+            height (if texture (msg i64 object (sel c"height") []) 0)
+            mips (if texture (msg i64 object (sel c"mipmapLevelCount") []) 0)
+            format (if texture (msg i64 object (sel c"pixelFormat") []) 0)
+            storage (msg i64 object (sel c"storageMode") [])]
+        (os_unfair_lock_lock (field l lock))
+        (when (= (.device l) (nil))
+          (set! (.device l) (msg (ptr i8) object (sel c"device") [])))
+        (let [at (claim-resource)
+              resource (index (.resources l) at)]
+          (set! (.kind resource) kind)
+          (set! (.site resource) site)
+          (set! (.name resource) (empty-name))
+          (set! (.line resource) line)
+          (set! (.bytes resource) bytes)
+          (set! (.width resource) width)
+          (set! (.height resource) height)
+          (set! (.mips resource) mips)
+          (set! (.format resource) format)
+          (set! (.storage resource) storage)
+          (set! (.live resource) true)
+          (set! (.live-bytes l) (+ (.live-bytes l) bytes))
+          (set! (.live-count l) (+ (.live-count l) 1))
+          (store! (cast (ptr i64) (object_getIndexedIvars watcher)) at))
+        (os_unfair_lock_unlock (field l lock))
+        ;; OBJC_ASSOCIATION_RETAIN_NONATOMIC: the Metal object now owns the watcher.
+        (objc_setAssociatedObject object (association-key) watcher 1)
+        (msg i64 watcher (sel c"release") []))
+      (set-guard was-guarded)))
+  object)
+
+(extern objc_getAssociatedObject :cc (cc/C) [(ptr i8) (ptr i8)] (-> (ptr i8)))
+
+;;; The transform wraps `(set! (.colors g) (texture …))` in this, so a resource is
+;;; known by the field that holds it and the code that assigned it, rather than by
+;;; the helper every texture passes through.
+(defn name-resource [(object (ptr i8)) (name (slice u8)) (site (slice u8)) (line i64)] (-> (ptr i8))
+  (when (and (.ready (state)) (!= object (nil)))
+    (let [watcher (objc_getAssociatedObject object (association-key))]
+      (when (!= watcher (nil))
+        (let [l (ledger)
+              at (load (cast (ptr i64) (object_getIndexedIvars watcher)))]
+          (os_unfair_lock_lock (field l lock))
+          (let [resource (index (.resources l) at)]
+            (set! (.name resource) name)
+            (set! (.site resource) site)
+            (set! (.line resource) line))
+          (os_unfair_lock_unlock (field l lock))))))
+  object)
+
+;; ---- Attribution ---------------------------------------------------------
+
+(defstruct Attribution
+  [(owner (ptr i8)) (type (ptr i8)) (via (ptr i8)) (group i64)])
+
+(defstruct Group
+  [(owner (ptr i8))
+   (type (ptr i8))
+   (via (ptr i8))
+   (bytes i64)
+   (blocks i64)
+   (total i64)
+   (site i64)
+   (sent bool)])
+
+(defstruct Reporter
+  [(attributions (ptr Attribution))
+   (groups (ptr Group))
+   (group-count i64)
+   (order (ptr i64))
+   (own-base (ptr i8))
+   (buffer (ptr i8))
+   (position i64)])
+
+(defn reporter [] (-> (ptr Reporter))
+  (primitive/alloc-static Reporter))
+
+(defn has-prefix? [(text (ptr i8)) (prefix (ptr i8))] (-> bool)
+  (= (strncmp text prefix (strlen prefix)) 0))
+
+(defn system-image? [(path (ptr i8))] (-> bool)
+  (or (has-prefix? path c"/System/")
+      (has-prefix? path c"/usr/lib/")
+      (has-prefix? path c"/Library/Apple/")))
+
+(defn image-name [(path (ptr i8))] (-> (ptr i8))
+  (let [slash (strrchr path 47)]
+    (if (= slash (nil)) path (cast (ptr i8) (+ (cast i64 slash) 1)))))
+
+;;; These only pass a request along; the interesting frame is whoever called them.
+(defn plumbing? [(symbol (ptr i8))] (-> bool)
+  (or (has-prefix? symbol c"coil.alloc.")
+      (has-prefix? symbol c"coil.core.")
+      (has-prefix? symbol c"coil.arraylist.")
+      (has-prefix? symbol c"coil.str.")
+      (has-prefix? symbol c"coil.hash")
+      (has-prefix? symbol c"coil.fmt.")))
+
+(defn runtime-library? [(path (ptr i8))] (-> bool)
+  (let [name (image-name path)]
+    (or (has-prefix? name c"libsystem_")
+        (has-prefix? name c"libobjc")
+        (has-prefix? name c"libc++")
+        (has-prefix? name c"libdyld")
+        (= (strcmp name c"dyld") 0))))
+
+(defn collection-framework? [(path (ptr i8))] (-> bool)
+  (let [name (image-name path)]
+    (or (= (strcmp name c"CoreFoundation") 0)
+        (= (strcmp name c"Foundation") 0))))
+
+(defn group-index [(owner (ptr i8)) (type (ptr i8)) (via (ptr i8)) (site i64)] (-> i64)
+  (let [r (reporter)
+        (mut found) -1
+        (mut at) (& (primitive/imul (^ (^ (cast i64 owner) (primitive/imul (cast i64 type) 31))
+                                       (primitive/imul (cast i64 via) 131))
+                                    1099511628211)
+                    (- GROUP-SLOTS 1))
+        (mut tried) 0]
+    (while (and (< (load found) 0) (< (load tried) GROUP-SLOTS))
+      (let [group (index (.groups r) (load at))]
+        (cond (= (.owner group) (nil))
+                (do
+                  (set! (.owner group) owner)
+                  (set! (.type group) type)
+                  (set! (.via group) via)
+                  (set! (.site group) site)
+                  (set! (.group-count r) (+ (.group-count r) 1))
+                  (set! found (load at)))
+              (and (= (.owner group) owner) (= (.type group) type) (= (.via group) via))
+                (set! found (load at))
+              :else 0))
+      (set! at (& (+ (load at) 1) (- GROUP-SLOTS 1)))
+      (set! tried (+ (load tried) 1)))
+    (when (< (load found) 0)
+      (write 2 c"memview: allocation group table is full\n" 40)
+      (abort))
+    (load found)))
+
+(defn attribute [(at i64)] (-> (ptr Attribution))
+  (let [r (reporter)
+        answer (index (.attributions r) at)]
+    (when (= (.owner answer) (nil))
+      (let [site (index (.sites (state)) at)
+            (mut info) (primitive/zeroed DlInfo)
+            (mut owner) (nil)
+            (mut type) (nil)
+            (mut via) (nil)
+            (mut innermost) (nil)
+            (mut collection) (nil)]
+        (for [i 0 (.depth site)]
+          (when (= (load owner) (nil))
+            (let [pc (cast i64 (load (index (field site pcs) i)))]
+              (when (and (!= (dladdr (cast (ptr i8) (- pc 1)) (mut info)) 0)
+                         (!= (.fname info) (nil))
+                         (!= (.fbase info) (.own-base r)))
+                (let [symbol (if (= (.sname info) (nil)) c"?" (.sname info))
+                      path (.fname info)]
+                  (cond (has-prefix? symbol c"memview.") 0
+                        (not (system-image? path))
+                          (if (plumbing? symbol)
+                              (set! type symbol)
+                              (set! owner symbol))
+                        (not (runtime-library? path))
+                          (do
+                            (set! via (image-name path))
+                            (if (collection-framework? path)
+                                (when (= (load collection) (nil))
+                                  (set! collection (image-name path)))
+                                (when (= (load innermost) (nil))
+                                  (set! innermost (image-name path)))))
+                        :else 0))))))
+        (when (= (load owner) (nil))
+          (set! via (nil))
+          (set! owner
+                (cond (= (.depth site) 0) c"(allocation site table full)"
+                      (!= (load innermost) (nil)) (load innermost)
+                      (!= (load collection) (nil)) (load collection)
+                      :else c"System")))
+        (set! (.type answer) (load type))
+        (set! (.via answer) (load via))
+        (set! (.group answer) (group-index (load owner) (load type) (load via) at))
+        (set! (.owner answer) (load owner))))
+    answer))
+
+;; ---- Output --------------------------------------------------------------
+
+(defstruct Server
+  [(listener socket/UnixListener)
+   (clients (array socket/UnixConnection 8))
+   (count i64)
+   (path (array u8 104))])
+
+(defn server [] (-> (ptr Server))
+  (primitive/alloc-static Server))
+
+;;; A reader that stops reading is dropped rather than left to stall the snapshot.
+(defn send-all [(bytes (ptr i8)) (count i64)] (-> i64)
+  (let [srv (server)
+        (mut i) (- (.count srv) 1)]
+    (while (>= (load i) 0)
+      (let [fd (.fd (index (field srv clients) (load i)))
+            (mut offset) 0
+            (mut alive) true]
+        (while (and (load alive) (< (load offset) count))
+          (let [sent (send fd
+                           (cast (ptr i8) (+ (cast i64 bytes) (load offset)))
+                           (- count (load offset))
+                           0)]
+            (if (<= sent 0)
+                (set! alive false)
+                (set! offset (+ (load offset) sent)))))
+        (when (not (load alive))
+          (os/close fd)
+          (set! (.count srv) (- (.count srv) 1))
+          (store! (index (field srv clients) (load i))
+                  (load (index (field srv clients) (.count srv))))))
+      (set! i (- (load i) 1)))
+    0))
+
+(defn flush-out [] (-> i64)
+  (let [r (reporter)]
+    (send-all (.buffer r) (.position r))
+    (set! (.position r) 0)
+    0))
+
+(defn out-bytes [(bytes (ptr i8)) (count i64)] (-> i64)
+  (let [r (reporter)]
+    (when (> (+ (.position r) count) OUT-CAPACITY) (flush-out))
+    (memcpy (cast (ptr i8) (+ (cast i64 (.buffer r)) (.position r))) bytes (cast u64 count))
+    (set! (.position r) (+ (.position r) count))
+    0))
+
+(defn out-cstr [(text (ptr i8))] (-> i64)
+  (when (!= text (nil)) (out-bytes text (cast i64 (strlen text))))
+  0)
+
+(defn out-slice [(text (slice u8))] (-> i64)
+  (out-bytes (cast (ptr i8) (data text)) (len text)))
+
+(defn out-int [(value i64)] (-> i64)
+  (let [(mut digits) (primitive/zeroed (array u8 32))
+        at (cast (ptr i8) (mut digits))
+        count (snprintf at 32 c"%lld" value)]
+    (out-bytes at (cast i64 count))))
+
+(defn out-tab [] (-> i64) (out-bytes c"\t" 1))
+(defn out-end [] (-> i64) (out-bytes c"\n" 1))
+
+(defn out-field-int [(value i64)] (-> i64)
+  (out-tab)
+  (out-int value))
+
+(defn out-field-cstr [(text (ptr i8))] (-> i64)
+  (out-tab)
+  (out-cstr text))
+
+(defn out-stack [(group-at i64) (group (ptr Group))] (-> i64)
+  (let [site (index (.sites (state)) (.site group))
+        own (.own-base (reporter))
+        (mut info) (primitive/zeroed DlInfo)
+        (mut written) 0]
+    (out-cstr c"S")
+    (out-field-int group-at)
+    (for [i 0 (.depth site)]
+      (when (and (< (load written) 16)
+                 (!= (dladdr (cast (ptr i8)
+                                   (- (cast i64 (load (index (field site pcs) i))) 1))
+                             (mut info))
+                     0)
+                 (!= (.fname info) (nil))
+                 (!= (.fbase info) own)
+                 (not (runtime-library? (.fname info))))
+        (out-field-cstr (if (= (.sname info) (nil)) c"?" (.sname info)))
+        (out-cstr c"  ")
+        (out-cstr (image-name (.fname info)))
+        (set! written (+ (load written) 1))))
+    (out-end)))
+
+;;; Largest first. Shell sort, on the snapshot thread's own scratch array.
+(defn sort-order [(count i64)] (-> i64)
+  (let [r (reporter)
+        order (.order r)
+        groups (.groups r)
+        (mut gap) (/ count 2)]
+    (while (> (load gap) 0)
+      (for [i (load gap) count]
+        (let [held (load (index order i))
+              held-bytes (.bytes (index groups held))
+              (mut j) i]
+          (while (and (>= (load j) (load gap))
+                      (< (.bytes (index groups (load (index order (- (load j) (load gap))))))
+                         held-bytes))
+            (set! (index order (load j)) (load (index order (- (load j) (load gap)))))
+            (set! j (- (load j) (load gap))))
+          (set! (index order (load j)) held)))
+      (set! gap (/ (load gap) 2)))
+    0))
+
+(defn report-heap [] (-> i64)
+  (let [s (state)
+        r (reporter)
+        (mut used) 0
+        last-site (atomic/read (field s site-count))]
+    (for [i 0 GROUP-SLOTS]
+      (let [group (index (.groups r) i)]
+        (set! (.bytes group) 0)
+        (set! (.blocks group) 0)
+        (set! (.total group) 0)))
+    (for [i 0 (+ last-site 1)]
+      (let [site (index (.sites s) i)
+            bytes (atomic/read (field site live-bytes))
+            blocks (atomic/read (field site live-blocks))]
+        (when (or (> bytes 0) (> blocks 0))
+          (let [group (index (.groups r) (.group (attribute i)))]
+            (set! (.bytes group) (+ (.bytes group) bytes))
+            (set! (.blocks group) (+ (.blocks group) blocks))
+            (set! (.total group)
+                  (+ (.total group) (atomic/read (field site total-bytes))))))))
+    (for [i 0 GROUP-SLOTS]
+      (when (> (.blocks (index (.groups r) i)) 0)
+        (set! (index (.order r) (load used)) i)
+        (set! used (+ (load used) 1))))
+    (sort-order (load used))
+    (let [(mut rest-bytes) 0
+          (mut rest-blocks) 0]
+      (for [i 0 (load used)]
+        (let [at (load (index (.order r) i))
+              group (index (.groups r) at)]
+          (if (< i ROW-LIMIT)
+              (do
+                (when (not (.sent group))
+                  (out-stack at group)
+                  (set! (.sent group) true))
+                (out-cstr c"A")
+                (out-field-int at)
+                (out-field-cstr (.owner group))
+                (out-field-cstr (.type group))
+                (out-field-cstr (.via group))
+                (out-field-int (.bytes group))
+                (out-field-int (.blocks group))
+                (out-field-int (.total group))
+                (out-end))
+              (do
+                (set! rest-bytes (+ (load rest-bytes) (.bytes group)))
+                (set! rest-blocks (+ (load rest-blocks) (.blocks group)))))))
+      (when (> (load rest-bytes) 0)
+        (out-cstr c"R")
+        (out-field-int (load rest-bytes))
+        (out-field-int (load rest-blocks))
+        (out-end)))
+    0))
+
+(defn report-zones [] (-> i64)
+  (let [(mut zones) (cast (ptr u64) (nil))
+        (mut count) (: 0 u32)
+        task (load (cast (ptr u32) (dlsym (cast (ptr i8) -2) c"mach_task_self_")))]
+    (when (= (malloc_get_all_zones task (nil) (mut zones) (mut count)) 0)
+      (for [i 0 (cast i64 (load count))]
+        (let [zone (cast (ptr i8) (load (index (load zones) i)))
+              (mut statistics) (primitive/zeroed MallocStatistics)
+              name (malloc_get_zone_name zone)]
+          (malloc_zone_statistics zone (mut statistics))
+          (out-cstr c"Z")
+          (out-field-cstr (if (= name (nil)) c"zone" name))
+          (out-field-int (cast i64 (.used statistics)))
+          (out-field-int (cast i64 (.allocated statistics)))
+          (out-field-int (cast i64 (.blocks statistics)))
+          (out-end))))
+    0))
+
+(defstruct ResourceGroup
+  [(kind i64)
+   (site (slice u8))
+   (name (slice u8))
+   (line i64)
+   (format i64)
+   (storage i64)
+   (bytes i64)
+   (count i64)
+   (max-width i64)
+   (max-height i64)
+   (mips i64)])
+
+(defn same-text? [(a (slice u8)) (b (slice u8))] (-> bool)
+  (and (= (data a) (data b)) (= (len a) (len b))))
+
+(defn report-metal [] (-> i64)
+  (let [l (ledger)
+        scratch (primitive/alloc-static (array ResourceGroup 512))
+        (mut used) 0
+        (mut overflow-bytes) 0
+        (mut overflow-count) 0]
+    (os_unfair_lock_lock (field l lock))
+    (for [i 0 (.high l)]
+      (let [resource (index (.resources l) i)]
+        (when (.live resource)
+          (let [(mut found) -1]
+            (for [g 0 (load used)]
+              (let [group (index (cast (ptr ResourceGroup) scratch) g)]
+                (when (and (< (load found) 0)
+                           (= (.kind group) (.kind resource))
+                           (= (.format group) (.format resource))
+                           (= (.storage group) (.storage resource))
+                           (= (.line group) (.line resource))
+                           (same-text? (.site group) (.site resource))
+                           (same-text? (.name group) (.name resource)))
+                  (set! found g))))
+            (when (and (< (load found) 0) (< (load used) RESOURCE-GROUPS))
+              (store! (index (cast (ptr ResourceGroup) scratch) (load used))
+                      (ResourceGroup
+                        :kind (.kind resource)
+                        :site (.site resource)
+                        :name (.name resource)
+                        :line (.line resource)
+                        :format (.format resource)
+                        :storage (.storage resource)
+                        :bytes 0
+                        :count 0
+                        :max-width 0
+                        :max-height 0
+                        :mips (.mips resource)))
+              (set! found (load used))
+              (set! used (+ (load used) 1)))
+            (if (< (load found) 0)
+                (do
+                  (set! overflow-bytes (+ (load overflow-bytes) (.bytes resource)))
+                  (set! overflow-count (+ (load overflow-count) 1)))
+                (let [group (index (cast (ptr ResourceGroup) scratch) (load found))]
+                  (set! (.bytes group) (+ (.bytes group) (.bytes resource)))
+                  (set! (.count group) (+ (.count group) 1))
+                  (when (> (.width resource) (.max-width group))
+                    (set! (.max-width group) (.width resource)))
+                  (when (> (.height resource) (.max-height group))
+                    (set! (.max-height group) (.height resource)))))))))
+    (let [total-bytes (.live-bytes l)
+          total-count (.live-count l)]
+      (os_unfair_lock_unlock (field l lock))
+      (for [i 0 (load used)]
+        (let [group (index (cast (ptr ResourceGroup) scratch) i)]
+          (out-cstr c"M")
+          (out-field-int (.kind group))
+          (out-tab)
+          (out-slice (.site group))
+          (out-tab)
+          (out-slice (.name group))
+          (out-field-int (.line group))
+          (out-field-int (.format group))
+          (out-field-int (.storage group))
+          (out-field-int (.bytes group))
+          (out-field-int (.count group))
+          (out-field-int (.max-width group))
+          (out-field-int (.max-height group))
+          (out-field-int (.mips group))
+          (out-end)))
+      (when (> (load overflow-count) 0)
+        (out-cstr c"X")
+        (out-field-int (load overflow-bytes))
+        (out-field-int (load overflow-count))
+        (out-end))
+      (out-cstr c"T")
+      (out-field-int (atomic/read (field (state) tracked-bytes)))
+      (out-field-int (atomic/read (field (state) tracked-blocks)))
+      (out-field-int (atomic/read (field (state) total-allocs)))
+      (out-field-int (atomic/read (field (state) total-frees)))
+      (out-field-int total-bytes)
+      (out-field-int total-count)
+      (out-field-int (if (= (.device l) (nil))
+                         0
+                         (msg i64 (.device l) (sel c"currentAllocatedSize") [])))
+      (out-field-int (+ (atomic/read (field (state) probe-bytes))
+                        (* (+ (atomic/read (field (state) site-count)) 1)
+                           (primitive/sizeof Site))))
+      (out-end))
+    0))
+
+(defn report [] (-> i64)
+  (out-cstr c"H")
+  (out-field-int (cast i64 (os/getpid)))
+  (out-field-cstr (getprogname))
+  (out-end)
+  (report-heap)
+  (report-metal)
+  (report-zones)
+  (out-bytes c"E\n" 2)
+  (flush-out))
+
+;; ---- Server --------------------------------------------------------------
+
+(defn remove-socket [] (-> void)
+  (unlink (cast (ptr i8) (field (server) path))))
+
+(defn open-listener [] (-> i32)
+  (let [srv (server)
+        (mut directory) (primitive/zeroed (array u8 64))
+        dir (cast (ptr i8) (mut directory))
+        at (cast (ptr i8) (field srv path))]
+    (snprintf dir 64 c"/tmp/paper-memview-%u" (getuid))
+    (mkdir dir (: 448 u16))
+    (snprintf at 104 c"%s/%d.sock" dir (os/getpid))
+    (unlink at)
+    (match (socket/UnixListener::listen (field srv listener) (str/from-cstr at) 4)
+      (Err [_] -1)
+      (Ok [_] (do (atexit (fnptr-of remove-socket)) (.fd (.listener srv)))))))
+
+(defn accept-client [] (-> i64)
+  (let [srv (server)
+        r (reporter)
+        (mut incoming) (primitive/zeroed socket/UnixConnection)]
+    (match (socket/UnixListener::accept (field srv listener) (mut incoming))
+      (Err [_] 0)
+      (Ok [_]
+        (if (>= (.count srv) CLIENT-LIMIT)
+            (socket/UnixConnection::close! (mut incoming))
+            (do
+              (store! (index (field srv clients) (.count srv)) (load incoming))
+              (set! (.count srv) (+ (.count srv) 1))
+              ;; A new reader has seen no stacks yet.
+              (for [i 0 GROUP-SLOTS]
+                (set! (.sent (index (.groups r) i)) false))
+              0))))))
+
+;;; Only the window's own exit is collected: the application's children are its own.
+(defn window-child [] (-> (ptr i32))
+  (primitive/alloc-static i32))
+
+(defn reap-window [] (-> i64)
+  (let [child (window-child)]
+    (when (> (load child) (: 0 i32))
+      ;; WNOHANG
+      (when (!= (waitpid (load child) (cast (ptr i32) (nil)) 1) (: 0 i32))
+        (store! child (: 0 i32))))
+    0))
+
+(defn server-main [(context (ptr i8))] (-> (ptr i8))
+  (set-guard true)
+  (pthread_setname_np c"memview")
+  (let [listener (open-listener)
+        srv (server)]
+    (if (< listener 0)
+        (write 2 c"memview: cannot open the socket\n" 32)
+        (let [(mut ready) (PollFd :fd listener :events 1 :revents 0)]
+          (loop
+            (set! ready (PollFd :fd listener :events 1 :revents 0))
+            (poll (mut ready) 1 500)
+            (when (!= (& (cast i64 (.revents ready)) 1) 0)
+              (accept-client))
+            (reap-window)
+            (when (> (.count srv) 0)
+              (let [pool (msg (ptr i8) (class c"NSAutoreleasePool") (sel c"new") [])]
+                (report)
+                (msg i64 pool (sel c"release") []))))))
+    (nil)))
+
+;; ---- Start ---------------------------------------------------------------
+
+(defn argument-present? [(name (ptr i8))] (-> bool)
+  (let [count (cast i64 (load (_NSGetArgc)))
+        arguments (load (_NSGetArgv))
+        (mut found) false]
+    (for [i 1 count]
+      (when (= (strcmp (load (index arguments i)) name) 0) (set! found true)))
+    (load found)))
+
+(defn scripted-run? [] (-> bool)
+  (or (!= (os/getenv c"PAPER_BACKGROUND") (nil))
+      (!= (os/getenv c"PAPER_HEADLESS") (nil))
+      (!= (os/getenv c"PAPER_MEMVIEW_NO_WINDOW") (nil))
+      (argument-present? c"--snapshot")
+      (argument-present? c"--fetch-once")))
+
+(defn open-window [(viewer (ptr i8))] (-> i64)
+  (if (!= (access viewer 1) 0)
+      (do
+        (write 2 c"memview: the window is not built. Run `coil build` in apps/paper-memview.\n" 74)
+        0)
+      (let [(mut pid-text) (primitive/zeroed (array u8 32))
+            pid-at (cast (ptr i8) (mut pid-text))
+            (mut arguments) (primitive/zeroed (array (ptr i8) 4))]
+        (snprintf pid-at 32 c"%d" (os/getpid))
+        (set! (index (cast (ptr (ptr i8)) (mut arguments)) 0) viewer)
+        (set! (index (cast (ptr (ptr i8)) (mut arguments)) 1) c"--pid")
+        (set! (index (cast (ptr (ptr i8)) (mut arguments)) 2) pid-at)
+        (posix_spawn (window-child)
+                     viewer
+                     (nil)
+                     (nil)
+                     (cast (ptr (ptr i8)) (mut arguments))
+                     (load (_NSGetEnviron)))
+        0)))
+
+;;; Inserted by the transform as the first thing `main` does. `viewer` is the
+;;; window's path, fixed when the program was built. PAPER_MEMVIEW=0 keeps a build
+;;; made with `--use` out of the way for one run; PAPER_MEMVIEW=window opens the
+;;; window for a scripted run too, and PAPER_BACKGROUND keeps it behind everything.
+(defn start-with [(viewer-text (slice u8))] (-> i64)
+  (let [setting (os/getenv c"PAPER_MEMVIEW")
+        s (state)
+        viewer (cast (ptr i8) (primitive/alloc-static (array u8 2048)))]
+    (snprintf viewer 2048 c"%.*s" (cast i32 (len viewer-text)) (cast (ptr i8) (data viewer-text)))
+    (when (and (not (.ready s))
+               (or (= setting (nil)) (!= (strcmp setting c"0") 0)))
+      (pthread_key_create (field s guard-key) (nil))
+      (set-guard true)
+      (let [r (reporter)
+            l (ledger)
+            (mut info) (primitive/zeroed DlInfo)]
+        (set! (.sites s) (cast (ptr Site) (map-bytes (* SITE-SLOTS (primitive/sizeof Site)))))
+        (set! (.slots s) (cast (ptr SiteSlot) (map-bytes (* SITE-SLOTS (primitive/sizeof SiteSlot)))))
+        (set! (.probe-bytes s) (* SITE-SLOTS (primitive/sizeof SiteSlot)))
+        (set! (.resources l)
+              (cast (ptr Resource) (map-bytes (* RESOURCE-LIMIT (primitive/sizeof Resource)))))
+        (set! (.free-head l) -1)
+        (set! (.attributions r)
+              (cast (ptr Attribution) (map-bytes (* SITE-SLOTS (primitive/sizeof Attribution)))))
+        (set! (.groups r) (cast (ptr Group) (map-bytes (* GROUP-SLOTS (primitive/sizeof Group)))))
+        (set! (.order r) (cast (ptr i64) (map-bytes (* GROUP-SLOTS 8))))
+        (set! (.buffer r) (map-bytes OUT-CAPACITY))
+        (set! (.ready s) true))
+      (store! (cast (ptr (ptr i8)) (dlsym (cast (ptr i8) -2) c"malloc_logger"))
+              (cast (ptr i8) (fnptr-of logger)))
+      (set-guard false)
+      (let [(mut thread) (: 0 u64)]
+        (pthread_create (mut thread) (nil) (fnptr-of server-main) (nil))
+        (pthread_detach (load thread)))
+      (when (or (not (scripted-run?))
+                (and (!= setting (nil)) (= (strcmp setting c"window") 0)))
+        (open-window viewer)))
+    0))

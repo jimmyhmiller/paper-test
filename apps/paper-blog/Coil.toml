@@ -5,6 +5,7 @@ source-roots = ["src", "tests"]
 
 [dependencies]
 paper = { path = "../../lib/paper" }
+memview = { path = "../../lib/memview" }
 
 [link]
 frameworks = ["AppKit", "QuartzCore", "CoreGraphics", "CoreText", "ImageIO", "CoreFoundation", "AVFoundation", "Metal"]

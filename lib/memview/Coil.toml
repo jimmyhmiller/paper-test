@@ -1,0 +1,6 @@
+[package]
+name = "memview"
+source-roots = ["src"]
+
+[dependencies]
+paper = { path = "../paper" }

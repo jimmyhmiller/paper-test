@@ -110,7 +110,8 @@
    (key-flags i64)
    (unified bool)
    (background bool)
-   (ticks i64)])
+   (ticks i64)
+   (companion bool)])
 
 (defn host [] (-> (ptr Host))
   (primitive/alloc-static Host))
@@ -150,6 +151,27 @@
 
 (defn background-launch? [] (-> bool)
   (or (.background (host)) (!= (cast i64 (gpu/getenv c"PAPER_BACKGROUND")) 0)))
+
+;;; A companion window accompanies another application: like a background launch
+;;; it never takes focus, but it appears in front, at the top right of the screen,
+;;; so it can be watched while that application is used. Call before `paper_run`.
+;;; PAPER_BACKGROUND=1 still wins, and keeps it behind everything.
+(defn paper_companion_launch [(enabled bool)] (-> i64)
+  (set! (.companion (host)) enabled)
+  (set! (.background (host)) enabled)
+  0)
+
+(defn show-companion-window [(window (ptr i8))] (-> i64)
+  (let [screen (msg (ptr i8) (class c"NSScreen") (sel c"mainScreen") [])
+        area (msg CGRect screen (sel c"visibleFrame") [])]
+    (msg i64
+         window
+         (sel c"setFrameTopLeftPoint:")
+         [CGPoint]
+         (CGPoint :x (- (+ (.x area) (.w area)) (+ (.logical-w (host)) 16.0))
+                  :y (- (+ (.y area) (.h area)) 16.0)))
+    (msg i64 window (sel c"orderFrontRegardless") [])
+    0))
 
 (defn paper_unified_window [(enabled bool)] (-> i64)
   (set! (.unified (host)) enabled)
@@ -2150,7 +2172,10 @@
               (do
                 ;; Behind every other window, as `open -g` launches: shown,
                 ;; but never over what the user is looking at.
-                (msg i64 window (sel c"orderBack:") [(ptr i8)] (nil))
+                (if (and (.companion app)
+                         (= (cast i64 (gpu/getenv c"PAPER_BACKGROUND")) 0))
+                    (show-companion-window window)
+                    (msg i64 window (sel c"orderBack:") [(ptr i8)] (nil)))
                 0)
               (do
                 (msg i64 window (sel c"makeKeyAndOrderFront:") [(ptr i8)] (nil))

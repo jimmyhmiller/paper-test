@@ -1,0 +1,33 @@
+(module memview-app.main)
+(import "coil.primitive" :as p)
+(import "coil.cc" :as cc)
+(import "paper.platform" :as host)
+(import "memview-app.data" :as data)
+(import "memview-app.ui" :as ui)
+
+(extern _NSGetArgc :cc (cc/C) [] (-> (ptr i32)))
+(extern _NSGetArgv :cc (cc/C) [] (-> (ptr (ptr (ptr i8)))))
+(extern strcmp :cc (cc/C) [(ptr i8) (ptr i8)] (-> i32))
+(extern atoi :cc (cc/C) [(ptr i8)] (-> i32))
+(extern puts :cc (cc/C) [(ptr i8)] (-> i32))
+
+(defn pid-argument [] (-> i32)
+  (let [count (cast i64 (load (_NSGetArgc)))
+        arguments (load (_NSGetArgv))
+        (mut found) (: 0 i32)]
+    (for [i 1 (- count 1)]
+      (when (= (strcmp (load (index arguments i)) c"--pid") 0)
+        (set! found (atoi (load (index arguments (+ i 1)))))))
+    (load found)))
+
+(defn main [] (-> i64)
+  (let [pid (pid-argument)]
+    (if (<= pid (: 0 i32))
+        (do
+          (puts c"usage: paper-memview --pid PID")
+          2)
+        (do
+          (data/watch pid)
+          (host/paper_configure c"Paper Memview" 460.0 860.0)
+          (host/paper_companion_launch true)
+          (host/paper_run (p/fnptr-of ui/draw) (p/fnptr-of ui/event))))))

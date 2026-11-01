@@ -1,0 +1,319 @@
+(module memview-app.ui)
+(import "coil.primitive" :as p)
+(import "coil.cc" :as cc)
+(import "paper.flow" :use *)
+(import "paper.platform" :as host)
+(import "paper.charts" :as charts)
+(import "memview-app.data" :as data)
+
+(extern snprintf :cc (cc/C) [(ptr i8) u64 (ptr i8) ...] (-> i32))
+(extern strlen :cc (cc/C) [(ptr i8)] (-> u64))
+(extern atoi :cc (cc/C) [(ptr i8)] (-> i32))
+(extern getenv :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
+(extern unsetenv :cc (cc/C) [(ptr i8)] (-> i32))
+
+(const WIDTH 460.0)
+(const HEIGHT 860.0)
+(const MARGIN 18.0)
+(const INK 0x2b2a27)
+(const MUTED 0x6b675f)
+(const ROW-HEIGHT 35.0)
+(const VISIBLE-ROWS 10)
+(const MARK-ID 1)
+(const CLEAR-ID 2)
+(const TAB-ID 10)
+(const ROW-ID 100)
+
+(defstruct View [(tab i64) (first-row i64) (selected-stack i64) (scroll f64)])
+
+(defn view [] (-> (ptr View))
+  (p/alloc-static View))
+
+;;; Fixed categorical slots: a bucket keeps its color whatever its size.
+(defn bucket-pigment [(bucket i64)] (-> u32)
+  (case bucket
+    0 0x2a78d6
+    1 0xeb6834
+    2 0x1baf7a
+    0xeda100))
+
+(defn bucket-name [(bucket i64)] (-> (ptr i8))
+  (case bucket
+    0 c"GPU"
+    1 c"Heap"
+    2 c"Surfaces"
+    c"Other"))
+
+(defn bucket-summary [(bucket i64)] (-> (ptr i8))
+  (case bucket
+    0 c"Metal textures, buffers and driver memory"
+    1 c"malloc pages, by the code that asked for them"
+    2 c"Drawables shared with the window server"
+    c"Stacks, library data and other system regions"))
+
+(defn right-text [(right f64) (y f64) (height f64) (size f64) (color u32) (font i64) (text (ptr i8))] (-> i64)
+  (let [(mut measure) (text-measure text size font)
+        extent (measure-text (text-data (mut measure)) 400.0)
+        width (+ (.width extent) 2.0)]
+    (caption (rect (- right width) y width height) size color font text)))
+
+(defn larger [(a i64) (b i64)] (-> i64) (if (> a b) a b))
+(defn smaller [(a i64) (b i64)] (-> i64) (if (< a b) a b))
+
+(defn bytes-text [(out (ptr i8)) (value i64)] (-> (ptr i8))
+  (data/format-bytes out 32 value)
+  out)
+
+;; ---- Header --------------------------------------------------------------
+
+(defn draw-header [] (-> i64)
+  (let [m (data/model)
+        (mut hero) (p/zeroed (array u8 32))
+        (mut line) (p/zeroed (array u8 160))
+        (mut peak) (p/zeroed (array u8 32))
+        (mut delta) (p/zeroed (array u8 40))
+        (mut amount) (p/zeroed (array u8 32))
+        name (if (= (.name m) (cast (ptr i8) 0)) c"Waiting for the program" (.name m))
+        (mut title) (p/zeroed (array u8 120))]
+    (snprintf (cast (ptr i8) (mut title)) 120
+              (if (.alive m) c"%s · pid %d" c"%s · pid %d · exited")
+              name (.pid m))
+    (caption (rect 78.0 10.0 370.0 20.0) 13.0 INK 3 (cast (ptr i8) (mut title)))
+    (caption (rect MARGIN 34.0 300.0 54.0) 42.0 INK 3
+             (bytes-text (cast (ptr i8) (mut hero)) (.footprint m)))
+    (bytes-text (cast (ptr i8) (mut peak)) (.peak m))
+    (snprintf (cast (ptr i8) (mut line)) 160
+              (if (> (.resource-count m) 0)
+                  c"physical footprint · peak %s · %lld GPU resources"
+                  c"physical footprint · peak %s")
+              (cast (ptr i8) (mut peak))
+              (.resource-count m))
+    (caption (rect MARGIN 90.0 (- WIDTH (* MARGIN 2.0)) 18.0) 11.5 MUTED 0 (cast (ptr i8) (mut line)))
+    (when (.marked m)
+      (let [change (- (.footprint m) (.mark-total m))]
+        (bytes-text (cast (ptr i8) (mut amount)) change)
+        (snprintf (cast (ptr i8) (mut delta)) 40
+                  (if (>= change 0) c"+%s since mark" c"%s since mark")
+                  (cast (ptr i8) (mut amount)))
+        (right-text (- WIDTH MARGIN) 70.0 16.0 11.5 INK 3 (cast (ptr i8) (mut delta)))))
+    (button MARK-ID (rect (- WIDTH MARGIN 74.0) 36.0 74.0 26.0)
+            (if (.marked m) c"Re-mark" c"Mark")
+            false
+            (cream))
+    (when (.marked m)
+      (button CLEAR-ID (rect (- WIDTH MARGIN 138.0) 36.0 58.0 26.0) c"Clear" false (cream)))
+    0))
+
+;; ---- Composition ---------------------------------------------------------
+
+(defn total-bytes [] (-> i64)
+  (let [m (data/model)
+        (mut sum) 0]
+    (for b (range 0 data/BUCKETS)
+      (set! sum (+ (load sum) (.bytes (index (field m sections) b)))))
+    (if (< (load sum) 1) 1 (load sum))))
+
+(defn draw-composition [] (-> i64)
+  (let [m (data/model)
+        total (cast f64 (total-bytes))
+        width (- WIDTH (* MARGIN 2.0) 6.0)
+        (mut x) MARGIN]
+    (for b (range 0 data/BUCKETS)
+      (let [share (* width (/ (cast f64 (.bytes (index (field m sections) b))) total))]
+        (when (> share 1.0)
+          (panel (rect (load x) 116.0 share 12.0) 3.0 6.0 (smooth (bucket-pigment b))))
+        (set! x (+ (load x) share 2.0))))
+    0))
+
+(defn draw-tabs [] (-> i64)
+  (let [m (data/model)
+        v (view)
+        gap 8.0
+        width (/ (- WIDTH (* MARGIN 2.0) (* gap 3.0)) 4.0)
+        total (cast f64 (total-bytes))]
+    (for b (range 0 data/BUCKETS)
+      (let [x (+ MARGIN (* (cast f64 b) (+ width gap)))
+            r (rect x 138.0 width 52.0)
+            selected (= (.tab v) b)
+            bytes (.bytes (index (field m sections) b))
+            (mut size) (p/zeroed (array u8 32))
+            (mut share) (p/zeroed (array u8 16))]
+        (panel r 8.0 (if selected 14.0 5.0) (if selected (cream) (smooth 0xebe5d8)))
+        (disc (+ x 9.0) 148.0 8.0 (if selected 16.0 7.0) (smooth (bucket-pigment b)))
+        (caption (rect (+ x 21.0) 144.0 (- width 24.0) 15.0) 11.5 INK 3 (bucket-name b))
+        (caption (rect (+ x 9.0) 161.0 (- width 12.0) 16.0) 12.5 INK 3
+                 (bytes-text (cast (ptr i8) (mut size)) bytes))
+        (snprintf (cast (ptr i8) (mut share)) 16 c"%.0f%%" (* 100.0 (/ (cast f64 bytes) total)))
+        (right-text (- (+ x width) 6.0) 176.0 12.0 9.5 MUTED 0 (cast (ptr i8) (mut share)))
+        (host/paper_hit (+ TAB-ID b) (.x r) (.y r) (.w r) (.h r) (bucket-name b) 0 0.0)))
+    0))
+
+;; ---- Timeline ------------------------------------------------------------
+
+(defn draw-timeline [] (-> i64)
+  (let [m (data/model)
+        count (.history-count m)
+        x MARGIN
+        y 214.0
+        w (- WIDTH (* MARGIN 2.0))
+        h 92.0
+        (mut largest) 1]
+    (panel (rect x y w h) 6.0 2.0 (smooth 0xebe5d8))
+    (for i (range 0 count)
+      (let [total (.total (index (field m history) i))]
+        (when (> total (load largest)) (set! largest total))))
+    (when (> count 1)
+      (let [(mut lower) (p/zeroed (array f64 240))
+            (mut upper) (p/zeroed (array f64 240))
+            lower-at (cast (ptr f64) (mut lower))
+            upper-at (cast (ptr f64) (mut upper))
+            scale (* 1.05 (cast f64 (load largest)))]
+        (for b (range 0 data/BUCKETS)
+          (for i (range 0 count)
+            (let [sample (index (field m history) i)]
+              (set! (index upper-at i)
+                    (+ (load (index lower-at i))
+                       (/ (cast f64 (load (index (cast (ptr i64) (field sample bytes)) b))) scale)))))
+          (charts/area-band x y w h
+                            (slice::new upper-at count)
+                            (slice::new lower-at count)
+                            (+ 4.0 (* (cast f64 b) 0.5))
+                            (smooth (bucket-pigment b)))
+          (for i (range 0 count)
+            (set! (index lower-at i) (load (index upper-at i)))))))
+    (let [(mut top) (p/zeroed (array u8 32))
+          (mut span) (p/zeroed (array u8 32))]
+      (right-text (- (+ x w) 6.0) (+ y 4.0) 12.0 9.5 INK 3
+                  (bytes-text (cast (ptr i8) (mut top)) (load largest)))
+      (snprintf (cast (ptr i8) (mut span)) 32 c"last %.0f s" (cast f64 count))
+      (caption (rect (+ x 6.0) (+ y 4.0) 90.0 12.0) 9.5 INK 0 (cast (ptr i8) (mut span))))
+    0))
+
+;; ---- Rows ----------------------------------------------------------------
+
+(defn draw-row [(row data/Row) (at i64) (y f64) (bucket i64) (footprint f64)] (-> i64)
+  (let [m (data/model)
+        v (view)
+        x MARGIN
+        w (- WIDTH (* MARGIN 2.0))
+        fraction (/ (cast f64 (.bytes row)) footprint)
+        (mut size) (p/zeroed (array u8 32))
+        (mut percent) (p/zeroed (array u8 16))
+        (mut change) (p/zeroed (array u8 40))
+        (mut amount) (p/zeroed (array u8 32))
+        selected (and (> (.stack row) 0) (= (.stack row) (.selected-stack v)))]
+    (when selected
+      (panel (rect (- x 4.0) y (+ w 8.0) (- ROW-HEIGHT 2.0)) 5.0 3.0 (smooth 0xebe5d8)))
+    (caption (rect x (+ y 2.0) (- w 150.0) 15.0) 11.5 INK 3 (.title row))
+    (when (.marked m)
+      (let [delta (data/change-since-mark row)]
+        (when (or (>= delta 65536) (<= delta -65536))
+          (bytes-text (cast (ptr i8) (mut amount)) delta)
+          (snprintf (cast (ptr i8) (mut change)) 40
+                    (if (> delta 0) c"+%s" c"%s")
+                    (cast (ptr i8) (mut amount)))
+          (right-text (- (+ x w) 92.0) (+ y 2.0) 15.0 10.0 MUTED 0 (cast (ptr i8) (mut change))))))
+    (right-text (- (+ x w) 32.0) (+ y 2.0) 15.0 11.5 INK 3
+                (bytes-text (cast (ptr i8) (mut size)) (.bytes row)))
+    (snprintf (cast (ptr i8) (mut percent)) 16
+              (if (< fraction 0.01) c"<1%%" c"%.0f%%")
+              (* 100.0 fraction))
+    (right-text (+ x w) (+ y 2.0) 15.0 10.0 MUTED 0 (cast (ptr i8) (mut percent)))
+    (when (!= (.detail row) (cast (ptr i8) 0))
+      (caption (rect x (+ y 16.0) w 12.0) 9.0 MUTED 0 (.detail row)))
+    (host/paper_rule x (+ y 29.5) (maximum 1.0 (* w fraction)) 2.0 (bucket-pigment bucket))
+    (host/paper_hit (+ ROW-ID at) x y w ROW-HEIGHT (.title row) 0 0.0)
+    0))
+
+(defn draw-rows [] (-> i64)
+  (let [m (data/model)
+        v (view)
+        section (index (field m sections) (.tab v))
+        rows (.rows section)
+        count (len rows)
+        top 336.0
+        footprint (cast f64 (total-bytes))
+        first (let [largest (larger 0 (- count VISIBLE-ROWS))]
+                (if (> (.first-row v) largest) largest (.first-row v)))]
+    (set! (.first-row v) first)
+    (caption (rect MARGIN 314.0 (- WIDTH (* MARGIN 2.0) 60.0) 15.0) 11.0 MUTED 0 (bucket-summary (.tab v)))
+    (when (> count VISIBLE-ROWS)
+      (let [(mut place) (p/zeroed (array u8 32))]
+        (snprintf (cast (ptr i8) (mut place)) 32 c"%lld–%lld of %lld"
+                  (+ first 1) (+ first VISIBLE-ROWS) count)
+        (right-text (- WIDTH MARGIN) 314.0 15.0 10.0 MUTED 0 (cast (ptr i8) (mut place)))))
+    (for i (range first (smaller count (+ first VISIBLE-ROWS)))
+      (draw-row (get rows i) i (+ top (* (cast f64 (- i first)) ROW-HEIGHT)) (.tab v) footprint))
+    0))
+
+(defn draw-stack [] (-> i64)
+  (let [v (view)
+        text (if (> (.selected-stack v) 0)
+                 (data/stack-text (.selected-stack v))
+                 (cast (ptr i8) 0))]
+    (panel (rect MARGIN 692.0 (- WIDTH (* MARGIN 2.0)) 156.0) 6.0 2.0 (smooth 0xebe5d8))
+    (if (= text (cast (ptr i8) 0))
+        (caption (rect (+ MARGIN 10.0) 702.0 (- WIDTH (* MARGIN 2.0) 20.0) 40.0) 10.5 MUTED 0
+                 (if (= (.tab v) data/HEAP)
+                     c"Click a row to see the call stack that allocated it."
+                     c"GPU rows name the source line that made the resource."))
+        (caption (rect (+ MARGIN 10.0) 700.0 (- WIDTH (* MARGIN 2.0) 20.0) 142.0) 9.0 INK 2 text))
+    0))
+
+;;; MEMVIEW_SNAPSHOT=PATH writes the window once enough history has arrived, to
+;;; check how it looks without bringing it forward or asking for screen capture.
+(defn snapshot-when-requested [] (-> i64)
+  (let [path (getenv c"MEMVIEW_SNAPSHOT")]
+    (when (and (!= path (cast (ptr i8) 0)) (>= (.history-count (data/model)) 8))
+      (host/paper_snapshot path)
+      (unsetenv c"MEMVIEW_SNAPSHOT"))
+    0))
+
+(defn draw [] (-> i64)
+  (host/paper_begin 0xf4efe4)
+  (host/paper_drag_area (rect 0.0 0.0 WIDTH 32.0))
+  (draw-header)
+  (draw-composition)
+  (draw-tabs)
+  (draw-timeline)
+  (draw-rows)
+  (draw-stack)
+  0)
+
+(defn event [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
+  (let [v (view)
+        m (data/model)]
+    (cond (= kind 0)
+            (do
+              (host/paper_tick_interval 0.25)
+              ;; MEMVIEW_TAB=1 opens on a section, for snapshot checks of each one.
+              (let [tab (getenv c"MEMVIEW_TAB")]
+                (when (!= tab (cast (ptr i8) 0))
+                  (set! (.tab v) (cast i64 (atoi tab))))))
+          (= kind 6) (do
+                        (when (data/refresh) (host/paper_redraw))
+                        (snapshot-when-requested))
+          (and (= kind 3) (= id MARK-ID)) (do (data/mark) (host/paper_redraw))
+          (and (= kind 3) (= id CLEAR-ID)) (do (data/clear-mark) (host/paper_redraw))
+          (and (= kind 3) (>= id TAB-ID) (< id (+ TAB-ID data/BUCKETS)))
+            (do
+              (set! (.tab v) (- id TAB-ID))
+              (set! (.first-row v) 0)
+              (set! (.selected-stack v) 0)
+              (host/paper_redraw))
+          (and (= kind 3) (>= id ROW-ID))
+            (let [rows (.rows (index (field m sections) (.tab v)))
+                  at (- id ROW-ID)]
+              (when (< at (len rows))
+                (set! (.selected-stack v) (.stack (get rows at)))
+                (host/paper_redraw)))
+          (= kind 7)
+            (do
+              (set! (.scroll v) (+ (.scroll v) y))
+              (let [steps (cast i64 (/ (.scroll v) ROW-HEIGHT))]
+                (when (!= steps 0)
+                  (set! (.scroll v) (- (.scroll v) (* (cast f64 steps) ROW-HEIGHT)))
+                  (set! (.first-row v) (larger 0 (- (.first-row v) steps)))
+                  (host/paper_redraw))))
+          :else 0)
+    0))

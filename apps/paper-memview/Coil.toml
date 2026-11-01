@@ -1,0 +1,12 @@
+[package]
+name = "paper-memview"
+entry = "src/main.coil"
+source-roots = ["src"]
+
+[dependencies]
+paper = { path = "../../lib/paper" }
+layout = { path = "../../lib/layout" }
+
+[link]
+frameworks = ["AppKit", "QuartzCore", "CoreGraphics", "CoreText", "ImageIO", "CoreFoundation", "AVFoundation", "Metal"]
+libs = ["objc"]

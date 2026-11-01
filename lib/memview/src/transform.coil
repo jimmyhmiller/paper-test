@@ -1,0 +1,192 @@
+;;; Whole-program memory instrumentation for Paper applications.
+;;;
+;;;     coil build --use memview.transform
+;;;
+;;; The program's source is unchanged and removing `--use` removes everything.
+;;; Metal never reports its allocations to malloc and the kernel files them as
+;;; anonymous graphics memory, so this rewrites each Metal allocation in the
+;;; program to record what it made, where, and which field it landed in.
+(module memview.transform)
+(import "coil.primitive" :as primitive)
+(import "coil.phase" :as phase)
+(import "coil.str" :as str)
+(import "memview.runtime" :as runtime)
+
+(defn allocation-selector [(form Code)] (-> i64)
+  (cond (primitive/code-eq form `(sel c"newTextureWithDescriptor:")) 1
+        (primitive/code-eq form `(sel c"newBufferWithLength:options:")) 2
+        (primitive/code-eq form `(sel c"newBufferWithBytes:length:options:")) 2
+        (primitive/code-eq form `(sel c"newHeapWithDescriptor:")) 3
+        :else 0))
+
+(defn list? [(form Code)] (-> bool)
+  (and (primitive/code-list? form) (> (primitive/code-count form) 0)))
+
+(defn metal-allocation [(form Code)] (-> i64)
+  (if (and (list? form)
+           (>= (primitive/code-count form) 5)
+           (primitive/code-eq (primitive/code-nth form 0) `msg))
+      (allocation-selector (primitive/code-nth form 3))
+      0))
+
+(defn ends-with? [(text (slice u8)) (suffix (slice u8))] (-> bool)
+  (and (>= (len text) (len suffix))
+       (= (str/cmp (str/substr text (- (len text) (len suffix)) (len text)) suffix) 0)))
+
+(defn recorded? [(form Code)] (-> bool)
+  (and (list? form)
+       (primitive/code-sym? (primitive/code-nth form 0))
+       (let [head (primitive/code-str (primitive/code-nth form 0))]
+         (or (ends-with? head "track-resource")
+             (ends-with? head "name-resource")))))
+
+(defn contains-allocation? [(form Code)] (-> bool)
+  (cond (> (metal-allocation form) 0) true
+        (not (or (primitive/code-list? form) (primitive/code-vector? form))) false
+        :else (any? (fn [child] (contains-allocation? child)) form)))
+
+(defn base-name [(symbol Code)] (-> (slice u8))
+  (let [text (primitive/code-str symbol)
+        (mut start) 0]
+    (for i (range 0 (len text))
+      (when (or (= (get text i) #\/) (= (get text i) #\.)) (set! start (+ i 1))))
+    (str/substr text (load start) (len text))))
+
+(defn named? [(names Code) (name (slice u8))] (-> bool)
+  (let [(mut found) false]
+    (for known (iter names)
+      (when (= (str/cmp (primitive/code-str known) name) 0) (set! found true)))
+    (load found)))
+
+(defn definition? [(form Code)] (-> bool)
+  (and (list? form)
+       (>= (primitive/code-count form) 3)
+       (primitive/code-eq (primitive/code-nth form 0) `defn)
+       (primitive/code-sym? (primitive/code-nth form 1))))
+
+(defn wrap-kinds [(kind i64) (call Code) (site (slice u8)) (line i64)] (-> Code)
+  `(runtime/track-resource ~kind ~call ~site ~line))
+
+(defstruct Context [(site (slice u8)) (function (slice u8))])
+
+(defn field-call-name [(form Code)] (-> Code)
+  ;; `(set! (.colors g) (texture 70 5))` names the texture "colors".
+  (primitive/code-nth (primitive/code-nth form 1) 0))
+
+(defn rewrite [(context Context) (allocators Code) (form Code)] (-> Code)
+  (cond (not (or (primitive/code-list? form) (primitive/code-vector? form))) form
+        (recorded? form) form
+        (> (metal-allocation form) 0)
+          (let [(mut kids) (primitive/code-list-new)]
+            (for child form (push! (mut kids) (rewrite context allocators child)))
+            (wrap-kinds (metal-allocation form)
+                        (primitive/code-list-like form `(~@kids))
+                        (.site context)
+                        (primitive/code-line form)))
+        (and (list? form)
+             (= (primitive/code-count form) 3)
+             (primitive/code-eq (primitive/code-nth form 0) `set!)
+             (list? (primitive/code-nth form 1))
+             (= (primitive/code-count (primitive/code-nth form 1)) 2)
+             (primitive/code-sym? (primitive/code-nth (primitive/code-nth form 1) 0))
+             (list? (primitive/code-nth form 2))
+             (primitive/code-sym? (primitive/code-nth (primitive/code-nth form 2) 0))
+             (named? allocators (base-name (primitive/code-nth (primitive/code-nth form 2) 0))))
+          (let [value (rewrite context allocators (primitive/code-nth form 2))
+                field (base-name (field-call-name form))
+                ;; A field called `texture` says nothing; its setter does.
+                title (if (= (str/cmp field "texture") 0) (.function context) field)]
+            (primitive/code-list-like
+              form
+              `(set! ~(primitive/code-nth form 1)
+                     (runtime/name-resource ~value
+                                            ~title
+                                            ~(.site context)
+                                            ~(primitive/code-line form)))))
+        :else
+          (let [(mut kids) (primitive/code-list-new)
+                (mut changed) false]
+            (for child form
+              (let [next (rewrite context allocators child)]
+                (when (not (primitive/code-eq next child)) (set! changed true))
+                (push! (mut kids) next)))
+            (if changed (primitive/code-list-like form `(~@kids)) form))))
+
+;;; Functions that return what a Metal allocation made, followed one call at a
+;;; time, so a field assigned from any of them can name the resource.
+(defn tail-call-head [(form Code)] (-> Code)
+  (primitive/code-nth (primitive/code-nth form 4) 0))
+
+(defn forwards-allocator? [(names Code) (form Code)] (-> bool)
+  (and (= (primitive/code-count form) 5)
+       (list? (primitive/code-nth form 4))
+       (primitive/code-sym? (tail-call-head form))
+       (named? names (base-name (tail-call-head form)))))
+
+(defn collect-allocators [(modules Code)] (-> Code)
+  (let [(mut names) (primitive/code-list-new)
+        (mut changed) true]
+    (for module (iter modules)
+      (for form (iter (primitive/code-rest module))
+        (when (and (definition? form) (contains-allocation? form))
+          (push! (mut names) (primitive/code-nth form 1)))))
+    (while (load changed)
+      (set! changed false)
+      (for module (iter modules)
+        (for form (iter (primitive/code-rest module))
+          (when (and (definition? form)
+                     (not (named? `(~@names) (base-name (primitive/code-nth form 1))))
+                     (forwards-allocator? `(~@names) form))
+            (push! (mut names) (primitive/code-nth form 1))
+            (set! changed true)))))
+    `(~@names)))
+
+(defn start-call? [(form Code)] (-> bool)
+  (and (list? form)
+       (primitive/code-sym? (primitive/code-nth form 0))
+       (ends-with? (primitive/code-str (primitive/code-nth form 0)) "start-with")))
+
+;;; The window is built from this repository, whichever app is being instrumented.
+(defn viewer-path [] (-> (slice u8))
+  (let [file (primitive/code-file `viewer-path)
+        (mut slash) 0]
+    (for i (range 0 (len file))
+      (when (= (get file i) #\/) (set! slash i)))
+    (primitive/code-str (str/substr file 0 (load slash))
+                        "/../../../apps/paper-memview/build/release/paper-memview")))
+
+;;; Recording begins as `main` does, before any window or texture exists.
+(defn start-in-main [(form Code)] (-> Code)
+  (if (and (definition? form)
+           (primitive/code-eq (primitive/code-nth form 1) `main)
+           (>= (primitive/code-count form) 5)
+           (not (start-call? (primitive/code-nth form 4))))
+      (let [(mut kids) (primitive/code-list-new)]
+        (for i (range 0 4) (push! (mut kids) (primitive/code-nth form i)))
+        (push! (mut kids) `(runtime/start-with ~(viewer-path)))
+        (for i (range 4 (primitive/code-count form)) (push! (mut kids) (primitive/code-nth form i)))
+        (primitive/code-list-like form `(~@kids)))
+      form))
+
+(defn instrument-module [(allocators Code) (module Code)] (-> Code)
+  (let [name (primitive/code-nth module 0)]
+    (if (str/starts-with (primitive/code-str name) "memview.")
+        module
+        (let [(mut forms) (primitive/code-list-new)]
+          (push! (mut forms) name)
+          (for form (iter (primitive/code-rest module))
+            (push! (mut forms)
+                   (if (definition? form)
+                       (let [site (primitive/code-str name "." (primitive/code-nth form 1))]
+                         (start-in-main (rewrite (Context :site site :function (base-name (primitive/code-nth form 1))) allocators form)))
+                       form)))
+          (primitive/code-list-like module `(~@forms))))))
+
+(defn instrument [(modules Code)] (-> Code)
+  (let [allocators (collect-allocators modules)
+        (mut out) (primitive/code-list-new)]
+    (for module (iter modules)
+      (push! (mut out) (instrument-module allocators module)))
+    `(~@out)))
+
+(transform instrument :phase (phase/BeforeExpand) :modules (phase/OwnModules))

@@ -1,0 +1,679 @@
+;;; The window's model. One thread reads the instrumented program's stream and
+;;; another samples `footprint`, the kernel's own accounting. The UI thread joins
+;;; them: the ledger says what each allocation is, the kernel says how much memory
+;;; there really is, and whatever the ledger cannot explain is shown as such.
+(module memview-app.data)
+(import "coil.primitive" :as p)
+(import "coil.cc" :as cc)
+(import "coil.alloc" :as alloc)
+(import "coil.arraylist" :as al)
+(import "coil.str" :as str)
+(import "coil.json" :as json)
+(import "coil.fs" :as fs)
+(import "coil.thread" :as thread)
+(import "coil.socket" :as socket)
+
+(extern snprintf :cc (cc/C) [(ptr i8) u64 (ptr i8) ...] (-> i32))
+(extern strlen :cc (cc/C) [(ptr i8)] (-> u64))
+(extern strcmp :cc (cc/C) [(ptr i8) (ptr i8)] (-> i32))
+(extern strstr :cc (cc/C) [(ptr i8) (ptr i8)] (-> (ptr i8)))
+(extern malloc :cc (cc/C) [u64] (-> (ptr i8)))
+(extern memcpy :cc (cc/C) [(ptr i8) (ptr i8) u64] (-> (ptr i8)))
+(extern getuid :cc (cc/C) [] (-> u32))
+(extern getpid :cc (cc/C) [] (-> i32))
+(extern kill :cc (cc/C) [i32 i32] (-> i32))
+(extern unlink :cc (cc/C) [(ptr i8)] (-> i32))
+(extern usleep :cc (cc/C) [u32] (-> i32))
+(extern waitpid :cc (cc/C) [i32 (ptr i32) i32] (-> i32))
+(extern posix_spawn
+        :cc (cc/C)
+        [(ptr i32) (ptr i8) (ptr i8) (ptr i8) (ptr (ptr i8)) (ptr (ptr i8))]
+        (-> i32))
+(extern posix_spawn_file_actions_init :cc (cc/C) [(ptr (ptr i8))] (-> i32))
+(extern posix_spawn_file_actions_addopen :cc (cc/C) [(ptr (ptr i8)) i32 (ptr i8) i32 u16] (-> i32))
+(extern posix_spawn_file_actions_destroy :cc (cc/C) [(ptr (ptr i8))] (-> i32))
+(extern os_unfair_lock_lock :cc (cc/C) [(ptr u32)] (-> void))
+(extern os_unfair_lock_unlock :cc (cc/C) [(ptr u32)] (-> void))
+(extern CACurrentMediaTime :cc (cc/C) [] (-> f64))
+
+(const GPU 0)
+(const HEAP 1)
+(const SURFACES 2)
+(const OTHER 3)
+(const BUCKETS 4)
+(const HISTORY 240)
+(const ARENA-BYTES 2097152)
+
+(defstruct Category [(name (ptr i8)) (bytes i64)])
+
+(defstruct Row [(title (ptr i8)) (detail (ptr i8)) (bytes i64) (stack i64)])
+
+(defstruct Saved [(title (ptr i8)) (bytes i64)])
+
+(defstruct Stack [(id i64) (text (ptr i8))])
+
+(defstruct Section [(bytes i64) (rows (al/ArrayList Row))])
+
+(defstruct Sample [(bytes (array i64 4)) (total i64)])
+
+(defstruct Model
+  [(lock u32)
+   (pid i32)
+   ;; Shared with the two threads, under `lock`.
+   (frame (al/ArrayList u8))
+   (categories (al/ArrayList Category))
+   (sampled-footprint i64)
+   (sampled-peak i64)
+   (alive bool)
+   (connected bool)
+   (changed bool)
+   (samples-taken i64)
+   ;; UI thread only.
+   (name (ptr i8))
+   (footprint i64)
+   (peak i64)
+   (resource-count i64)
+   (has-probe bool)
+   (arena (ptr i8))
+   (arena-used i64)
+   (sections (array Section 4))
+   (history (array Sample 240))
+   (history-count i64)
+   (stacks (al/ArrayList Stack))
+   (marked bool)
+   (mark-total i64)
+   (saved (al/ArrayList Saved))])
+
+(defn model [] (-> (ptr Model))
+  (p/alloc-static Model))
+
+(defn lock [] (-> i64)
+  (os_unfair_lock_lock (field (model) lock))
+  0)
+
+(defn unlock [] (-> i64)
+  (os_unfair_lock_unlock (field (model) lock))
+  0)
+
+(defn heap [] (-> (dyn alloc/Allocator))
+  (alloc/malloc-allocator))
+
+(defn owned-cstr [(text (slice u8))] (-> (ptr i8))
+  (str/to-cstr (heap) text))
+
+(defn free-cstr [(text (ptr i8))] (-> i64)
+  (alloc/free (heap) (slice::new (cast (ptr u8) text) (+ (cast i64 (strlen text)) 1))))
+
+;; ---- Text ----------------------------------------------------------------
+
+(defn arena-cstr-bytes [(bytes (ptr i8)) (count i64)] (-> (ptr i8))
+  (let [m (model)]
+    (when (> (+ (.arena-used m) count 1) ARENA-BYTES)
+      (panic "paper-memview: text arena is full"))
+    (let [at (cast (ptr i8) (+ (cast i64 (.arena m)) (.arena-used m)))]
+      (memcpy at bytes (cast u64 count))
+      (store! (cast (ptr u8) (+ (cast i64 at) count)) (: 0 u8))
+      (set! (.arena-used m) (+ (.arena-used m) count 1))
+      at)))
+
+(defn arena-cstr [(text (slice u8))] (-> (ptr i8))
+  (arena-cstr-bytes (cast (ptr i8) (data text)) (len text)))
+
+;;; Tools report binary megabytes as "MB", so these numbers match them.
+(defn format-bytes [(out (ptr i8)) (capacity u64) (value i64)] (-> i64)
+  (let [size (if (< value 0) (- 0 value) value)
+        mib (/ (cast f64 size) 1048576.0)
+        sign (if (< value 0) c"-" c"")]
+    (cond (>= mib 1024.0) (snprintf out capacity c"%s%.2f GB" sign (/ mib 1024.0))
+          (>= mib 100.0) (snprintf out capacity c"%s%.0f MB" sign mib)
+          (>= mib 0.1) (snprintf out capacity c"%s%.1f MB" sign mib)
+          :else (snprintf out capacity c"%s%.0f KB" sign (/ (cast f64 size) 1024.0)))
+    0))
+
+(defn pixel-format-name [(format i64)] (-> (ptr i8))
+  (case format
+    10 c"R8"
+    25 c"R16F"
+    30 c"RG8"
+    55 c"R32F"
+    65 c"RG16F"
+    70 c"RGBA8"
+    71 c"RGBA8 sRGB"
+    80 c"BGRA8"
+    81 c"BGRA8 sRGB"
+    103 c"RG32Uint"
+    105 c"RG32F"
+    115 c"RGBA16F"
+    125 c"RGBA32F"
+    252 c"Depth32F"
+    c"other format"))
+
+(defn storage-name [(storage i64)] (-> (ptr i8))
+  (case storage
+    0 c"shared"
+    1 c"managed"
+    2 c"private"
+    3 c"memoryless"
+    c"other storage"))
+
+(defn kind-name [(kind i64)] (-> (ptr i8))
+  (case kind
+    1 c"textures"
+    2 c"buffers"
+    c"heaps"))
+
+(defn after-last-dot [(text (slice u8))] (-> (slice u8))
+  (let [(mut start) 0]
+    (for i (range 0 (len text))
+      (when (= (get text i) #\.) (set! start (+ i 1))))
+    (str/substr text (load start) (len text))))
+
+;; ---- Parsing the stream --------------------------------------------------
+
+(defn field-of [(line (slice u8)) (wanted i64)] (-> (slice u8))
+  (let [(mut number) 0
+        (mut start) 0
+        (mut answer) (str/substr line 0 0)]
+    (for i (range 0 (+ (len line) 1))
+      (when (or (= i (len line)) (= (get line i) #\tab))
+        (when (= (load number) wanted)
+          (set! answer (str/substr line (load start) i)))
+        (set! number (+ (load number) 1))
+        (set! start (+ i 1))))
+    (load answer)))
+
+(defn int-of [(line (slice u8)) (wanted i64)] (-> i64)
+  (match (str/parse-int (field-of line wanted))
+    (Some [value] value)
+    (None [] 0)))
+
+(defn remember-stack [(line (slice u8))] (-> i64)
+  (let [m (model)
+        id (int-of line 1)
+        (mut known) false]
+    (for i (range 0 (len (.stacks m)))
+      (when (= (.id (get (.stacks m) i)) id) (set! known true)))
+    (when (not (load known))
+      ;; Tabs between frames become newlines in place, in a private copy.
+      (let [text (owned-cstr line)
+            bytes (cast (ptr u8) text)
+            (mut tabs) 0
+            (mut start) 0]
+        (for i (range 0 (len line))
+          (when (= (load (index bytes i)) (: 9 u8))
+            (set! tabs (+ (load tabs) 1))
+            (when (= (load tabs) 2) (set! start (+ i 1)))
+            (store! (index bytes i) (: 10 u8))))
+        (push! (mut (.stacks m))
+               (Stack :id id
+                      :text (cast (ptr i8) (+ (cast i64 text) (load start)))))))
+    0))
+
+(defn stack-text [(id i64)] (-> (ptr i8))
+  (let [m (model)
+        (mut answer) (cast (ptr i8) 0)]
+    (for i (range 0 (len (.stacks m)))
+      (when (= (.id (get (.stacks m) i)) id)
+        (set! answer (.text (get (.stacks m) i)))))
+    (load answer)))
+
+(defn add-row [(section i64) (title (ptr i8)) (detail (ptr i8)) (bytes i64) (stack i64)] (-> i64)
+  (push! (mut (.rows (index (field (model) sections) section)))
+         (Row :title title :detail detail :bytes bytes :stack stack))
+  0)
+
+(defn resource-row [(line (slice u8))] (-> i64)
+  (let [kind (int-of line 1)
+        site (field-of line 2)
+        name (field-of line 3)
+        source (int-of line 4)
+        format (int-of line 5)
+        storage (int-of line 6)
+        bytes (int-of line 7)
+        count (int-of line 8)
+        width (int-of line 9)
+        height (int-of line 10)
+        mips (int-of line 11)
+        title (if (> (len name) 0) name (after-last-dot site))
+        (mut detail) (p/zeroed (array u8 256))
+        out (cast (ptr i8) (mut detail))
+        place (arena-cstr site)]
+    (cond (> count 1)
+            (if (= kind 1)
+                (snprintf out 256 c"%lld textures, largest %lldx%lld · %s · %s · %s:%lld"
+                          count width height (pixel-format-name format) (storage-name storage)
+                          place source)
+                (snprintf out 256 c"%lld %s · %s · %s:%lld"
+                          count (kind-name kind) (storage-name storage) place source))
+          (and (= kind 1) (> mips 1))
+            (snprintf out 256 c"%lldx%lld · %s · %lld mips · %s · %s:%lld"
+                      width height (pixel-format-name format) mips (storage-name storage)
+                      place source)
+          (= kind 1)
+            (snprintf out 256 c"%lldx%lld · %s · %s · %s:%lld"
+                      width height (pixel-format-name format) (storage-name storage)
+                      place source)
+          :else
+            (snprintf out 256 c"%s · %s · %s:%lld"
+                      (kind-name kind) (storage-name storage) place source))
+    (add-row GPU (arena-cstr title) (arena-cstr-bytes out (cast i64 (strlen out))) bytes 0)))
+
+(defn collection-of [(symbol (ptr i8))] (-> (ptr i8))
+  ;; `...ArrayList$push!__paper.scene.Sheet` grows an ArrayList of Sheet.
+  (if (= (strstr symbol c"ArrayList") (cast (ptr i8) 0))
+      (cast (ptr i8) 0)
+      (let [after (strstr symbol c"__")]
+        (if (= after (cast (ptr i8) 0))
+            (cast (ptr i8) 0)
+            (cast (ptr i8) (+ (cast i64 after) 2))))))
+
+(defn heap-row [(line (slice u8))] (-> i64)
+  (let [id (int-of line 1)
+        owner (field-of line 2)
+        type (arena-cstr (field-of line 3))
+        via (arena-cstr (field-of line 4))
+        bytes (int-of line 5)
+        blocks (int-of line 6)
+        total (int-of line 7)
+        collection (collection-of type)
+        (mut detail) (p/zeroed (array u8 256))
+        out (cast (ptr i8) (mut detail))
+        (mut at) 0]
+    (when (> (cast i64 (strlen via)) 0)
+      (set! at (+ (load at) (cast i64 (snprintf out 256 c"via %s · " via)))))
+    (when (!= collection (cast (ptr i8) 0))
+      (set! at (+ (load at)
+                  (cast i64 (snprintf (cast (ptr i8) (+ (cast i64 out) (load at)))
+                                      (cast u64 (- 256 (load at)))
+                                      c"ArrayList<%s> · "
+                                      collection)))))
+    (set! at (+ (load at)
+                (cast i64 (snprintf (cast (ptr i8) (+ (cast i64 out) (load at)))
+                                    (cast u64 (- 256 (load at)))
+                                    c"%lld blocks"
+                                    blocks))))
+    (when (and (> total (* bytes 2)) (> total 1048576))
+      (let [(mut size) (p/zeroed (array u8 32))
+            text (cast (ptr i8) (mut size))]
+        (format-bytes text 32 total)
+        (snprintf (cast (ptr i8) (+ (cast i64 out) (load at)))
+                  (cast u64 (- 256 (load at)))
+                  c" · %s allocated in all"
+                  text)))
+    (add-row HEAP (arena-cstr owner) (arena-cstr-bytes out (cast i64 (strlen out))) bytes id)))
+
+(defn parse-frame [(frame (slice u8)) (totals (ptr (array i64 8)))] (-> i64)
+  (let [m (model)
+        (mut start) 0]
+    (for i (range 0 (len frame))
+      (when (= (get frame i) #\newline)
+        (let [line (str/substr frame (load start) i)]
+          (when (> (len line) 0)
+            (case (cast i64 (get line 0))
+              72 (when (= (.name m) (cast (ptr i8) 0))     ; H
+                   (set! (.name m) (owned-cstr (field-of line 2))))
+              83 (remember-stack line)                     ; S
+              77 (resource-row line)                       ; M
+              65 (heap-row line)                           ; A
+              90 (set! (index (cast (ptr i64) totals) 4)   ; Z
+                       (+ (load (index (cast (ptr i64) totals) 4)) (int-of line 2)))
+              84 (do                                       ; T
+                   (set! (index (cast (ptr i64) totals) 0) (int-of line 1))
+                   (set! (index (cast (ptr i64) totals) 1) (int-of line 5))
+                   (set! (index (cast (ptr i64) totals) 2) (int-of line 6))
+                   (set! (index (cast (ptr i64) totals) 3) (int-of line 8)))
+              82 (add-row HEAP                             ; R
+                          (arena-cstr "Smaller call sites")
+                          (cast (ptr i8) 0)
+                          (int-of line 1)
+                          0)
+              88 (add-row GPU                              ; X
+                          (arena-cstr "Smaller resources")
+                          (cast (ptr i8) 0)
+                          (int-of line 1)
+                          0)
+              0)))
+        (set! start (+ i 1))))
+    0))
+
+;; ---- Joining the ledger with the kernel ----------------------------------
+
+(defn has-prefix? [(text (ptr i8)) (prefix (slice u8))] (-> bool)
+  (str/starts-with (str/from-cstr text) prefix))
+
+(defn bucket-of [(name (ptr i8))] (-> i64)
+  (cond (has-prefix? name "Malloc") HEAP
+        (has-prefix? name "IOSurface") SURFACES
+        (has-prefix? name "IOAccelerator") GPU
+        (!= (strstr name c"(graphics)") (cast (ptr i8) 0)) GPU
+        :else OTHER))
+
+(defn sort-rows [(rows (slice Row))] (-> i64)
+  ;; Insertion sort: a few hundred rows, already nearly in order frame to frame.
+  (for i (range 1 (len rows))
+    (let [held (get rows i)
+          (mut j) i]
+      (while (and (> (load j) 0) (< (.bytes (get rows (- (load j) 1))) (.bytes held)))
+        (set! rows (load j) (get rows (- (load j) 1)))
+        (set! j (- (load j) 1)))
+      (set! rows (load j) held)))
+  0)
+
+(defn rebuild [] (-> i64)
+  (let [m (model)
+        (mut totals) (p/zeroed (array i64 8))
+        (mut buckets) (p/zeroed (array i64 4))]
+    (set! (.arena-used m) 0)
+    (for b (range 0 BUCKETS)
+      (clear! (mut (.rows (index (field m sections) b)))))
+    (for i (range 0 (len (.categories m)))
+      (let [category (get (.categories m) i)
+            b (bucket-of (.name category))]
+        (set! (index (cast (ptr i64) (mut buckets)) b)
+              (+ (load (index (cast (ptr i64) (mut buckets)) b)) (.bytes category)))))
+    (let [frame (.frame m)
+          probed (> (len frame) 0)
+          gpu (load (index (cast (ptr i64) (mut buckets)) GPU))
+          malloc-dirty (load (index (cast (ptr i64) (mut buckets)) HEAP))]
+      (set! (.has-probe m) probed)
+      (when probed
+        (parse-frame (al/ArrayList::slice frame) (mut totals)))
+      (let [tracked-heap (load (index (cast (ptr i64) (mut totals)) 0))
+            metal-bytes (load (index (cast (ptr i64) (mut totals)) 1))
+            used-heap (load (index (cast (ptr i64) (mut totals)) 4))
+            probe-bytes (load (index (cast (ptr i64) (mut totals)) 3))
+            (mut other-small) 0]
+        (set! (.resource-count m) (load (index (cast (ptr i64) (mut totals)) 2)))
+        (when probed
+          (when (> (- gpu metal-bytes) 0)
+            (add-row GPU
+                     (arena-cstr "Driver, shaders and command buffers")
+                     (arena-cstr "GPU memory that no Metal resource in this program accounts for")
+                     (- gpu metal-bytes)
+                     0))
+          (when (> (- used-heap tracked-heap) 0)
+            (add-row HEAP
+                     (arena-cstr "Live, not attributed")
+                     (arena-cstr "Allocated before recording began, plus size rounding")
+                     (- used-heap tracked-heap)
+                     0))
+          (when (> (- malloc-dirty used-heap) 0)
+            (add-row HEAP
+                     (arena-cstr "Free space held by malloc")
+                     (arena-cstr "Dirty pages with no live block, including fragmentation")
+                     (- malloc-dirty used-heap)
+                     0))
+          (when (> probe-bytes 0)
+            (add-row OTHER
+                     (arena-cstr "Memview's own tables")
+                     (arena-cstr "This tool's recording, not your program")
+                     probe-bytes
+                     0)))
+        (for i (range 0 (len (.categories m)))
+          (let [category (get (.categories m) i)
+                b (bucket-of (.name category))
+                untagged (= (strcmp (.name category) c"Untagged") 0)
+                bytes (if (and probed untagged)
+                          (let [rest (- (.bytes category) probe-bytes)] (if (< rest 0) 0 rest))
+                          (.bytes category))]
+            (cond (= b OTHER)
+                    (if (>= bytes 1048576)
+                        (add-row OTHER (.name category) (cast (ptr i8) 0) bytes 0)
+                        (set! other-small (+ (load other-small) bytes)))
+                  (not probed) (add-row b (.name category) (cast (ptr i8) 0) bytes 0)
+                  (= b SURFACES) (add-row b (.name category)
+                                          (arena-cstr "Window drawables shared with the window server")
+                                          bytes 0)
+                  :else 0)))
+        (when (> (load other-small) 0)
+          (add-row OTHER (arena-cstr "Smaller regions") (cast (ptr i8) 0) (load other-small) 0))))
+    (for b (range 0 BUCKETS)
+      (let [section (index (field m sections) b)]
+        (set! (.bytes section) (load (index (cast (ptr i64) (mut buckets)) b)))
+        (sort-rows (al/ArrayList::slice (.rows section)))))
+    0))
+
+(defn record-sample [] (-> i64)
+  (let [m (model)
+        count (.history-count m)
+        at (if (< count HISTORY)
+               count
+               (do
+                 (for i (range 1 HISTORY)
+                   (store! (index (field m history) (- i 1)) (load (index (field m history) i))))
+                 (- HISTORY 1)))
+        sample (index (field m history) at)]
+    (for b (range 0 BUCKETS)
+      (set! (index (cast (ptr i64) (field sample bytes)) b)
+            (.bytes (index (field m sections) b))))
+    (set! (.total sample) (.footprint m))
+    (set! (.history-count m) (+ at 1))
+    0))
+
+;;; Called each UI tick. Answers true when there is something new to draw.
+(defn refresh [] (-> bool)
+  (let [m (model)
+        (mut changed) false]
+    (lock)
+    (when (.changed m)
+      (set! (.changed m) false)
+      (set! changed true)
+      (let [taken (.samples-taken m)]
+        (set! (.footprint m) (.sampled-footprint m))
+        (set! (.peak m) (.sampled-peak m))
+        (rebuild)
+        (when (and (> taken 0) (= (.footprint m) (.sampled-footprint m)))
+          (set! (.samples-taken m) 0)
+          (record-sample))))
+    (unlock)
+    (load changed)))
+
+;; ---- Mark ----------------------------------------------------------------
+
+(defn mark [] (-> i64)
+  (let [m (model)]
+    (for i (range 0 (len (.saved m)))
+      (free-cstr (.title (get (.saved m) i))))
+    (clear! (mut (.saved m)))
+    (for b (range 0 BUCKETS)
+      (let [rows (.rows (index (field m sections) b))]
+        (for i (range 0 (len rows))
+          (push! (mut (.saved m))
+                 (Saved :title (owned-cstr (str/from-cstr (.title (get rows i))))
+                        :bytes (.bytes (get rows i)))))))
+    (set! (.marked m) true)
+    (set! (.mark-total m) (.footprint m))
+    0))
+
+(defn clear-mark [] (-> i64)
+  (set! (.marked (model)) false)
+  0)
+
+;;; How much a row changed since the mark. Its title is its identity.
+(defn change-since-mark [(row Row)] (-> i64)
+  (let [m (model)
+        (mut before) 0]
+    (for i (range 0 (len (.saved m)))
+      (when (= (strcmp (.title (get (.saved m) i)) (.title row)) 0)
+        (set! before (.bytes (get (.saved m) i)))))
+    (- (.bytes row) (load before))))
+
+;; ---- Threads -------------------------------------------------------------
+
+(defn socket-path [(out (ptr i8)) (capacity u64)] (-> i64)
+  (snprintf out capacity c"/tmp/paper-memview-%u/%d.sock" (getuid) (.pid (model)))
+  0)
+
+(defn take-frames [(incoming (mut (al/ArrayList u8)))] (-> i64)
+  ;; A frame ends at a line that is only "E". Only the newest complete one matters.
+  (let [m (model)
+        bytes (al/ArrayList::slice (load incoming))
+        (mut end) -1
+        (mut line-start) 0]
+    (for i (range 0 (len bytes))
+      (when (= (get bytes i) #\newline)
+        (when (and (= (- i (load line-start)) 1) (= (get bytes (load line-start)) #\E))
+          (set! end (+ i 1)))
+        (set! line-start (+ i 1))))
+    (when (> (load end) 0)
+      (lock)
+      (clear! (mut (.frame m)))
+      (for i (range 0 (load end)) (push! (mut (.frame m)) (get bytes i)))
+      (set! (.changed m) true)
+      (unlock)
+      (let [remaining (- (len bytes) (load end))]
+        (for i (range 0 remaining)
+          (set! bytes i (get bytes (+ i (load end)))))
+        (for i (range 0 (load end))
+          (pop! (mut incoming)))))
+    0))
+
+;;; A program built without `--use` never opens the socket, and is still sampled.
+(defn reader [(context (ptr i8))] (-> (ptr i8))
+  (let [m (model)
+        (mut path) (p/zeroed (array u8 104))
+        at (cast (ptr i8) (mut path))
+        (mut incoming) (al/ArrayList::new [u8] (heap))
+        (mut chunk) (p/zeroed (array u8 65536))
+        chunk-at (cast (ptr i8) (mut chunk))]
+    (socket-path at 104)
+    (while (= (kill (.pid m) 0) 0)
+      (let [(mut connection) (p/zeroed socket/UnixConnection)]
+        (match (socket/UnixConnection::connect (mut connection) (str/from-cstr at))
+          (Err [_] (usleep (: 250000 u32)))
+          (Ok [_]
+            (do
+              (lock)
+              (set! (.connected m) true)
+              (unlock)
+              (let [(mut open) true]
+                (while (load open)
+                  (match (socket/UnixConnection::read (mut connection) chunk-at 65536)
+                    (Err [_] (set! open false))
+                    (Ok [count]
+                      (if (<= count 0)
+                          (set! open false)
+                          (do
+                            (for i (range 0 count)
+                              (push! (mut incoming) (load (index (cast (ptr u8) chunk-at) i))))
+                            (take-frames (mut incoming))))))))
+              (socket/UnixConnection::close! (mut connection))
+              (lock)
+              (set! (.connected m) false)
+              (unlock)
+              0)))))
+    (cast (ptr i8) 0)))
+
+(defn sample-footprint [(path-text (ptr i8))] (-> i64)
+  (let [m (model)
+        (mut pid-text) (p/zeroed (array u8 32))
+        pid-at (cast (ptr i8) (mut pid-text))
+        (mut arguments) (p/zeroed (array (ptr i8) 5))
+        arguments-at (cast (ptr (ptr i8)) (mut arguments))
+        (mut environment) (cast (ptr i8) 0)
+        (mut actions) (cast (ptr i8) 0)
+        (mut child) (: 0 i32)
+        (mut status) (: 0 i32)]
+    (snprintf pid-at 32 c"%d" (.pid m))
+    (set! (index arguments-at 0) c"/usr/bin/footprint")
+    (set! (index arguments-at 1) c"-j")
+    (set! (index arguments-at 2) path-text)
+    (set! (index arguments-at 3) pid-at)
+    ;; It repeats its whole report on stdout even when writing the file.
+    (posix_spawn_file_actions_init (mut actions))
+    (posix_spawn_file_actions_addopen (mut actions) 1 c"/dev/null" 1 (: 0 u16))
+    (posix_spawn_file_actions_addopen (mut actions) 2 c"/dev/null" 1 (: 0 u16))
+    (when (and (= (posix_spawn (mut child)
+                               c"/usr/bin/footprint"
+                               (cast (ptr i8) (mut actions))
+                               (cast (ptr i8) 0)
+                               arguments-at
+                               (mut environment))
+                  (: 0 i32))
+               (>= (waitpid (load child) (mut status) 0) (: 0 i32))
+               (= (load status) (: 0 i32)))
+      (match (fs/read-file (heap) (str/from-cstr path-text))
+        (Err [_] 0)
+        (Ok [text]
+          (match (json/parse (heap) text)
+            (Err [_] 0)
+            (Ok [document]
+              (let [(mut doc) document
+                    processes (json/object-get doc 0 "processes")]
+                (when (>= processes 0)
+                  (let [entry (json/array-nth doc processes 0)
+                        categories (json/object-get doc entry "categories")
+                        total (json/object-get doc entry "footprint")
+                        auxiliary (json/object-get doc entry "auxiliary")
+                        peak (json/object-get doc auxiliary "phys_footprint_peak")]
+                    (lock)
+                    (for i (range 0 (len (.categories m)))
+                      (free-cstr (.name (get (.categories m) i))))
+                    (clear! (mut (.categories m)))
+                    (for i (range 0 (json/child-count (json/token doc categories)))
+                      (let [name (json/string-text doc (json/token doc (json/object-key doc categories i)))
+                            values (json/object-value doc categories i)
+                            dirty (number-at doc values "dirty")
+                            swapped (number-at doc values "swapped")]
+                        (when (> (+ dirty swapped) 0)
+                          (push! (mut (.categories m))
+                                 (Category :name (owned-cstr name) :bytes (+ dirty swapped))))))
+                    (set! (.sampled-footprint m) (token-number doc total))
+                    (when (> (token-number doc peak) (.sampled-peak m))
+                      (set! (.sampled-peak m) (token-number doc peak)))
+                    (set! (.samples-taken m) (+ (.samples-taken m) 1))
+                    (set! (.changed m) true)
+                    (unlock)))
+                (json/doc-free! (mut doc)))
+              0))
+          (alloc/free (heap) text)
+          0)))
+    (posix_spawn_file_actions_destroy (mut actions))
+    0))
+
+(defn token-number [(doc json/Doc) (at i64)] (-> i64)
+  (if (< at 0)
+      0
+      (match (str/parse-int (json/number-text doc (json/token doc at)))
+        (Some [value] value)
+        (None [] 0))))
+
+(defn number-at [(doc json/Doc) (object i64) (key (slice u8))] (-> i64)
+  (token-number doc (json/object-get doc object key)))
+
+(defn sampler [(context (ptr i8))] (-> (ptr i8))
+  (let [m (model)
+        (mut path) (p/zeroed (array u8 128))
+        at (cast (ptr i8) (mut path))]
+    (snprintf at 128 c"/tmp/paper-memview-%u/%d-%d.json" (getuid) (.pid m) (getpid))
+    (while (= (kill (.pid m) 0) 0)
+      (sample-footprint at)
+      (unlink at)
+      (usleep (: 1000000 u32)))
+    (lock)
+    (set! (.alive m) false)
+    (set! (.changed m) true)
+    (unlock)
+    ;; A program that was killed never got to remove its socket.
+    (let [(mut socket-file) (p/zeroed (array u8 104))]
+      (socket-path (cast (ptr i8) (mut socket-file)) 104)
+      (unlink (cast (ptr i8) (mut socket-file))))
+    (cast (ptr i8) 0)))
+
+;;; Begin watching a process. Its threads run for as long as the window does.
+(defn watch [(pid i32)] (-> i64)
+  (let [m (model)
+        (mut one) (p/zeroed thread/Thread)
+        (mut two) (p/zeroed thread/Thread)]
+    (set! (.pid m) pid)
+    (set! (.alive m) true)
+    (set! (.arena m) (malloc (cast u64 ARENA-BYTES)))
+    (set! (.frame m) (al/ArrayList::new [u8] (heap)))
+    (set! (.categories m) (al/ArrayList::new [Category] (heap)))
+    (set! (.stacks m) (al/ArrayList::new [Stack] (heap)))
+    (set! (.saved m) (al/ArrayList::new [Saved] (heap)))
+    (for b (range 0 BUCKETS)
+      (set! (.rows (index (field m sections) b)) (al/ArrayList::new [Row] (heap))))
+    (thread/Thread::spawn (mut one) (fnptr-of reader) (cast (ptr i8) 0))
+    (thread/Thread::spawn (mut two) (fnptr-of sampler) (cast (ptr i8) 0))
+    0))
