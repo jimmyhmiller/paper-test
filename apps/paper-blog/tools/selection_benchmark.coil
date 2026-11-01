@@ -45,7 +45,8 @@
         (mut id) app/DAY_BASE]
     (when (= step 0)
       (range/reset)
-      (set! (.selected (app/interaction)) (if (= phase 2) 0 -1))
+      (set! (.selected (app/interaction))
+            (if (= phase 2) (app/available-index d 0 1) -1))
       (set! (.selection-locked (app/interaction)) (= phase 2))
       (when (= phase 1) (range/set-range d quarter (+ quarter half)))
       (when (= phase 2)
@@ -109,7 +110,18 @@
             (set! (.started s) (profile/now))
             (profile/measure-ms (.event s) (gesture (.frame s))))
           0)
-        (app/event kind id x y))))
+        (let [result (app/event kind id x y)]
+          (when (= kind 0)
+            (let [d (field (source/state) data)
+                  requested
+                    (n/msg i64
+                           (n/ns (n/env c"PAPER_BLOG_BENCHMARK_EXCLUDE_TOP"
+                                        c"0"))
+                           (n/sel c"integerValue")
+                           [])]
+              (for [i 0 (range/min-day (.count d) requested)]
+                (app/event 9 (+ 100 i) 0.0 0.0))))
+          result))))
 
 (defn main [] (-> i64)
   (printf c"frame,event_ms,draw_ms,raster_ms,gpu_ms,interval_ms\n")

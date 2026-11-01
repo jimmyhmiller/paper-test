@@ -32,14 +32,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--native', action='store_true', help='Show a real window and measure its display cadence')
     parser.add_argument('--frames', type=int, default=240)
+    parser.add_argument('--exclude-top', type=int, default=0)
     parser.add_argument('--fixture', type=Path, default=Path.home() / 'Library/Application Support/Paper Blog/timeline.json')
     parser.add_argument('--output', type=Path, default=ROOT / 'build/selection-performance.csv')
     args = parser.parse_args()
+    if args.exclude_top < 0:
+        parser.error('--exclude-top must be nonnegative')
     if args.frames < 9:
         parser.error('--frames must be at least 9')
     if not args.fixture.is_file():
         parser.error('Supply a timeline fixture or launch the app once to populate its cache')
-    env = dict(os.environ, PAPER_BLOG_BENCHMARK_FRAMES=str(args.frames))
+    env = dict(os.environ, PAPER_BLOG_BENCHMARK_FRAMES=str(args.frames),
+               PAPER_BLOG_BENCHMARK_EXCLUDE_TOP=str(args.exclude_top))
     env.pop('PAPER_HEADLESS', None)
     if not args.native:
         env['PAPER_HEADLESS'] = '1'
@@ -72,9 +76,14 @@ def main():
         watcher.join()
     if code:
         raise SystemExit(code)
-    with args.output.open() as stream:
-        rows = list(csv.DictReader(line for line in stream if not line.startswith('#')))
+    lines = args.output.read_text().splitlines()
+    rows = list(csv.DictReader(line for line in lines if not line.startswith('#')))
     result = summarize(rows)
+    for line in lines:
+        if line.startswith('# presented='):
+            result['presentation'] = {key: int(value) for key, value in
+                                      (item.split('=') for item in line[2:].split())}
+    result['exclude_top'] = args.exclude_top
     result['mode'] = 'native window' if args.native else 'CPU/GPU synchronized offscreen'
     result['peak_family_rss_mib'] = max((row['rss_mib'] for row in samples), default=None)
     with memory_path.open('w') as stream:

@@ -27,6 +27,7 @@ compiler and Apple's command-line tools. No Python process runs inside the app.
   title, count, and daily history in the fixed detail area. The same paper color
   identifies the post in the stack, index, and isolated detail shape.
 - Drag across the top graph to select a date range. Its paper frame stays visible on the full-history overview. Hover and click the paper bands normally inside the selection. Drag its interior to move it or either gold grip to resize it. Double-click inside the selection to focus the top graph on those dates; double-click that focused range again to return to full history. Daily bars, hourly totals, and the heatmap all use that same local date range, including zero-view days. A pinned post stays selected. Click the total, empty paper, or Escape to clear the range and post selection.
+- Control-click or right-click a post row or paper band to exclude it from totals and all graphs. Excluded rows stay visible with muted, struck-through titles; secondary-click again to include them. The post count shows how many remain included. Exclusions follow post paths across automatic refreshes, and new posts are included. Clicking the total restores all posts and clears the date/post filters. These filters last for the current app session.
 - Daily and hourly bars lift toward the viewer with a tiny centered expansion of a single paper face and thin cut edge, then settle back. Their centers stay fixed, with no diagonal slide; the paper texture follows the same scale. Their stationary footprints and hit regions retain the original count scale. Lift follows global paper depth and respects macOS Reduce Motion.
 - Hover the charts to inspect the exact local date and count. Inspecting the
   main chart also shows that day's count for the selected post.
@@ -110,10 +111,11 @@ Run the repeatable benchmark with the app's full-history cache or an explicit ti
 
 ```sh
 python3 scripts/benchmark_selection.py --native --frames 3600
+python3 scripts/benchmark_selection.py --native --frames 480 --exclude-top 2
 python3 scripts/benchmark_selection.py --frames 240 --fixture tests/fixtures/all-time.json
 ```
 
-The native mode opens a window and drives selection creation, movement, resizing, and pinned-post ranges through actual app event handlers. It reports update intervals and CPU stage costs, plus CPU/memory samples. The offscreen mode synchronizes CPU/GPU work for each frame. Reports are CSV and JSON in `build/`; native `gpu_ms` is unused because native presentation remains asynchronous. These are measurements, not fixed pass/fail timing tests.
+The native mode opens a window and drives selection creation, movement, resizing, and pinned-post ranges through actual app event handlers. It reports update intervals, compositor presentation counters, CPU stage costs, and CPU/memory samples. Inspect dropped presentation counts when the window is occluded; processing intervals alone do not establish visible frame rate. The offscreen mode synchronizes CPU/GPU work for each frame. Reports are CSV and JSON in `build/`; native `gpu_ms` is unused because native presentation remains asynchronous. These are measurements, not fixed pass/fail timing tests.
 
 ## Verification and previews
 

@@ -8,6 +8,7 @@
 (import "blog.view" :as v)
 (import "blog.stack" :as stack)
 (import "blog.overview" :as overview)
+(import "blog.exclusions" :as exclusions)
 (import "paper.ffi"
         :use
         [CGPathRetain CGPathRelease CGPathContainsPoint CGAffine CGPoint])
@@ -34,6 +35,7 @@
     (load slot)))
 
 (defn setup [] (-> i64)
+  (exclusions/reset)
   (range/reset)
   (set! (.drag (host/host)) 0)
   (scene/init)
@@ -959,4 +961,61 @@
       (app/event 4 53 0.0 0.0)
       (assert (not (.focused (range/state))))
       (m/clear d))
+    (n/release pool)))
+
+(deftest secondary-click-excludes-a-post-across-all-graphs-and-total-restores-it
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [raw (field (source/state) data)
+          ui (app/interaction)
+          l (v/layout 1560.0 1000.0 (.count raw))
+          row (v/row l 0)]
+      (m/clear raw)
+      (assert (m/decode-utc raw
+                            (n/read-json c"tests/fixtures/hourly.json")
+                            (n/nil)))
+      (range/set-range raw 1 3)
+      (range/focus-selection raw)
+      (app/event 3 100 0.0 0.0)
+      (assert (= (app/event 9 100 0.0 0.0) 1))
+      (assert (exclusions/contains? (.path (index (.posts raw) 0))))
+      (assert (not (.selection-locked ui)))
+      (assert (= (.selected ui) -1))
+      (assert (.focused (range/state)))
+      (assert (= (range/first raw) 1))
+      (let [d (app/graph-data)]
+        (assert (= (.views d) 3))
+        (assert (= (.views raw) 15))
+        (assert (= (app/period-views d (app/displayed-post d)) 3))
+        (assert (= (app/selected-hour d 12) 3))
+        (assert (= (app/selected-cell d 2 12) 3)))
+      (app/draw)
+      (for [i 0 (len (.hits (scene/scene)))]
+        (let [hit (get (.hits (scene/scene)) i)]
+          (assert (!= (.id hit) app/LAYER_BASE))
+          (when (= (.id hit) 100)
+            (assert (n/msg bool
+                           (.label hit)
+                           (n/sel c"hasPrefix:")
+                           [(ptr i8)]
+                           (n/ns c"Excluded:"))))))
+      (host/update-hover (+ (.x row) 50.0) (+ (.y row) 10.0))
+      (app/draw)
+      (assert (= (.selected ui) -1))
+      (app/event 3 100 0.0 0.0)
+      (assert (= (.selected ui) -1))
+      (app/event 4 125 0.0 0.0)
+      (assert (= (.selected ui) 1))
+      (assert (= (app/event 9 (+ app/LAYER_BASE 1) 0.0 0.0) 1))
+      (assert (= (.views (app/graph-data)) 0))
+      (app/event 4 125 0.0 0.0)
+      (assert (= (.selected ui) -1))
+      (assert (not (.selection-locked ui)))
+      (app/event 9 100 0.0 0.0)
+      (assert (= (.views (app/graph-data)) 12))
+      (app/event 3 62 0.0 0.0)
+      (assert (= (exclusions/size) 0))
+      (assert (= (.views (app/graph-data)) 15))
+      (assert (not (.active (range/state))))
+      (m/clear raw))
     (n/release pool)))

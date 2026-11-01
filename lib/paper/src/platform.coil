@@ -511,7 +511,8 @@
                       (load pattern)
                       :finish
                       (.finish stock)
-                      :paint-window (cgrect 0.0 0.0 0.0 0.0)
+                      :paint-window
+                      (cgrect 0.0 0.0 0.0 0.0)
                       :relief
                       (cast (ptr relief/Panel) 0)))))
 
@@ -1530,10 +1531,57 @@
   (paper_redraw)
   0)
 
+(defstruct SecondaryCapture [(active bool) (target i64)])
+
+(defn secondary-capture [] (-> (ptr SecondaryCapture))
+  (primitive/alloc-static SecondaryCapture))
+
+(defn secondary-pointer? [(event (ptr i8))] (-> bool)
+  (let [kind (msg i64 event (sel c"type") [])]
+    (or (= kind 3)
+        (= kind 4)
+        (= kind 7)
+        (!= (& (msg i64 event (sel c"modifierFlags") []) 262144) 0))))
+
+;;; Event kind 9 is a secondary activation. Latch Control on mouse-down, so
+;;; releasing Control before the mouse button cannot turn it into a main click.
+;;; Leave native editors' responder/context-menu handling to AppKit.
+(defn secondary-pointer-event [(event (ptr i8)) (kind i64)] (-> i64)
+  (let [app (host)
+        capture (secondary-capture)
+        p (msg CGPoint event (sel c"locationInWindow") [])
+        x (* (/ (.x p) (.window-w app)) (logical-width))
+        y (* (- 1.0 (/ (.y p) (.window-h app))) (logical-height))
+        (mut result) 0]
+    (update-hover x y)
+    (when (= kind 1)
+      (set! (.active capture) true)
+      (set! (.target capture) (hit-test x y))
+      (set! (.drag app) 0))
+    (when (= kind 3)
+      (when (and (.active capture)
+                 (> (.target capture) 0)
+                 (= (.target capture) (hit-test x y)))
+        (set! (pointer-clicks) (msg i64 event (sel c"clickCount") []))
+        (set! result (dispatch 9 (.target capture) x y))
+        (set! (pointer-clicks) 0))
+      (set! (.active capture) false)
+      (set! (.target capture) 0))
+    (paper_redraw)
+    (load result)))
+
 (defn pointer-event [(event (ptr i8)) (kind i64)] (-> i64)
-  ; Ordinary Paper controls take keyboard focus. A non-text inspector can
-  ; call pointer-event-with-focus with false to keep its native editor active.
-  (pointer-event-with-focus event kind true))
+  (cond (= kind 1)
+          (if (secondary-pointer? event)
+              (secondary-pointer-event event kind)
+              (do
+                (set! (secondary-capture) (zeroed SecondaryCapture))
+                (pointer-event-with-focus event kind true)))
+        (.active (secondary-capture)) (secondary-pointer-event event kind)
+        (or (= (msg i64 event (sel c"type") []) 4)
+            (= (msg i64 event (sel c"type") []) 7))
+          0
+        :else (pointer-event-with-focus event kind true)))
 
 ;;; Route native wheel and trackpad deltas to the Paper hit beneath the pointer.
 ;;; Event kind 7 carries scrollingDeltaX/Y in x/y; the id identifies the scroll
@@ -2141,11 +2189,15 @@
                              (shape-resize-event ev kind))
                           (do (set! consumed true) 0)
                         (= kind 1)
-                          (if (begin-window-drag ev)
+                          (if (and (not (secondary-pointer? ev))
+                                   (begin-window-drag ev))
                               (do (set! consumed true) 0)
                               (pointer-event ev 1))
                         (= kind 6) (pointer-event ev 2)
-                        (= kind 2) (pointer-event ev 3)
+                        (= kind 2) (set! consumed (= (pointer-event ev 3) 1))
+                        (= kind 3) (set! consumed (= (pointer-event ev 1) 1))
+                        (= kind 4) (set! consumed (= (pointer-event ev 3) 1))
+                        (= kind 7) (set! consumed (= (pointer-event ev 2) 1))
                         (= kind 5) (hover-event ev)
                         (= kind 10) (set! consumed (key-event ev))
                         (= kind 22) (do (scroll-event ev) (set! consumed true))

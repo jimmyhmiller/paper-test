@@ -7,6 +7,7 @@
 (import "blog.source" :as source)
 (import "blog.bar-motion" :as motion)
 (import "blog.overview" :as overview)
+(import "blog.exclusions" :as exclusions)
 
 (extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
 
@@ -48,6 +49,7 @@
         (host/paper_unified_window true)
         (let [result (host/paper_run (fnptr-of app/draw) (fnptr-of app/event))]
           (overview/clear)
+          (exclusions/shutdown)
           (motion/shutdown)
           (source/shutdown)
           result))))

@@ -1,0 +1,150 @@
+(module blog.exclusions)
+(import "coil.primitive" :as p)
+(import "blog.native" :as n)
+(import "blog.model" :as m)
+
+(defstruct State [(paths (ptr i8)) (revision i64)])
+
+(defn state [] (-> (ptr State))
+  (p/alloc-static State))
+
+(defn revision [] (-> i64)
+  (.revision (state)))
+
+(defn contains? [(path (ptr i8))] (-> bool)
+  (and (!= path (n/nil))
+       (n/msg bool (.paths (state)) (n/sel c"containsObject:") [(ptr i8)] path)))
+
+(defn size [] (-> i64)
+  (n/msg i64 (.paths (state)) (n/sel c"count") []))
+
+;;; Source posts and their recorded counts remain immutable. This projection
+;;; owns only aggregate/zero arrays and the shallow post table; included post
+;;; arrays and observed-hour flags are borrowed until the next source refresh.
+(defstruct Projection
+  [(data m/Dataset)
+   (raw-root (ptr i8))
+   (raw-posts (ptr m/Post))
+   (revision i64)
+   (ready bool)
+   (zero-days (ptr i64))
+   (zero-hours (ptr i64))
+   (included i64)])
+
+(defn projection [] (-> (ptr Projection))
+  (p/alloc-static Projection))
+
+(defn clear-projection [] (-> i64)
+  (let [s (projection)
+        d (field s data)]
+    (when (.ready s)
+      (n/free (cast (ptr i8) (.posts d)))
+      (n/free (cast (ptr i8) (.totals d)))
+      (n/free (cast (ptr i8) (.heat d)))
+      (n/free (cast (ptr i8) (.hour-totals d)))
+      (n/free (cast (ptr i8) (.zero-days s)))
+      (n/free (cast (ptr i8) (.zero-hours s)))
+      (n/release (.root d))
+      (n/release (.dates d)))
+    (set! s (zeroed Projection)))
+  0)
+
+(defn reset [] (-> i64)
+  (n/msg i64 (.paths (state)) (n/sel c"removeAllObjects") [])
+  (set! (.revision (state)) (+ (revision) 1))
+  (clear-projection)
+  0)
+
+(defn toggle [(path (ptr i8))] (-> i64)
+  (let [s (state)]
+    (when (= (.paths s) (n/nil)) (set! (.paths s) (n/new c"NSMutableSet")))
+    (n/msg i64
+           (.paths s)
+           (if (contains? path) (n/sel c"removeObject:") (n/sel c"addObject:"))
+           [(ptr i8)]
+           path)
+    (set! (.revision s) (+ (revision) 1)))
+  0)
+
+(defn allocate [(count i64)] (-> (ptr i64))
+  (let [out (cast (ptr i64) (n/calloc (cast u64 (m/maximum 1 count)) 8))]
+    (assert (!= out (cast (ptr i64) 0)))
+    out))
+
+(defn project [(raw (ptr m/Dataset))] (-> (ptr m/Dataset))
+  (if (= (size) 0)
+      (do (when (.ready (projection)) (clear-projection)) raw)
+      (let [s (projection)
+            d (field s data)]
+        (when (or (not (.ready s))
+                  (!= (.raw-root s) (.root raw))
+                  (!= (.raw-posts s) (.posts raw))
+                  (!= (.revision s) (revision)))
+          (clear-projection)
+          (set! (.data s) (load raw))
+          (set! (.root d) (n/retain (.root raw)))
+          (set! (.dates d) (n/retain (.dates raw)))
+          (set! (.raw-root s) (.root raw))
+          (set! (.raw-posts s) (.posts raw))
+          (set! (.revision s) (revision))
+          (set! (.posts d)
+                (cast (ptr m/Post)
+                      (n/calloc (cast u64 (m/maximum 1 (.count raw)))
+                                (cast u64 (sizeof m/Post)))))
+          (assert (!= (.posts d) (cast (ptr m/Post) 0)))
+          (set! (.totals d) (allocate (.days raw)))
+          (set! (.heat d) (allocate (* (.days raw) 24)))
+          (set! (.hour-totals d) (allocate 24))
+          (set! (.zero-days s) (allocate (.days raw)))
+          (set! (.zero-hours s) (allocate (* (.days raw) 24)))
+          (set! (.views d) 0)
+          (set! (.peak d) 0)
+          (set! (.hour-peak d) 0)
+          (set! (.cell-peak d) 0)
+          (for [i 0 (.count raw)]
+            (let [post (index (.posts d) i)
+                  original (index (.posts raw) i)]
+              (set! post (load original))
+              (if (contains? (.path original))
+                  (do
+                    (set! (.views post) 0)
+                    (set! (.peak post) 0)
+                    (set! (.values post) (.zero-days s))
+                    (set! (.hours post) (.zero-hours s)))
+                  (do
+                    (set! (.included s) (+ (.included s) 1))
+                    (set! (.views d) (+ (.views d) (.views original)))
+                    (for [day 0 (.days raw)]
+                      (set! (index (.totals d) day)
+                            (+ (load (index (.totals d) day))
+                               (load (index (.values original) day)))))
+                    (when (.hourly raw)
+                      (for [slot 0 (* (.days raw) 24)]
+                        (set! (index (.heat d) slot)
+                              (+ (load (index (.heat d) slot))
+                                 (load (index (.hours original) slot))))))))))
+          (for [day 0 (.days raw)]
+            (set! (.peak d)
+                  (m/maximum (.peak d) (load (index (.totals d) day)))))
+          (for [slot 0 (* (.days raw) 24)]
+            (let [value (load (index (.heat d) slot))
+                  hour (% slot 24)]
+              (set! (index (.hour-totals d) hour)
+                    (+ (load (index (.hour-totals d) hour)) value))
+              (set! (.cell-peak d) (m/maximum (.cell-peak d) value))))
+          (for [hour 0 24]
+            (set! (.hour-peak d)
+                  (m/maximum (.hour-peak d)
+                             (load (index (.hour-totals d) hour)))))
+          (set! (.ready s) true))
+        d)))
+
+(defn included-count [(raw (ptr m/Dataset))] (-> i64)
+  (project raw)
+  (if (= (size) 0) (.count raw) (.included (projection))))
+
+(defn shutdown [] (-> i64)
+  (clear-projection)
+  (n/release (.paths (state)))
+  (set! (state) (zeroed State))
+  0)

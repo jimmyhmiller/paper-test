@@ -4,6 +4,7 @@
 (import "blog.model" :as m)
 (import "blog.stack" :as stack)
 (import "blog.range-selection" :as range)
+(import "blog.exclusions" :as exclusions)
 (import "paper.flow" :use *)
 (import "paper.scene" :as scene)
 (import "paper.ffi"
@@ -21,6 +22,7 @@
    (peak i64)
    (first i64)
    (last i64)
+   (filter-revision i64)
    (upper (ptr i64))
    (paths (ptr (ptr i8)))])
 
@@ -75,6 +77,7 @@
               (!= (.peak c) peak)
               (!= (.first c) (range/view-first d))
               (!= (.last c) (range/view-last d))
+              (!= (.filter-revision c) (exclusions/revision))
               (!= (.x (.plot c)) (.x r))
               (!= (.y (.plot c)) (.y r))
               (!= (.w (.plot c)) (.w r))
@@ -88,6 +91,7 @@
       (set! (.peak c) peak)
       (set! (.first c) (range/view-first d))
       (set! (.last c) (range/view-last d))
+      (set! (.filter-revision c) (exclusions/revision))
       (set! (.upper c)
             (cast (ptr i64)
                   (n/calloc (cast u64 (m/maximum 1 (* (.days d) (.count d)))) 8)))
