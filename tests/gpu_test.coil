@@ -3,6 +3,7 @@
 (import "coil.alloc" :as alloc)
 (import "paper.gpu" :as gpu)
 (import "paper.masks" :as masks)
+(import "paper.material" :as material)
 (import "paper.damage" :as damage)
 (import "paper.render" :as render)
 (import "paper.scene" :as scene)
@@ -167,6 +168,9 @@
     (set! (.scale (scene/scene)) 2.0)
     (render/setup)
     (when (.available (gpu/gpu))
+      ;; Five material attachments plus depth must stay within a fixed 32 MiB
+      ;; working budget independently of the viewport's dimensions.
+      (assert (<= (* (* gpu/TILE-SIZE gpu/TILE-SIZE) 36) 33554432))
       (let [s (scene/scene)
             g (gpu/gpu)
             textures
@@ -177,8 +181,10 @@
                (.finish-weight g)]]
         (for [i 0 5]
           (let [texture (get textures i)]
-            (assert (<= (o/msg u64 texture (o/sel c"width") []) 512))
-            (assert (<= (o/msg u64 texture (o/sel c"height") []) 512))))
+            (assert (<= (o/msg u64 texture (o/sel c"width") [])
+                        (cast u64 gpu/TILE-SIZE)))
+            (assert (<= (o/msg u64 texture (o/sel c"height") [])
+                        (cast u64 gpu/TILE-SIZE)))))
         (host/paper_begin 0xeee8d9)
         (panel (rect 230.0 220.0 590.0 480.0) 12.0 32.0 (sage))
         (label 240.0 250.0 18.0 0x202020 0 c"Crossing tile boundaries")
@@ -192,7 +198,7 @@
                            (.texture (masks/visibility))
                            (o/sel c"width")
                            [])
-                    512))
+                    (cast u64 gpu/TILE-SIZE)))
         (assert (= (o/msg u64 (.heights g) (o/sel c"width") []) 2563))
         (assert (= (o/msg u64 (.output g) (o/sel c"height") []) 1801))
         (gpu/read-output)
@@ -235,4 +241,42 @@
                            bytes)
                    (: 0 i32))))
       (render/free (cast (ptr i8) copy)))
+    (o/release pool)))
+
+;;; Cached material uniforms must retain coverage phase, texture orientation,
+;;; visibility rank and pigment across geometry updates and relighting.
+(deftest cached-material-uniforms-match-recomputed-draws
+  (let [pool (o/new c"NSAutoreleasePool")]
+    (scene/init)
+    (set! (.width (scene/scene)) 1071)
+    (set! (.height (scene/scene)) 1033)
+    (set! (.scale (scene/scene)) 1.5)
+    (render/setup)
+    (when (.available (gpu/gpu))
+      (let [bytes (cast u64 (* (* 1071 1033) 4))
+            copy (cast (ptr u8) (alloc/malloc (cast isize bytes)))]
+        (for [phase 0 5]
+          (tile-boundary-fixture phase)
+          (panel (rect 520.25 80.5 110.0 200.0)
+                 9.0
+                 26.0
+                 (material/texture-angle (material/surface-finish (material/pressed-paper 0xb7a58d)
+                                                                  0.32
+                                                                  0.7
+                                                                  0.5
+                                                                  0.3
+                                                                  0.2)
+                                         (* (cast f64 phase) 0.17)))
+          (render/render)
+          (memcpy copy
+                  (CGBitmapContextGetData (.output-context (scene/scene)))
+                  bytes)
+          (set! (.frame-reference (masks/cache)) true)
+          (masks/render-lit (cgrect 0.0 0.0 0.0 0.0) true true)
+          (set! (.frame-reference (masks/cache)) false)
+          (assert (= (memcmp copy
+                             (CGBitmapContextGetData (.output-context (scene/scene)))
+                             bytes)
+                     (: 0 i32))))
+        (render/free (cast (ptr i8) copy))))
     (o/release pool)))

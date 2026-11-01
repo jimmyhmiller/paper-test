@@ -144,7 +144,9 @@
                  (cast u64 (.height (scene)))))
 
 ;;; Material attachments are bounded working storage, reused in queue order.
-(const TILE-SIZE 512)
+;;; 768 reduces render/compute pass count while keeping the five material
+;;; targets plus depth below a fixed 32 MiB working budget (20.25 MiB payload).
+(const TILE-SIZE 768)
 
 (defn tile-texture [(format u64) (usage u64)] (-> (ptr i8))
   (texture-sized format

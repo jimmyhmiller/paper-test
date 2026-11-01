@@ -132,7 +132,7 @@ keys; native path equality determines reuse.
 
 Metal retains only the final color image and an eight-bit shadow-height map
 at viewport resolution. Material composition and visibility depth use one
-reusable working set of at most 512×512 backing pixels. Lighting consumes each
+reusable working set of at most 768×768 backing pixels. Lighting consumes each
 tile immediately, with normals and shadows sampling the global height map, so
 cross-tile edges and long shadows retain full resolution. The former prepared
 lighting texture is eliminated; preparation is fused into tile shading. Geometry
@@ -140,7 +140,12 @@ updates rebuild only damaged height regions; relighting reuses immutable scene
 coverage and cached per-stock grain tiles, then recomposes materials within each
 lighting tile. This spends additional work during relighting to bound memory.
 Full-window CPU bitmaps are allocated only for the CPU fallback or explicit
-readback, and resize releases them along with the previous GPU targets.
+readback, and resize releases them along with the previous GPU targets. The
+768-pixel tile uses 20.25 MiB of material/depth payload, below a fixed 32 MiB
+working budget. Immutable per-shape material uniforms are cached with the scene
+coverage snapshot; each pass updates only visibility rank and sampling state.
+Ink is submitted only to the color/material pass because it cannot contribute
+to shadow heights or opaque-paper visibility.
 
 ## Sheen and gloss
 
@@ -192,7 +197,7 @@ Metal evaluates surface detail while compositing each sheet and blends numeric
 surface values using the existing coverage mask. Signed fine normals and
 brightness variation occupy one RGBA16Float working attachment; two more store
 finish shape and reflection weights. These attachments are bounded to the current
-512×512 lighting tile, rather than allocated for every viewport pixel. The
+768×768 lighting tile, rather than allocated for every viewport pixel. The
 highlight axis is encoded as anisotropy times `(cos(2 angle), sin(2 angle))`, so
 coverage blending has no angle-wrap discontinuity. Material grain comes from
 shared cached stock tiles; the eight-bit sheet heights and shadow hierarchy

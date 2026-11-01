@@ -46,6 +46,7 @@
   [(texture (ptr i8))
    (bounds CGRect)
    (logical-bounds CGRect)
+   (params Draw)
    (tiled bool)
    (valid bool)])
 
@@ -526,6 +527,7 @@
             :texture (nil)
             :bounds bounds
             :logical-bounds logical
+            :params (zeroed Draw)
             :tiled false
             :valid true)))
   0)
@@ -541,6 +543,44 @@
               (assert (!= (.texture entry) (nil)))
               (set! (.texture frame) (retain (.texture entry)))
               (set! (.tiled frame) (.tiled entry)))))))
+    ;; Geometry and material uniforms are immutable until this snapshot is
+    ;; replaced. Only visibility rank and the cache sampling mode vary per pass.
+    (let [s (scene)]
+      (for [i 0 (len (.sheets s))]
+        (let [item (elem (field s sheets) i)
+              frame (elem (field c frame-masks) (.order item))]
+          (when (and (.valid frame)
+                     (= (.relief item) (cast (ptr relief/Panel) 0)))
+            (set! (.params frame)
+                  (draw-params (.bounds frame)
+                               (.color item)
+                               (.z item)
+                               (.rough item)
+                               (.fiber item)
+                               (.seed item)
+                               (if (.continuous item) -1.0 0.0)
+                               (.pattern item)
+                               (.finish item)))
+            (configure-coverage (field frame params)
+                                (.tiled frame)
+                                (.paint-window item)))))
+      (for [i 0 (len (.inks s))]
+        (let [item (elem (field s inks) i)
+              frame (elem (field c frame-masks) (.order item))]
+          (when (.valid frame)
+            (set! (.params frame)
+                  (draw-params (.bounds frame)
+                               (.color item)
+                               0.0
+                               0.0
+                               0.0
+                               0.0
+                               1.0
+                               (material/plain-pattern)
+                               (material/matte-finish)))
+            (configure-coverage (field frame params)
+                                (.tiled frame)
+                                (cgrect 0.0 0.0 0.0 0.0))))))
     (set! (.frame-ready c) true))
   0)
 
@@ -1203,19 +1243,38 @@
                  (tiled bool)
                  (window CGRect)] (-> i64)
   (let [(mut params)
-          (draw-params bounds color z rough fiber seed kind pattern finish)
-        micro
+          (draw-params bounds color z rough fiber seed kind pattern finish)]
+    (configure-coverage (mut params) tiled window)
+    (draw-parameters encoder texture (mut params)))
+  0)
+
+(defn configure-coverage [(params (ptr Draw)) (tiled bool) (window CGRect)]
+  (-> i64)
+  (when (> (.w window) 0.0)
+    (set! (.window-x params) (cast f32 (* (.x window) (.scale (scene)))))
+    (set! (.window-y params) (cast f32 (* (.y window) (.scale (scene)))))
+    (set! (.window-w params) (cast f32 (* (.w window) (.scale (scene)))))
+    (set! (.window-h params) (cast f32 (* (.h window) (.scale (scene))))))
+  (set! (.mask-tiled params) (if tiled 1.0 0.0))
+  0)
+
+(defn draw-parameters [(encoder (ptr i8))
+                       (texture (ptr i8))
+                       (params (ptr Draw))] (-> i64)
+  (let [micro
           (if (or (load (height-pass))
                   (= texture (nil))
                   (.prepass (visibility)))
               (nil)
               (micro-region-lookup (load params)))]
-    (when (> (.w window) 0.0)
-      (set! (.window-x params) (cast f32 (* (.x window) (.scale (scene)))))
-      (set! (.window-y params) (cast f32 (* (.y window) (.scale (scene)))))
-      (set! (.window-w params) (cast f32 (* (.w window) (.scale (scene)))))
-      (set! (.window-h params) (cast f32 (* (.h window) (.scale (scene))))))
-    (set! (.mask-tiled params) (if tiled 1.0 0.0))
+    (set! (.pad0 params)
+          (cast f32
+                (- 1.0
+                   (/ (cast f64 (.rank (visibility)))
+                      (cast f64
+                            (if (> (.total (visibility)) 0)
+                                (.total (visibility))
+                                1))))))
     (set! (.pad1 params) (micro-mode micro))
     (set! (.finish-pad0 params) (.last-x (micro-cache)))
     (set! (.finish-pad1 params) (.last-y (micro-cache)))
@@ -1233,14 +1292,14 @@
     (msg i64
          encoder
          (sel c"setVertexBytes:length:atIndex:")
-         [(mut Draw) u64 u64]
+         [(ptr Draw) u64 u64]
          params
          (cast u64 (sizeof Draw))
          0)
     (msg i64
          encoder
          (sel c"setFragmentBytes:length:atIndex:")
-         [(mut Draw) u64 u64]
+         [(ptr Draw) u64 u64]
          params
          (cast u64 (sizeof Draw))
          0)
@@ -1341,23 +1400,11 @@
 
 (defn sheet [(encoder (ptr i8)) (item Sheet)] (-> i64)
   (if (and (frame-encoding) (= (.relief item) (cast (ptr relief/Panel) 0)))
-      (let [frame (get (.frame-masks (cache)) (.order item))]
+      (let [frame (elem (field (cache) frame-masks) (.order item))]
         (when (and (.valid frame)
                    (intersects (.logical-bounds frame)
                                (load (composition-region))))
-          (draw-mask encoder
-                     (.texture frame)
-                     (.bounds frame)
-                     (.color item)
-                     (.z item)
-                     (.rough item)
-                     (.fiber item)
-                     (.seed item)
-                     (if (.continuous item) -1.0 0.0)
-                     (.pattern item)
-                     (.finish item)
-                     (.tiled frame)
-                     (.paint-window item))))
+          (draw-parameters encoder (.texture frame) (field frame params))))
       (when (and (not (CGPathIsEmpty (.path item)))
                  (intersects (.bounds item) (canvas-bounds))
                  (intersects (.bounds item) (load (composition-region))))
@@ -1594,23 +1641,11 @@
 
 (defn ink [(encoder (ptr i8)) (item Ink)] (-> i64)
   (if (frame-encoding)
-      (let [frame (get (.frame-masks (cache)) (.order item))]
+      (let [frame (elem (field (cache) frame-masks) (.order item))]
         (when (and (.valid frame)
                    (intersects (.logical-bounds frame)
                                (load (composition-region))))
-          (draw-mask encoder
-                     (.texture frame)
-                     (.bounds frame)
-                     (.color item)
-                     0.0
-                     0.0
-                     0.0
-                     0.0
-                     1.0
-                     (material/plain-pattern)
-                     (material/matte-finish)
-                     (.tiled frame)
-                     (cgrect 0.0 0.0 0.0 0.0))))
+          (draw-parameters encoder (.texture frame) (field frame params))))
       (when (and (intersects (.bounds item) (canvas-bounds))
                  (intersects (.bounds item) (load (composition-region)))
                  (or (= (.clip item) (nil)) (not (CGPathIsEmpty (.clip item)))))
@@ -1958,7 +1993,10 @@
                         (and (= (.z print) (.z item))
                              (< (.order print) (.order item))))
                     (do
-                      (when (ink-in-region? print) (ink encoder (load print)))
+                      (when (and (not (load (height-pass)))
+                                 (not (.prepass (visibility)))
+                                 (ink-in-region? print))
+                        (ink encoder (load print)))
                       (set! next (+ (load next) 1))
                       (set! (.rank (visibility)) (+ (.rank (visibility)) 1)))
                     (break))))
@@ -1966,7 +2004,10 @@
             (set! (.rank (visibility)) (+ (.rank (visibility)) 1))))
         (while (< (load next) count)
           (let [print (elem (field s inks) (load next))]
-            (when (ink-in-region? print) (ink encoder (load print))))
+            (when (and (not (load (height-pass)))
+                       (not (.prepass (visibility)))
+                       (ink-in-region? print))
+              (ink encoder (load print))))
           (set! next (+ (load next) 1))
           (set! (.rank (visibility)) (+ (.rank (visibility)) 1))))
       (set! (.prepass (visibility)) false))

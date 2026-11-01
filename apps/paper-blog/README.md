@@ -127,6 +127,13 @@ python3 scripts/benchmark_selection.py --native --frames 480 --exclude-top 2
 python3 scripts/benchmark_selection.py --frames 240 --fixture tests/fixtures/all-time.json
 ```
 
+Use `--mode light` to drive the sunlight map instead of selection gestures. The
+benchmark uses an in-memory preference store so the user's saved lighting is
+preserved. Reports include separate CPU and GPU timings, summed CPU work, and
+presentation counters after excluding the first eight frames. Native GPU timings
+sample the most recently completed Metal command. CPU and GPU work overlap;
+adding their times does not give the visible frame interval.
+
 The native mode opens a window and drives selection creation, movement, resizing, and pinned-post ranges through actual app event handlers. It reports update intervals, compositor presentation counters, CPU stage costs, and CPU/memory samples. Inspect dropped presentation counts when the window is occluded; processing intervals alone do not establish visible frame rate. The offscreen mode synchronizes CPU/GPU work for each frame. Reports are CSV and JSON in `build/`; native `gpu_ms` is unused because native presentation remains asynchronous. These are measurements, not fixed pass/fail timing tests.
 
 ## Verification and previews
@@ -152,7 +159,7 @@ the [paper-test project index](pad://paper-test).
 
 ## Renderer memory
 
-Material, grain, and finish working textures are capped at 512×512 backing
+Material, grain, and finish working textures are capped at 768×768 backing
 pixels and reused across the window. Only the final image and compact shadow
 heights remain at viewport resolution. CPU image buffers are allocated on demand
 for snapshots and diagnostic readback. Full relighting recomposes material tiles
@@ -166,6 +173,8 @@ coil run -- --fixture /absolute/path/to/timeline.json --image /tmp/paper.png
 ```
 
 The tool reports Metal device allocation and synchronized frame timings before
-PNG readback allocates a CPU output image. Frames 0–2 cover initial/unchanged
+PNG readback allocates a CPU output image. Pass `--profile-tiles` to separately synchronize and time material composition
+and shading; those diagnostic timings include extra command submission overhead.
+Frames 0–2 cover initial/unchanged
 draws; frames 3–8 move the light. These are offscreen measurements, excluding
 window presentation surfaces, and should not be read as total process memory.

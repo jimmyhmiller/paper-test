@@ -10,6 +10,29 @@
 (import "paper.workers" :as workers)
 (import "paper.ffi" :use [CACurrentMediaTime])
 
+(defn profile-tiles [] (-> i64)
+  (let [right (cast u64 (.width (scene/scene)))
+        bottom (cast u64 (.height (scene/scene)))
+        (mut compose) 0.0
+        (mut shade) 0.0]
+    (let [(mut y) (: 0 u64)]
+      (while (< (load y) bottom)
+        (let [(mut x) (: 0 u64)]
+          (while (< (load x) right)
+            (let [tile (masks/tile-region (load x) (load y) right bottom)]
+              (masks/compose-tile tile)
+              (gpu/synchronize)
+              (set! compose (+ (load compose) (.gpu-ms (gpu/gpu))))
+              (gpu/shade-tile tile)
+              (gpu/synchronize)
+              (set! shade (+ (load shade) (.gpu-ms (gpu/gpu)))))
+            (set! x (+ (load x) (cast u64 gpu/TILE-SIZE)))))
+        (set! y (+ (load y) (cast u64 gpu/TILE-SIZE)))))
+    (println "separately-synchronized-compose-gpu-ms {} shade-gpu-ms {}"
+             (load compose)
+             (load shade)))
+  0)
+
 (defn main [] (-> i64)
   (let [pool (n/new c"NSAutoreleasePool")]
     (scene/init)
@@ -20,6 +43,8 @@
     (set! (.height (scene/scene)) 1800)
     (set! (.scale (scene/scene)) 2.0)
     (render/setup)
+    (when (n/has-arg? c"--visibility-reference")
+      (set! (.reference (masks/visibility)) true))
     (app/event 0 0 0.0 0.0)
     (for [frame 0 9]
       (let [start (CACurrentMediaTime)]
@@ -36,6 +61,7 @@
              (n/msg u64 (.device (gpu/gpu)) (n/sel c"currentAllocatedSize") [])
              (.bytes (masks/cache))
              (.bytes (masks/micro-cache)))
+    (when (n/has-arg? c"--profile-tiles") (profile-tiles))
     (let [path (n/arg c"--image")]
       (when (!= path (n/nil))
         (gpu/read-output)

@@ -18,8 +18,10 @@ def summarize(rows):
     warm = rows[8:]
     if not warm:
         raise RuntimeError('At least nine frames are required')
+    for row in warm:
+        row['cpu_ms'] = sum(float(row[key]) for key in ('event_ms', 'draw_ms', 'raster_ms', 'encode_ms'))
     result = {}
-    for key in ('event_ms', 'draw_ms', 'raster_ms', 'interval_ms'):
+    for key in ('event_ms', 'draw_ms', 'raster_ms', 'encode_ms', 'gpu_ms', 'cpu_ms', 'interval_ms'):
         values = sorted(float(row[key]) for row in warm)
         result[key] = {'median': statistics.median(values),
                        'p95': values[int(.95 * (len(values) - 1))],
@@ -31,6 +33,7 @@ def summarize(rows):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--native', action='store_true', help='Show a real window and measure its display cadence')
+    parser.add_argument('--mode', choices=['selection', 'light'], default='selection')
     parser.add_argument('--frames', type=int, default=240)
     parser.add_argument('--exclude-top', type=int, default=0)
     parser.add_argument('--fixture', type=Path, default=Path.home() / 'Library/Application Support/Paper Blog/timeline.json')
@@ -43,7 +46,8 @@ def main():
     if not args.fixture.is_file():
         parser.error('Supply a timeline fixture or launch the app once to populate its cache')
     env = dict(os.environ, PAPER_BLOG_BENCHMARK_FRAMES=str(args.frames),
-               PAPER_BLOG_BENCHMARK_EXCLUDE_TOP=str(args.exclude_top))
+               PAPER_BLOG_BENCHMARK_EXCLUDE_TOP=str(args.exclude_top),
+               PAPER_BLOG_BENCHMARK_MODE=args.mode)
     env.pop('PAPER_HEADLESS', None)
     if not args.native:
         env['PAPER_HEADLESS'] = '1'
@@ -52,8 +56,8 @@ def main():
     stop = threading.Event()
     samples = []
     with args.output.open('w') as output:
-        process = subprocess.Popen(['coil', 'run', 'tools/selection_benchmark.coil', '--', '--fixture', str(args.fixture.resolve())],
-                                   cwd=ROOT, env=env, stdout=output)
+        process = subprocess.Popen(['coil', 'run', '--', '--fixture', str(args.fixture.resolve())],
+                                   cwd=ROOT / 'tools/selection-benchmark', env=env, stdout=output)
         started = time.monotonic()
 
         def monitor():
@@ -80,10 +84,14 @@ def main():
     rows = list(csv.DictReader(line for line in lines if not line.startswith('#')))
     result = summarize(rows)
     for line in lines:
+        if line.startswith('# warm_presented='):
+            result['presentation_warm'] = {key.removeprefix('warm_'): int(value) for key, value in
+                                         (item.split('=') for item in line[2:].split())}
         if line.startswith('# presented='):
             result['presentation'] = {key: int(value) for key, value in
                                       (item.split('=') for item in line[2:].split())}
     result['exclude_top'] = args.exclude_top
+    result['scenario'] = args.mode
     result['mode'] = 'native window' if args.native else 'CPU/GPU synchronized offscreen'
     result['peak_family_rss_mib'] = max((row['rss_mib'] for row in samples), default=None)
     with memory_path.open('w') as stream:
