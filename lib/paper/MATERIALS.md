@@ -130,16 +130,17 @@ existing holes, and returns an owned copy. This avoids rebuilding the same
 frame and glyph differences during light movement. Bounds only filter candidate
 keys; native path equality determines reuse.
 
-Metal retains the six material attachments between frames. Geometry changes
-clear and recompose only the integral damaged rectangle, with a scissored clear
-that matches all six full-pass clear values. Empty mask fragments skip material
-evaluation. In particular, moving the lighting-popover marker no longer rerenders
-the entire textured scene. Lighting still shades the viewport when the light moves.
-Cold coverage masks are reserved on the UI thread and rasterized independently by
-workers, with no concurrent LRU mutation. Frame-local indexes avoid duplicate
-cache scans during encoding and validate keys after possible budget eviction.
-Optional `paper.profile` counters separate contour construction, path differences
-and mask preparation; these are scene/render costs, not layout timings.
+Metal retains only the final color image and an eight-bit shadow-height map
+at viewport resolution. Material composition and visibility depth use one
+reusable working set of at most 512×512 backing pixels. Lighting consumes each
+tile immediately, with normals and shadows sampling the global height map, so
+cross-tile edges and long shadows retain full resolution. The former prepared
+lighting texture is eliminated; preparation is fused into tile shading. Geometry
+updates rebuild only damaged height regions; relighting reuses immutable scene
+coverage and cached per-stock grain tiles, then recomposes materials within each
+lighting tile. This spends additional work during relighting to bound memory.
+Full-window CPU bitmaps are allocated only for the CPU fallback or explicit
+readback, and resize releases them along with the previous GPU targets.
 
 ## Sheen and gloss
 
@@ -187,7 +188,15 @@ python3 tools/generate-material-shader.py --check
 
 There is no Python dependency at runtime or during normal Coil builds. Unsupported kernel forms cause the generator to fail. `texture/sample` and Metal's `material_micro` apply the same coordinate transform and finite-difference sampling; renderer comparison tests cover the resulting surfaces.
 
-Metal evaluates surface detail while compositing each sheet, blends numeric surface values using the existing coverage mask, and stores signed fine normals and brightness variation in a separate RGBA16Float attachment. Two more RGBA16Float attachments store finish shape and reflection weights. Together, the three detail/finish attachments add 24 bytes per backing pixel to the original GPU buffers. The highlight axis is encoded as anisotropy times `(cos(2 angle), sin(2 angle))`, so coverage blending has no angle-wrap discontinuity. Lighting reads the cached detail, so moving a light does not regenerate the patterns. The existing eight-bit sheet heights and shadow hierarchy remain independent.
+Metal evaluates surface detail while compositing each sheet and blends numeric
+surface values using the existing coverage mask. Signed fine normals and
+brightness variation occupy one RGBA16Float working attachment; two more store
+finish shape and reflection weights. These attachments are bounded to the current
+512×512 lighting tile, rather than allocated for every viewport pixel. The
+highlight axis is encoded as anisotropy times `(cos(2 angle), sin(2 angle))`, so
+coverage blending has no angle-wrap discontinuity. Material grain comes from
+shared cached stock tiles; the eight-bit sheet heights and shadow hierarchy
+remain independent.
 
 The CPU fallback rasterizes coverage into a separate grayscale mask and composites the same samples into float arrays for detail and finish parameters. It processes ink in the same elevation and submission order as pigment compositing. Workers own disjoint complete rows. Its scalar and SIMD lighting both use the fine normals and reflection lobes, with one final color quantization. Unchanged frames retain the prepared detail; moving lights only rerun shading.
 

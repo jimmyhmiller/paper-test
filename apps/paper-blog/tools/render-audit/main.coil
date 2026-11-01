@@ -1,0 +1,46 @@
+(module blog.render-audit)
+(import "blog.app" :as app)
+(import "blog.native" :as n)
+(import "blog.source" :as source)
+(import "paper.scene" :as scene)
+(import "paper.platform" :as host)
+(import "paper.render" :as render)
+(import "paper.gpu" :as gpu)
+(import "paper.masks" :as masks)
+(import "paper.workers" :as workers)
+(import "paper.ffi" :use [CACurrentMediaTime])
+
+(defn main [] (-> i64)
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (scene/init)
+    (set! (.headless (host/host)) true)
+    (set! (.logical-w (host/host)) 1280.0)
+    (set! (.logical-h (host/host)) 900.0)
+    (set! (.width (scene/scene)) 2560)
+    (set! (.height (scene/scene)) 1800)
+    (set! (.scale (scene/scene)) 2.0)
+    (render/setup)
+    (app/event 0 0 0.0 0.0)
+    (for [frame 0 9]
+      (let [start (CACurrentMediaTime)]
+        (app/draw)
+        (when (> frame 2)
+          (set! (.light-x (scene/scene)) (+ -800.0 (* (cast f64 frame) 90.0))))
+        (render/render-frame false)
+        (gpu/synchronize)
+        (println "frame {} total-ms {} gpu-ms {}"
+                 frame
+                 (* 1000.0 (- (CACurrentMediaTime) start))
+                 (.gpu-ms (gpu/gpu)))))
+    (println "metal-allocated-bytes {} masks-bytes {} micro-bytes {}"
+             (n/msg u64 (.device (gpu/gpu)) (n/sel c"currentAllocatedSize") [])
+             (.bytes (masks/cache))
+             (.bytes (masks/micro-cache)))
+    (let [path (n/arg c"--image")]
+      (when (!= path (n/nil))
+        (gpu/read-output)
+        (render/snapshot path)))
+    (source/shutdown)
+    (workers/stop)
+    (n/release pool))
+  0)

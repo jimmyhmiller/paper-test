@@ -18,22 +18,7 @@
 (import "paper.geometry" :use [clamp])
 
 (defn make-bitmap [(gray bool)] (-> (ptr i8))
-  (let [s (scene)
-        cs
-          (if gray (CGColorSpaceCreateDeviceGray) (CGColorSpaceCreateDeviceRGB))
-        ctx
-          (CGBitmapContextCreate (nil)
-                                 (cast u64 (.width s))
-                                 (cast u64 (.height s))
-                                 8
-                                 (cast u64 (* (.width s) (if gray 1 4)))
-                                 cs
-                                 (cast u32 (if gray 0 0x4001)))]
-    (CGColorSpaceRelease cs)
-    (assert (!= ctx (nil)))
-    (CGContextTranslateCTM ctx 0.0 (cast f64 (.height s)))
-    (CGContextScaleCTM ctx (.scale s) (- 0.0 (.scale s)))
-    ctx))
+  (make-bitmap-context gray))
 
 (defstruct RasterBand
   [(color (ptr i8))
@@ -207,10 +192,15 @@
     (when (!= (.output-context s) (nil))
       (CGContextRelease (.output-context s))
       0)
-    (set! (.color-context s) (make-bitmap false))
-    (set! (.height-context s) (make-bitmap true))
-    (set! (.material-context s) (make-bitmap false))
-    (set! (.output-context s) (make-bitmap false)))
+    (set! (.color-context s) (nil))
+    (set! (.height-context s) (nil))
+    (set! (.material-context s) (nil))
+    (set! (.output-context s) (nil))
+    (when (not (.available (gpu/gpu)))
+      (set! (.color-context s) (make-bitmap false))
+      (set! (.height-context s) (make-bitmap true))
+      (set! (.material-context s) (make-bitmap false))
+      (set! (.output-context s) (make-bitmap false))))
   (when (not (.available (gpu/gpu))) (setup-raster-bands))
   0)
 
@@ -737,9 +727,9 @@
                         (when (or (damage/light-changed)
                                   (> (.w (.bounds (damage/cache))) 0.0))
                           (if (.available (gpu/gpu))
-                              (gpu/render (.bounds (damage/cache))
-                                          (damage/light-changed)
-                                          false)
+                              (masks/render-lit (.bounds (damage/cache))
+                                                (damage/light-changed)
+                                                false)
                               (workers/apply (cast u64 (.height (height-tiles)))
                                              (nil)
                                              (fnptr-of shade-worker)))

@@ -30,7 +30,6 @@
    (library (ptr i8))
    (maximum-pipeline (ptr i8))
    (maximum (ptr i8))
-   (prepare (ptr i8))
    (shade (ptr i8))
    (display (ptr i8))
    (colors (ptr i8))
@@ -40,7 +39,9 @@
    (finish-shape (ptr i8))
    (finish-weight (ptr i8))
    (output (ptr i8))
-   (prepared (ptr i8))
+   (tile-x u64)
+   (tile-y u64)
+   (heights-dirty bool)
    (presentation-time f64)
    ; Zero preserves absolute-time/immediate presentation. A positive minimum
    ; display duration takes precedence; callers must choose one timing policy.
@@ -50,7 +51,6 @@
    (command (ptr i8))
    (last-command (ptr i8))
    (last-drawable (ptr i8))
-   (pending CGRect)
    (gpu-ms f64)
    (present-ms f64)
    (available bool)])
@@ -129,7 +129,6 @@
           (release text))
         (set! (.queue g) (msg (ptr i8) (.device g) (sel c"newCommandQueue") []))
         (set! (.maximum-pipeline g) (compute-pipeline c"height_maximum"))
-        (set! (.prepare g) (compute-pipeline c"prepare_paper"))
         (set! (.shade g) (compute-pipeline c"shade_paper"))
         (set! (.available g) true)))
     (.available g)))
@@ -138,15 +137,41 @@
   (texture-storage format usage 2))
 
 (defn texture-storage [(format u64) (usage u64) (storage u64)] (-> (ptr i8))
-  (let [s (scene)
-        descriptor
+  (texture-sized format
+                 usage
+                 storage
+                 (cast u64 (.width (scene)))
+                 (cast u64 (.height (scene)))))
+
+;;; Material attachments are bounded working storage, reused in queue order.
+(const TILE-SIZE 512)
+
+(defn tile-texture [(format u64) (usage u64)] (-> (ptr i8))
+  (texture-sized format
+                 usage
+                 2
+                 (cast u64
+                       (if (< (.width (scene)) TILE-SIZE)
+                           (.width (scene))
+                           TILE-SIZE))
+                 (cast u64
+                       (if (< (.height (scene)) TILE-SIZE)
+                           (.height (scene))
+                           TILE-SIZE))))
+
+(defn texture-sized [(format u64)
+                     (usage u64)
+                     (storage u64)
+                     (width u64)
+                     (height u64)] (-> (ptr i8))
+  (let [descriptor
           (msg (ptr i8)
                (class c"MTLTextureDescriptor")
                (sel c"texture2DDescriptorWithPixelFormat:width:height:mipmapped:")
                [u64 u64 u64 bool]
                format
-               (cast u64 (.width s))
-               (cast u64 (.height s))
+               width
+               height
                false)]
     (msg i64 descriptor (sel c"setUsage:") [u64] usage)
     (msg i64 descriptor (sel c"setStorageMode:") [u64] storage)
@@ -253,18 +278,18 @@
       (release (.finish-shape g))
       (release (.finish-weight g))
       (release (.output g))
-      (release (.prepared g))
       (release (.maximum g))
-      (set! (.colors g) (texture 70 5))
+      (set! (.colors g) (tile-texture 70 5))
       (set! (.heights g) (texture 10 5))
-      (set! (.materials g) (texture 70 5))
-      (set! (.micro g) (texture 115 5))
-      (set! (.finish-shape g) (texture 115 5))
-      (set! (.finish-weight g) (texture 115 5))
+      (set! (.materials g) (tile-texture 70 5))
+      (set! (.micro g) (tile-texture 115 5))
+      (set! (.finish-shape g) (tile-texture 115 5))
+      (set! (.finish-weight g) (tile-texture 115 5))
       (set! (.output g) (texture 70 3))
-      (set! (.prepared g) (texture 103 3))
-      (set! (.maximum g) (maximum-texture))
-      (set! (.pending g) (cgrect 0.0 0.0 0.0 0.0))))
+      (set! (.tile-x g) 0)
+      (set! (.tile-y g) 0)
+      (set! (.heights-dirty g) true)
+      (set! (.maximum g) (maximum-texture))))
   (.available (gpu)))
 
 (defn pixel-region [(r CGRect) (padding f64)] (-> MetalRegion)
@@ -341,12 +366,6 @@
          (.materials g)
          2)
     (msg i64 encoder (sel c"setTexture:atIndex:") [(ptr i8) u64] (.output g) 3)
-    (msg i64
-         encoder
-         (sel c"setTexture:atIndex:")
-         [(ptr i8) u64]
-         (.prepared g)
-         4)
     (msg i64 encoder (sel c"setTexture:atIndex:") [(ptr i8) u64] (.maximum g) 5)
     (msg i64 encoder (sel c"setTexture:atIndex:") [(ptr i8) u64] (.micro g) 7)
     (msg i64
@@ -416,28 +435,6 @@
      (- (msg f64 command (sel c"GPUEndTime") [])
         (msg f64 command (sel c"GPUStartTime") []))))
 
-;;; Preparation reads only the current pixel and adjacent height samples. Keep
-;;; all unprepared updates, including several rasterizations before a render;
-;;; render adds the dependency halo and still rebuilds the shadow hierarchy.
-(defn include-preparation [(r CGRect)] (-> i64)
-  (when (and (> (.w r) 0.0) (> (.h r) 0.0))
-    (let [g (gpu)
-          a (.pending g)]
-      (if (<= (.w a) 0.0)
-          (set! (.pending g) r)
-          (let [x (if (< (.x a) (.x r)) (.x a) (.x r))
-                y (if (< (.y a) (.y r)) (.y a) (.y r))
-                right
-                  (if (> (+ (.x a) (.w a)) (+ (.x r) (.w r)))
-                      (+ (.x a) (.w a))
-                      (+ (.x r) (.w r)))
-                bottom
-                  (if (> (+ (.y a) (.h a)) (+ (.y r) (.h r)))
-                      (+ (.y a) (.h a))
-                      (+ (.y r) (.h r)))]
-            (set! (.pending g) (cgrect x y (- right x) (- bottom y)))))))
-  0)
-
 ;;; Bound the shader's existing ray reach over the complete viewport. Distance
 ;;; from a fixed light is maximal at a rectangle corner. Keep the shader's
 ;;; 64-unit height ceiling and 180-unit clamp; this changes dispatch bounds, not
@@ -462,27 +459,8 @@
               180.0)]
     (+ (* (+ reach 1.0) scale) 2.0)))
 
-(defn render [(bounds CGRect) (all bool) (readback bool)] (-> i64)
-  (let [g (gpu)
-        s (scene)
-        command (command-buffer)
-        region
-          (if all
-              (load (MetalRegion
-                      :x 0
-                      :y 0
-                      :z 0
-                      :width (cast u64 (.width s))
-                      :height (cast u64 (.height s))
-                      :depth 1))
-              (pixel-region bounds (shadow-padding)))]
-    (when (> (.w (.pending g)) 0.0)
-      (encode command (.prepare g) (pixel-region (.pending g) 2.0))
-      (encode-maximum command)
-      (set! (.pending g) (cgrect 0.0 0.0 0.0 0.0)))
-    (encode command (.shade g) region)
-    (when readback (read-output)))
-  0)
+(defn shade-tile [(region MetalRegion)] (-> i64)
+  (encode (command-buffer) (.shade (gpu)) region))
 
 (defn read-texture [(source (ptr i8))
                     (context (ptr i8))
@@ -536,6 +514,8 @@
   0)
 
 (defn read-output [] (-> i64)
+  (when (= (.output-context (scene)) (nil))
+    (set! (.output-context (scene)) (make-bitmap-context false)))
   (read-texture (.output (gpu)) (.output-context (scene)) 70 4))
 
 (defn display-pipeline [] (-> (ptr i8))
@@ -718,3 +698,60 @@
 
 (defn present [(layer (ptr i8))] (-> bool)
   (present-with-handler layer (nil)))
+
+;;; Diagnostic readback only. Copy a reusable working texture into its global
+;;; position in a CPU bitmap, without allocating a full-size GPU staging image.
+(defn read-tile [(source (ptr i8))
+                 (context (ptr i8))
+                 (channels i64)
+                 (format u64)
+                 (region MetalRegion)] (-> i64)
+  (synchronize)
+  (let [staging (texture-sized format 1 0 (.width region) (.height region))
+        command (msg (ptr i8) (.queue (gpu)) (sel c"commandBuffer") [])
+        encoder (msg (ptr i8) command (sel c"blitCommandEncoder") [])
+        origin
+          (MetalSize
+            :width 0
+            :height 0
+            :depth 0)
+        size
+          (MetalSize
+            :width (.width region)
+            :height (.height region)
+            :depth 1)]
+    (msg i64
+         encoder
+         (sel c"copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:")
+         [(ptr i8) u64 u64 MetalSize MetalSize (ptr i8) u64 u64 MetalSize]
+         source
+         0
+         0
+         origin
+         size
+         staging
+         0
+         0
+         origin)
+    (msg i64 encoder (sel c"endEncoding") [])
+    (finish command)
+    (let [stride (* (.width (scene)) channels)
+          offset
+            (+ (* (cast i64 (.y region)) stride)
+               (* (cast i64 (.x region)) channels))]
+      (msg i64
+           staging
+           (sel c"getBytes:bytesPerRow:fromRegion:mipmapLevel:")
+           [(ptr u8) u64 MetalRegion u64]
+           (index (CGBitmapContextGetData context) offset)
+           (cast u64 stride)
+           (MetalRegion
+             :x 0
+             :y 0
+             :z 0
+             :width (.width region)
+             :height (.height region)
+             :depth 1)
+           0))
+    (release staging))
+  0)

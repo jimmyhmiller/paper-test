@@ -104,7 +104,7 @@
       (set! (.read-state v) (depth-state 3 false))
       (set! (.off-state v) (depth-state 7 false)))
     (when (= (.texture v) (nil))
-      (set! (.texture v) (gpu/texture 252 4))))
+      (set! (.texture v) (gpu/tile-texture 252 4))))
   0)
 
 (defstruct Draw
@@ -504,9 +504,9 @@
     (set! (.newest c) -1))
   0)
 
-;;; Snapshot resources belong to one synchronous composition. Retain textures
-;;; before cache trimming can move/evict slots; release after command encoding.
-;;; Metal's command buffer then owns its encoded resource references.
+;;; An immutable scene snapshot survives relighting. Retain textures before
+;;; trimming can move/evict cache slots; the next geometry reservation or reset
+;;; releases the preceding snapshot. Command buffers retain their own resources.
 (defn release-frame [] (-> i64)
   (let [c (cache)]
     (when (.ready c)
@@ -1019,7 +1019,7 @@
     (set! (relief-pipeline-slot) (make-pipeline c"relief_fragment" true)))
   (load (relief-pipeline-slot)))
 
-;;; Diagnostic extent of the last material-compositing pass, in backing pixels.
+;;; Diagnostic extent of the last geometry update, in backing pixels.
 (defn last-damage [] (-> (ptr CGRect))
   (p/alloc-static CGRect))
 
@@ -1041,7 +1041,28 @@
           (make-pipeline c"clear_material_fragment" false)))
   (load (clear-pipeline-slot)))
 
+(defn height-pass [] (-> (ptr bool))
+  (p/alloc-static bool))
+
+(defn height-pipeline [(kind i64)] (-> (ptr i8))
+  (let [slots (p/alloc-static (array (ptr i8) 3))
+        slot (index slots kind)]
+    (when (= (load slot) (nil))
+      (set! slot
+            (make-pipeline-mode (case kind
+                                  0 c"mask_height_fragment"
+                                  1 c"clear_height_fragment"
+                                  c"relief_height_fragment")
+                                (!= kind 1)
+                                true)))
+    (load slot)))
+
 (defn make-pipeline [(fragment-name (ptr i8)) (blend bool)] (-> (ptr i8))
+  (make-pipeline-mode fragment-name blend false))
+
+(defn make-pipeline-mode [(fragment-name (ptr i8))
+                          (blend bool)
+                          (height-only bool)] (-> (ptr i8))
   (let [g (gpu/gpu)
         descriptor (new c"MTLRenderPipelineDescriptor")
         vertex
@@ -1060,7 +1081,11 @@
         (mut error) (nil)]
     (msg i64 descriptor (sel c"setVertexFunction:") [(ptr i8)] vertex)
     (msg i64 descriptor (sel c"setFragmentFunction:") [(ptr i8)] fragment)
-    (msg i64 descriptor (sel c"setDepthAttachmentPixelFormat:") [u64] 252)
+    (msg i64
+         descriptor
+         (sel c"setDepthAttachmentPixelFormat:")
+         [u64]
+         (if height-only 0 252))
     (for [i 0 6]
       (let [color
               (msg (ptr i8)
@@ -1072,9 +1097,11 @@
              color
              (sel c"setPixelFormat:")
              [u64]
-             (if (>= i 3)
-                 (: 115 u64)
-                 (if (= i 1) (: 10 u64) (: 70 u64))))
+             (if (if height-only (!= i 1) (= i 1))
+                 (: 0 u64)
+                 (if (>= i 3)
+                     (: 115 u64)
+                     (if (= i 1) (: 10 u64) (: 70 u64)))))
         (msg i64 color (sel c"setBlendingEnabled:") [bool] blend)
         (when (msg bool
                    (ns fragment-name)
@@ -1178,7 +1205,9 @@
   (let [(mut params)
           (draw-params bounds color z rough fiber seed kind pattern finish)
         micro
-          (if (or (= texture (nil)) (.prepass (visibility)))
+          (if (or (load (height-pass))
+                  (= texture (nil))
+                  (.prepass (visibility)))
               (nil)
               (micro-region-lookup (load params)))]
     (when (> (.w window) 0.0)
@@ -1194,9 +1223,13 @@
          encoder
          (sel c"setRenderPipelineState:")
          [(ptr i8)]
-         (if (= texture (nil))
-             (clear-pipeline)
-             (if (.prepass (visibility)) (.pipeline (visibility)) (pipeline))))
+         (if (load (height-pass))
+             (height-pipeline (if (= texture (nil)) 1 0))
+             (if (= texture (nil))
+                 (clear-pipeline)
+                 (if (.prepass (visibility))
+                     (.pipeline (visibility))
+                     (pipeline)))))
     (msg i64
          encoder
          (sel c"setVertexBytes:length:atIndex:")
@@ -1223,6 +1256,7 @@
          [(ptr i8) u64]
          micro
          2)
+    (bind-tile-origin encoder)
     (msg i64
          encoder
          (sel c"drawPrimitives:vertexStart:vertexCount:")
@@ -1230,6 +1264,26 @@
          3
          0
          6))
+  0)
+
+(defstruct TileOrigin [(x f32) (y f32)])
+
+(defstruct Viewport
+  [(x f64) (y f64) (width f64) (height f64) (near f64) (far f64)])
+
+(defn bind-tile-origin [(encoder (ptr i8))] (-> i64)
+  (let [g (gpu/gpu)
+        origin
+          (TileOrigin
+            :x (if (load (height-pass)) 0.0 (cast f32 (.tile-x g)))
+            :y (if (load (height-pass)) 0.0 (cast f32 (.tile-y g))))]
+    (msg i64
+         encoder
+         (sel c"setFragmentBytes:length:atIndex:")
+         [(ref TileOrigin) u64 u64]
+         origin
+         8
+         1))
   0)
 
 (defn canvas-bounds [] (-> CGRect)
@@ -1489,7 +1543,7 @@
              encoder
              (sel c"setRenderPipelineState:")
              [(ptr i8)]
-             (relief-pipeline))
+             (if (load (height-pass)) (height-pipeline 2) (relief-pipeline)))
         (msg i64
              encoder
              (sel c"setVertexBytes:length:atIndex:")
@@ -1528,6 +1582,7 @@
              [(ptr i8) u64]
              edge-micro
              3)
+        (bind-tile-origin encoder)
         (msg i64
              encoder
              (sel c"drawPrimitives:vertexStart:vertexCount:")
@@ -1690,9 +1745,10 @@
 
 (defn render-region [(region CGRect)] (-> i64)
   (set! (last-composed-area) 0.0)
-  (prepare-region region)
+  (set! (height-pass) true)
+  (prepare-region (canvas-bounds))
   (encode-region region)
-  (release-frame)
+  (set! (height-pass) false)
   (trim false)
   0)
 
@@ -1702,7 +1758,8 @@
 (defn render-regions [(regions (ptr CGRect)) (count i64) (bounds CGRect)]
   (-> i64)
   (set! (last-composed-area) 0.0)
-  (prepare-region bounds)
+  (set! (height-pass) true)
+  (prepare-region (canvas-bounds))
   (when (> count 0)
     (let [start (profile/start)
           full (and (= count 1) (full-region (load (index regions 0))))
@@ -1723,7 +1780,7 @@
                   (cast f64 (.y pixels))
                   (cast f64 (.width pixels))
                   (cast f64 (.height pixels)))))
-  (release-frame)
+  (set! (height-pass) false)
   (trim false)
   0)
 
@@ -1760,69 +1817,71 @@
                (sel c"renderPassDescriptor")
                [])
         attachments (msg (ptr i8) descriptor (sel c"colorAttachments") [])]
-    (let [depth (msg (ptr i8) descriptor (sel c"depthAttachment") [])]
-      (msg i64 depth (sel c"setTexture:") [(ptr i8)] (.texture (visibility)))
-      (msg i64 depth (sel c"setLoadAction:") [u64] 2)
-      (msg i64 depth (sel c"setStoreAction:") [u64] 0)
-      (msg i64 depth (sel c"setClearDepth:") [f64] 1.0))
+    (when (not (load (height-pass)))
+      (let [depth (msg (ptr i8) descriptor (sel c"depthAttachment") [])]
+        (msg i64 depth (sel c"setTexture:") [(ptr i8)] (.texture (visibility)))
+        (msg i64 depth (sel c"setLoadAction:") [u64] 2)
+        (msg i64 depth (sel c"setStoreAction:") [u64] 0)
+        (msg i64 depth (sel c"setClearDepth:") [f64] 1.0)))
     (for [i 0 6]
-      (let [color
-              (msg (ptr i8)
-                   attachments
-                   (sel c"objectAtIndexedSubscript:")
-                   [u64]
-                   (cast u64 i))
-            clear
-              (case i
-                0
+      (when (if (load (height-pass)) (= i 1) (!= i 1))
+        (let [color
+                (msg (ptr i8)
+                     attachments
+                     (sel c"objectAtIndexedSubscript:")
+                     [u64]
+                     (cast u64 i))
+              clear
+                (case i
+                  0
+                    (load (ClearColor
+                            :r (channel (.background s) 16)
+                            :g (channel (.background s) 8)
+                            :b (channel (.background s) 0)
+                            :a 1.0))
+                  1
+                    (load (ClearColor
+                            :r 0.0
+                            :g 0.0
+                            :b 0.0
+                            :a 1.0))
+                  3
+                    (load (ClearColor
+                            :r 0.0
+                            :g 0.0
+                            :b 0.0
+                            :a 1.0))
+                  4
+                    (load (ClearColor
+                            :r 0.5
+                            :g 0.0
+                            :b 0.0
+                            :a 1.0))
+                  5
+                    (load (ClearColor
+                            :r 0.0
+                            :g 0.0
+                            :b 0.0
+                            :a 1.0))
                   (load (ClearColor
-                          :r (channel (.background s) 16)
-                          :g (channel (.background s) 8)
-                          :b (channel (.background s) 0)
-                          :a 1.0))
-                1
-                  (load (ClearColor
-                          :r 0.0
-                          :g 0.0
-                          :b 0.0
-                          :a 1.0))
-                3
-                  (load (ClearColor
-                          :r 0.0
-                          :g 0.0
-                          :b 0.0
-                          :a 1.0))
-                4
-                  (load (ClearColor
-                          :r 0.5
-                          :g 0.0
-                          :b 0.0
-                          :a 1.0))
-                5
-                  (load (ClearColor
-                          :r 0.0
-                          :g 0.0
-                          :b 0.0
-                          :a 1.0))
-                (load (ClearColor
-                        :r 0.6
-                        :g 0.4
-                        :b 0.12
-                        :a 1.0)))]
-        (msg i64
-             color
-             (sel c"setTexture:")
-             [(ptr i8)]
-             (case i
-               0 (.colors g)
-               1 (.heights g)
-               3 (.micro g)
-               4 (.finish-shape g)
-               5 (.finish-weight g)
-               (.materials g)))
-        (msg i64 color (sel c"setLoadAction:") [u64] (if full 2 1))
-        (msg i64 color (sel c"setStoreAction:") [u64] 1)
-        (msg i64 color (sel c"setClearColor:") [ClearColor] clear)))
+                          :r 0.6
+                          :g 0.4
+                          :b 0.12
+                          :a 1.0)))]
+          (msg i64
+               color
+               (sel c"setTexture:")
+               [(ptr i8)]
+               (case i
+                 0 (.colors g)
+                 1 (.heights g)
+                 3 (.micro g)
+                 4 (.finish-shape g)
+                 5 (.finish-weight g)
+                 (.materials g)))
+          (msg i64 color (sel c"setLoadAction:") [u64] (if full 2 1))
+          (msg i64 color (sel c"setStoreAction:") [u64] 1)
+          (msg i64 color (sel c"setClearColor:") [ClearColor] clear))))
     (msg (ptr i8)
          command
          (sel c"renderCommandEncoderWithDescriptor:")
@@ -1848,8 +1907,8 @@
            (sel c"setScissorRect:")
            [Scissor]
            (Scissor
-             :x (.x pixels)
-             :y (.y pixels)
+             :x (- (.x pixels) (if (load (height-pass)) 0 (.tile-x (gpu/gpu))))
+             :y (- (.y pixels) (if (load (height-pass)) 0 (.tile-y (gpu/gpu))))
              :width (.width pixels)
              :height (.height pixels)))
       (when (not full)
@@ -1858,11 +1917,6 @@
              (sel c"setDepthStencilState:")
              [(ptr i8)]
              (.off-state (visibility)))
-        (msg i64
-             encoder
-             (sel c"setRenderPipelineState:")
-             [(ptr i8)]
-             (clear-pipeline))
         (draw-mask encoder
                    (nil)
                    (cgrect (cast f64 (.x pixels))
@@ -1881,7 +1935,7 @@
                    (cgrect 0.0 0.0 0.0 0.0)))
       (set! (.total (visibility))
             (+ (+ (len (.sheets s)) count) 1))
-      (for [pass (if (.reference (visibility)) 1 0) 2]
+      (for [pass (if (or (load (height-pass)) (.reference (visibility))) 1 0) 2]
         (set! (.prepass (visibility)) (= pass 0))
         (set! (.rank (visibility)) 1)
         (set! next 0)
@@ -1889,11 +1943,13 @@
              encoder
              (sel c"setDepthStencilState:")
              [(ptr i8)]
-             (if (.reference (visibility))
+             (if (load (height-pass))
                  (.off-state (visibility))
-                 (if (= pass 0)
-                     (.write-state (visibility))
-                     (.read-state (visibility)))))
+                 (if (.reference (visibility))
+                     (.off-state (visibility))
+                     (if (= pass 0)
+                         (.write-state (visibility))
+                         (.read-state (visibility))))))
         (for [i 0 (len (.sheets s))]
           (let [item (elem (field s sheets) i)]
             (while (< (load next) count)
@@ -1914,13 +1970,117 @@
           (set! next (+ (load next) 1))
           (set! (.rank (visibility)) (+ (.rank (visibility)) 1))))
       (set! (.prepass (visibility)) false))
-    (gpu/include-preparation (load (composition-region))))
+    (when (load (height-pass)) (set! (.heights-dirty (gpu/gpu)) true)))
   0)
 
 (defn read-inputs [] (-> i64)
   (let [s (scene)
-        g (gpu/gpu)]
-    (gpu/read-texture (.colors g) (.color-context s) 70 4)
+        g (gpu/gpu)
+        damage (load (last-damage))
+        area (load (last-composed-area))
+        right (cast u64 (.width s))
+        bottom (cast u64 (.height s))]
+    (when (= (.color-context s) (nil))
+      (set! (.color-context s) (make-bitmap-context false)))
+    (when (= (.height-context s) (nil))
+      (set! (.height-context s) (make-bitmap-context true)))
+    (when (= (.material-context s) (nil))
+      (set! (.material-context s) (make-bitmap-context false)))
+    (set! (height-pass) false)
+    (when (not (.frame-ready (cache))) (prepare-region (canvas-bounds)))
+    (let [(mut y) (: 0 u64)]
+      (while (< (load y) bottom)
+        (let [(mut x) (: 0 u64)]
+          (while (< (load x) right)
+            (let [tile (tile-region (load x) (load y) right bottom)]
+              (compose-tile tile)
+              (gpu/read-tile (.colors g) (.color-context s) 4 70 tile)
+              (gpu/read-tile (.materials g) (.material-context s) 4 70 tile))
+            (set! x (+ (load x) (cast u64 gpu/TILE-SIZE)))))
+        (set! y (+ (load y) (cast u64 gpu/TILE-SIZE)))))
+    (trim false)
     (gpu/read-texture (.heights g) (.height-context s) 10 1)
-    (gpu/read-texture (.materials g) (.material-context s) 70 4))
+    (set! (last-damage) damage)
+    (set! (last-composed-area) area))
+  0)
+
+;;; All material/finish attachments and visibility depth are bounded to one
+;;; tile. Global geometry is read only during shading, so tile boundaries never
+;;; clip a shadow or change the finite-difference normal.
+(defn begin-tile [(pixels gpu/MetalRegion)] (-> (ptr i8))
+  (let [s (scene)
+        g (gpu/gpu)]
+    (set! (.tile-x g) (.x pixels))
+    (set! (.tile-y g) (.y pixels))
+    (let [encoder (begin-composition true)]
+      (msg i64
+           encoder
+           (sel c"setViewport:")
+           [Viewport]
+           (Viewport
+             :x (- 0.0 (cast f64 (.x pixels)))
+             :y (- 0.0 (cast f64 (.y pixels)))
+             :width (cast f64 (.width s))
+             :height (cast f64 (.height s))
+             :near 0.0
+             :far 1.0))
+      encoder)))
+
+(defn tile-region [(x u64) (y u64) (right u64) (bottom u64)]
+  (-> gpu/MetalRegion)
+  (gpu/MetalRegion
+    :x x
+    :y y
+    :z 0
+    :width
+      (if (< (- right x) (cast u64 gpu/TILE-SIZE))
+          (- right x)
+          (cast u64 gpu/TILE-SIZE))
+    :height
+      (if (< (- bottom y) (cast u64 gpu/TILE-SIZE))
+          (- bottom y)
+          (cast u64 gpu/TILE-SIZE))
+    :depth 1))
+
+(defn logical-region [(pixels gpu/MetalRegion)] (-> CGRect)
+  (let [scale (.scale (scene))]
+    (cgrect (/ (cast f64 (.x pixels)) scale)
+            (/ (cast f64 (.y pixels)) scale)
+            (/ (cast f64 (.width pixels)) scale)
+            (/ (cast f64 (.height pixels)) scale))))
+
+(defn compose-tile [(pixels gpu/MetalRegion)] (-> i64)
+  (let [encoder (begin-tile pixels)]
+    (compose-region encoder (logical-region pixels) true)
+    (msg i64 encoder (sel c"endEncoding") []))
+  0)
+
+(defn render-lit [(bounds CGRect) (all bool) (readback bool)] (-> i64)
+  (let [g (gpu/gpu)
+        damage (load (last-damage))
+        area (load (last-composed-area))
+        region
+          (if all
+              (gpu/pixel-region (canvas-bounds) 0.0)
+              (gpu/pixel-region bounds (gpu/shadow-padding)))
+        right (+ (.x region) (.width region))
+        bottom (+ (.y region) (.height region))]
+    (when (.heights-dirty g)
+      (gpu/encode-maximum (gpu/command-buffer))
+      (set! (.heights-dirty g) false))
+    (set! (height-pass) false)
+    (when (not (.frame-ready (cache))) (prepare-region (canvas-bounds)))
+    (let [(mut y) (.y region)]
+      (while (< (load y) bottom)
+        (let [(mut x) (.x region)]
+          (while (< (load x) right)
+            (let [tile (tile-region (load x) (load y) right bottom)]
+              (compose-tile tile)
+              (gpu/shade-tile tile))
+            (set! x (+ (load x) (cast u64 gpu/TILE-SIZE)))))
+        (set! y (+ (load y) (cast u64 gpu/TILE-SIZE)))))
+    (trim false)
+    (when readback (gpu/read-output))
+    (set! (last-damage) damage)
+    (set! (last-composed-area) area))
   0)

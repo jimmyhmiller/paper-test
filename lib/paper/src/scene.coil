@@ -347,3 +347,21 @@
        (< (.x b) (+ (.x a) (.w a)))
        (< (.y a) (+ (.y b) (.h b)))
        (< (.y b) (+ (.y a) (.h a)))))
+
+(defn make-bitmap-context [(gray bool)] (-> (ptr i8))
+  (let [s (scene)
+        cs
+          (if gray (CGColorSpaceCreateDeviceGray) (CGColorSpaceCreateDeviceRGB))
+        ctx
+          (CGBitmapContextCreate (objc/nil)
+                                 (cast u64 (.width s))
+                                 (cast u64 (.height s))
+                                 8
+                                 (cast u64 (* (.width s) (if gray 1 4)))
+                                 cs
+                                 (cast u32 (if gray 0 0x4001)))]
+    (CGColorSpaceRelease cs)
+    (assert (!= ctx (objc/nil)))
+    (CGContextTranslateCTM ctx 0.0 (cast f64 (.height s)))
+    (CGContextScaleCTM ctx (.scale s) (- 0.0 (.scale s)))
+    ctx))

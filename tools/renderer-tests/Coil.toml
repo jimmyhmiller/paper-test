@@ -1,0 +1,11 @@
+[package]
+name = "paper-renderer-tests"
+source-roots = ["."]
+
+[dependencies]
+papercut = { path = "../.." }
+paper = { path = "../../lib/paper" }
+
+[test]
+roots = ["../../tests"]
+suffixes = ["_test.coil"]

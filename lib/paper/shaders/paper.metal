@@ -350,29 +350,6 @@ inline float grain_hash(uint x, uint y, uint seed) {
     return float((b ^ (b >> 16)) & 65535u) / 65535.0f - 0.5f;
 }
 
-kernel void prepare_paper(texture2d<float, access::read> heights [[texture(1)]],
-                          texture2d<float, access::read> materials [[texture(2)]],
-                          texture2d<float, access::read> micro [[texture(7)]],
-                          texture2d<uint, access::write> prepared [[texture(4)]],
-                          constant PaperParams& p [[buffer(0)]], uint2 tid [[thread_position_in_grid]]) {
-    uint2 xy = tid + uint2(p.origin_x, p.origin_y);
-    if (any(xy >= uint2(p.width, p.height))) return;
-    int2 q = int2(xy);
-    float dx = height_at(heights, q + int2(1,0)) - height_at(heights, q - int2(1,0));
-    float dy = height_at(heights, q + int2(0,1)) - height_at(heights, q - int2(0,1));
-    float3 material = materials.read(xy).rgb;
-    uint seed = uint(round(material.b * 255.0f));
-    float pulp = grain_hash(xy.x, xy.y, seed);
-    float strands = grain_hash(xy.x / 7, xy.y, seed);
-    float cloud = grain_hash(xy.x / 37, xy.y / 37, seed);
-    float3 detail = micro.read(xy).xyz;
-    float texture = detail.z + material.r * (pulp * 0.10f + strands * material.g * 0.07f + cloud * 0.018f);
-    uint nx = uint(round(dx * (255.0f / 64.0f)) + 255.0f);
-    uint ny = uint(round(dy * (255.0f / 64.0f)) + 255.0f);
-    uint z = uint(round(heights.read(xy).r * 255.0f));
-    prepared.write(uint4(nx | (ny << 9) | (z << 18), as_type<uint>(texture), 0, 0), xy);
-}
-
 // A maximum hierarchy conservatively rejects rays that cannot reach higher
 // paper. Mip texels contain maxima, never averaged heights.
 kernel void height_maximum(texture2d<float, access::read> heights [[texture(1)]],
@@ -411,7 +388,7 @@ template<bool accelerated>
 inline void shade_impl(texture2d<float, access::read> colors,
                         texture2d<float, access::read> heights,
                         texture2d<float, access::write> output,
-                        texture2d<uint, access::read> prepared,
+                        texture2d<float, access::read> materials,
                         texture2d<float, access::read> maximum,
                         texture2d<float, access::read> micro,
                         texture2d<float, access::read> finish_shape,
@@ -419,10 +396,21 @@ inline void shade_impl(texture2d<float, access::read> colors,
                         constant PaperParams& p, uint2 tid) {
     uint2 xy = tid + uint2(p.origin_x, p.origin_y);
     if (any(xy >= uint2(p.width, p.height))) return;
-    uint2 packed = prepared.read(xy).rg;
-    float4 surface(float(int(packed.x & 511u) - 255) * (64.0f / 255.0f),
-                   float(int((packed.x >> 9) & 511u) - 255) * (64.0f / 255.0f),
-                   as_type<float>(packed.y), float((packed.x >> 18) & 255u) * (64.0f / 255.0f));
+    // Keep full-resolution shadow geometry, but consume material data from
+    // this tile only. The former preparation pass is fused into lighting.
+    int2 q = int2(xy);
+    float dx = height_at(heights, q + int2(1,0)) - height_at(heights, q - int2(1,0));
+    float dy = height_at(heights, q + int2(0,1)) - height_at(heights, q - int2(0,1));
+    float3 material = materials.read(tid).rgb;
+    uint seed = uint(round(material.b * 255.0f));
+    float pulp = grain_hash(xy.x, xy.y, seed);
+    float strands = grain_hash(xy.x / 7, xy.y, seed);
+    float cloud = grain_hash(xy.x / 37, xy.y / 37, seed);
+    float3 detail = micro.read(tid).xyz;
+    float texture = detail.z + material.r * (pulp * 0.10f + strands * material.g * 0.07f + cloud * 0.018f);
+    float4 surface(round(dx * (255.0f / 64.0f)) * (64.0f / 255.0f),
+                   round(dy * (255.0f / 64.0f)) * (64.0f / 255.0f),
+                   texture, round(heights.read(xy).r * 255.0f) * (64.0f / 255.0f));
     float z = surface.w * p.depth;
     float2 light = float2(p.light_x, p.light_y) - float2(xy) / p.scale;
     float horizontal = sqrt(dot(light, light) + 0.001f);
@@ -460,15 +448,15 @@ inline void shade_impl(texture2d<float, access::read> colors,
         }
     }
     if (accelerated) visibility = minimum_unit * minimum_unit * (3.0f - 2.0f * minimum_unit);
-    float2 gradient = surface.xy * p.depth + micro.read(xy).xy * p.grain;
+    float2 gradient = surface.xy * p.depth + micro.read(tid).xy * p.grain;
     float n = sqrt(1.0f + dot(gradient, gradient));
     float diffuse = 0.80f + 0.20f * clamp((p.elevation - dot(gradient, light)) / (n * norm), 0.0f, 1.0f);
     float shade = 1.07f * (diffuse * (0.53f + 0.47f * visibility) + p.grain * surface.z);
-    float3 pigment = colors.read(xy).rgb;
-    float3 weights = finish_weight.read(xy).rgb;
+    float3 pigment = colors.read(tid).rgb;
+    float3 weights = finish_weight.read(tid).rgb;
     float3 radiance = pigment * shade;
     if (weights.x > 0.0f || weights.z > 0.0f) {
-        float3 shape = finish_shape.read(xy).rgb;
+        float3 shape = finish_shape.read(tid).rgb;
         float lobe = weights.x > 0.0f ? weights.x * fin_specular(gradient.x, gradient.y, light.x, light.y, p.elevation, shape.x, shape.y, shape.z) : 0.0f;
         float fuzz = weights.z > 0.0f ? weights.z * fin_sheen(gradient.x, gradient.y, light.x, light.y, p.elevation, shape.x, shape.y, shape.z) : 0.0f;
         float fresnel = fin_fresnel(light.x, light.y, p.elevation);
@@ -487,24 +475,24 @@ inline void shade_impl(texture2d<float, access::read> colors,
 kernel void shade_paper(texture2d<float, access::read> colors [[texture(0)]],
                         texture2d<float, access::read> heights [[texture(1)]],
                         texture2d<float, access::write> output [[texture(3)]],
-                        texture2d<uint, access::read> prepared [[texture(4)]],
+                        texture2d<float, access::read> materials [[texture(2)]],
                         texture2d<float, access::read> maximum [[texture(5)]],
                         texture2d<float, access::read> micro [[texture(7)]],
                         texture2d<float, access::read> finish_shape [[texture(8)]],
                         texture2d<float, access::read> finish_weight [[texture(9)]],
                         constant PaperParams& p [[buffer(0)]], uint2 tid [[thread_position_in_grid]]) {
-    shade_impl<true>(colors, heights, output, prepared, maximum, micro, finish_shape, finish_weight, p, tid);
+    shade_impl<true>(colors, heights, output, materials, maximum, micro, finish_shape, finish_weight, p, tid);
 }
 kernel void shade_paper_reference(texture2d<float, access::read> colors [[texture(0)]],
                         texture2d<float, access::read> heights [[texture(1)]],
                         texture2d<float, access::write> output [[texture(3)]],
-                        texture2d<uint, access::read> prepared [[texture(4)]],
+                        texture2d<float, access::read> materials [[texture(2)]],
                         texture2d<float, access::read> maximum [[texture(5)]],
                         texture2d<float, access::read> micro [[texture(7)]],
                         texture2d<float, access::read> finish_shape [[texture(8)]],
                         texture2d<float, access::read> finish_weight [[texture(9)]],
                         constant PaperParams& p [[buffer(0)]], uint2 tid [[thread_position_in_grid]]) {
-    shade_impl<false>(colors, heights, output, prepared, maximum, micro, finish_shape, finish_weight, p, tid);
+    shade_impl<false>(colors, heights, output, materials, maximum, micro, finish_shape, finish_weight, p, tid);
 }
 
 struct ScreenVertex { float4 position [[position]]; float2 uv; };
@@ -564,6 +552,12 @@ fragment void opaque_fragment(MaskVertex v [[stage_in]], constant MaskDraw& d [[
         discard_fragment();
 }
 struct MaskOutput { float4 pigment [[color(0)]]; float4 height [[color(1)]]; float4 material [[color(2)]]; float4 micro [[color(3)]]; float4 finish_shape [[color(4)]]; float4 finish_weight [[color(5)]]; };
+// Material composition never stores height; the compact global geometry pass
+// is its only owner. Sparse attachment indices match the height-only pipeline.
+struct MaterialOutput { float4 pigment [[color(0)]]; float4 material [[color(2)]]; float4 micro [[color(3)]]; float4 finish_shape [[color(4)]]; float4 finish_weight [[color(5)]]; };
+inline MaterialOutput material_output(MaskOutput m) {
+    return {m.pigment, m.material, m.micro, m.finish_shape, m.finish_weight};
+}
 // Evaluated before coverage blending: material identities never interpolate at edges.
 inline float3 procedural_material_micro(float2 xy, constant MaskDraw& d) {
     long kind = long(d.pattern.x);
@@ -623,18 +617,13 @@ inline float3 material_micro(float2 xy, constant MaskDraw& d, texture2d<float, a
     return procedural_material_micro(xy, d);
 }
 [[early_fragment_tests]]
-fragment MaskOutput mask_fragment(MaskVertex v [[stage_in]], constant MaskDraw& d [[buffer(0)]], texture2d<float, access::read> mask [[texture(0)]], texture2d<float, access::read> micro [[texture(2)]]) {
+fragment MaterialOutput mask_fragment(MaskVertex v [[stage_in]], constant MaskDraw& d [[buffer(0)]], texture2d<float, access::read> mask [[texture(0)]], texture2d<float, access::read> micro [[texture(2)]], constant float2& tile_origin [[buffer(1)]]) {
     float2 coverage = mask_coverage(v.uv, d, mask);
     // Draw kinds: -1 continuous height contour, 0 cut sheet, 1 printed ink.
     float a = coverage.r, b = d.material_kind.w < -0.5f ? 0.0f : coverage.g;
     if (a == 0.0f && b == 0.0f) { discard_fragment(); return {}; }
-    float z = clamp(d.pigment_height.w,0.0f,64.0f) / 64.0f;
-    float edge = clamp(d.pigment_height.w - 0.7f,0.0f,64.0f) / 64.0f;
-    float ha = a * (1-b) + b;
-    if (d.material_kind.w > 0.5f) {ha = 0; z = 0; edge = 0; b = 0;}
-    return {float4(d.pigment_height.rgb * a,a), float4(z * a * (1-b) + edge*b,0,0,ha),
-            float4(d.material_kind.rgb * (d.material_kind.w > 0.5f ? 0.0f : a), d.material_kind.w > 0.5f ? 0.0f : a),
-            d.material_kind.w > 0.5f ? float4(0.0f) : float4(material_micro(v.position.xy, d, micro) * a, a),
+    return {float4(d.pigment_height.rgb * a,a), float4(d.material_kind.rgb * (d.material_kind.w > 0.5f ? 0.0f : a), d.material_kind.w > 0.5f ? 0.0f : a),
+            d.material_kind.w > 0.5f ? float4(0.0f) : float4(material_micro(v.position.xy + tile_origin, d, micro) * a, a),
             d.material_kind.w > 0.5f ? float4(0.0f) : float4(d.finish_shape.rgb * a, a),
             float4(d.material_kind.w > 0.5f ? float3(0.0f) : d.finish_weight.rgb * a, a)};
 }
@@ -647,9 +636,10 @@ struct ReliefDraw {
     float4 carving; // lip width
 };
 
+template<bool height_only>
 inline MaskOutput relief_stock(float2 xy, constant MaskDraw& d, float z, float a, texture2d<float, access::read> micro) {
     return {float4(d.pigment_height.rgb * a, a), float4(clamp(z, 0.0f, 64.0f) / 64.0f * a, 0, 0, a),
-            float4(d.material_kind.rgb * a, a), float4(material_micro(xy, d, micro) * a, a),
+            float4(d.material_kind.rgb * a, a), float4((height_only ? float3(0) : material_micro(xy, d, micro)) * a, a),
             float4(d.finish_shape.rgb * a, a), float4(d.finish_weight.rgb * a, a)};
 }
 
@@ -660,10 +650,10 @@ inline MaskOutput relief_mix(MaskOutput a, MaskOutput b, float t) {
 
 // One material evaluation for interior pixels; a second only on antialiased
 // stock boundaries. Continuous bevel heights feed the shared lighting pass.
-[[early_fragment_tests]]
-fragment MaskOutput relief_fragment(MaskVertex v [[stage_in]], constant ReliefDraw& d [[buffer(0)]],
-        texture2d<float, access::read> mask [[texture(0)]], texture2d<float> sdf [[texture(1)]],
-        texture2d<float, access::read> top_micro [[texture(2)]], texture2d<float, access::read> edge_micro [[texture(3)]]) {
+template<bool height_only>
+inline MaskOutput relief_impl(MaskVertex v, constant ReliefDraw& d,
+        texture2d<float, access::read> mask, texture2d<float> sdf,
+        texture2d<float, access::read> top_micro, texture2d<float, access::read> edge_micro) {
     float a = mask_coverage(v.uv, d.panel, mask).r;
     if (a == 0.0f) { discard_fragment(); return {}; }
     float scale = d.panel.origin_scale_seed.z;
@@ -684,20 +674,50 @@ fragment MaskOutput relief_fragment(MaskVertex v [[stage_in]], constant ReliefDr
     float edgeWeight = max(clamp(0.5f + (d.shape.y - inside) / aa, 0.0f, 1.0f),
                            clamp(0.5f + (d.carving.x - distance) / aa, 0.0f, 1.0f));
     float floorZ = d.panel.pigment_height.w - d.shape.w;
-    if (floorWeight >= 1.0f) return relief_stock(v.position.xy, d.bottom, floorZ, a, top_micro);
+    if (floorWeight >= 1.0f) return relief_stock<height_only>(v.position.xy, d.bottom, floorZ, a, top_micro);
     MaskOutput surface;
-    if (edgeWeight <= 0.0f) surface = relief_stock(v.position.xy, d.panel, z, a, top_micro);
-    else if (edgeWeight >= 1.0f) surface = relief_stock(v.position.xy, d.edge, z, a, edge_micro);
-    else surface = relief_mix(relief_stock(v.position.xy, d.panel, z, a, top_micro),
-                              relief_stock(v.position.xy, d.edge, z, a, edge_micro), edgeWeight);
-    if (floorWeight > 0.0f) surface = relief_mix(surface, relief_stock(v.position.xy, d.bottom, floorZ, a, top_micro), floorWeight);
+    if (edgeWeight <= 0.0f) surface = relief_stock<height_only>(v.position.xy, d.panel, z, a, top_micro);
+    else if (edgeWeight >= 1.0f) surface = relief_stock<height_only>(v.position.xy, d.edge, z, a, edge_micro);
+    else surface = relief_mix(relief_stock<height_only>(v.position.xy, d.panel, z, a, top_micro),
+                              relief_stock<height_only>(v.position.xy, d.edge, z, a, edge_micro), edgeWeight);
+    if (floorWeight > 0.0f) surface = relief_mix(surface, relief_stock<height_only>(v.position.xy, d.bottom, floorZ, a, top_micro), floorWeight);
     return surface;
+}
+
+// Height-only painter pass: one byte per viewport pixel, independent of
+// lighting and material working storage. Printed ink never changes geometry.
+struct HeightOutput { float4 height [[color(1)]]; };
+fragment HeightOutput mask_height_fragment(MaskVertex v [[stage_in]], constant MaskDraw& d [[buffer(0)]],
+        texture2d<float, access::read> mask [[texture(0)]]) {
+    if (d.material_kind.w > 0.5f) discard_fragment();
+    float2 coverage = mask_coverage(v.uv, d, mask);
+    float a = coverage.r, b = d.material_kind.w < -0.5f ? 0.0f : coverage.g;
+    if (a == 0.0f && b == 0.0f) discard_fragment();
+    float z = clamp(d.pigment_height.w, 0.0f, 64.0f) / 64.0f;
+    float edge = clamp(d.pigment_height.w - 0.7f, 0.0f, 64.0f) / 64.0f;
+    return {float4(z * a * (1-b) + edge*b, 0, 0, a * (1-b) + b)};
+}
+fragment HeightOutput clear_height_fragment(MaskVertex v [[stage_in]], constant MaskDraw& d [[buffer(0)]]) {
+    return {float4(0,0,0,1)};
+}
+[[early_fragment_tests]]
+fragment MaterialOutput relief_fragment(MaskVertex v [[stage_in]], constant ReliefDraw& d [[buffer(0)]],
+        texture2d<float, access::read> mask [[texture(0)]], texture2d<float> sdf [[texture(1)]],
+        texture2d<float, access::read> top_micro [[texture(2)]], texture2d<float, access::read> edge_micro [[texture(3)]],
+        constant float2& tile_origin [[buffer(1)]]) {
+    v.position.xy += tile_origin;
+    return material_output(relief_impl<false>(v, d, mask, sdf, top_micro, edge_micro));
+}
+fragment HeightOutput relief_height_fragment(MaskVertex v [[stage_in]], constant ReliefDraw& d [[buffer(0)]],
+        texture2d<float, access::read> mask [[texture(0)]], texture2d<float> sdf [[texture(1)]],
+        texture2d<float, access::read> top_micro [[texture(2)]], texture2d<float, access::read> edge_micro [[texture(3)]]) {
+    return {relief_impl<true>(v, d, mask, sdf, top_micro, edge_micro).height};
 }
 
 // Scissored clear for retained material attachments. All six values exactly
 // match the full render-pass clear; blending is disabled for this pipeline.
-fragment MaskOutput clear_material_fragment(MaskVertex v [[stage_in]], constant MaskDraw& d [[buffer(0)]]) {
-    return {float4(d.pigment_height.rgb, 1.0f), float4(0.0f,0.0f,0.0f,1.0f),
+fragment MaterialOutput clear_material_fragment(MaskVertex v [[stage_in]], constant MaskDraw& d [[buffer(0)]]) {
+    return {float4(d.pigment_height.rgb, 1.0f),
             float4(0.6f,0.4f,0.12f,1.0f), float4(0.0f,0.0f,0.0f,1.0f),
             float4(0.5f,0.0f,0.0f,1.0f), float4(0.0f,0.0f,0.0f,1.0f)};
 }

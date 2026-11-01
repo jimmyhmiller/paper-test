@@ -149,3 +149,23 @@ when a valid cached snapshot is available.
 
 Project notes and rendered previews: [paper-blog](pad://paper-blog), linked from
 the [paper-test project index](pad://paper-test).
+
+## Renderer memory
+
+Material, grain, and finish working textures are capped at 512×512 backing
+pixels and reused across the window. Only the final image and compact shadow
+heights remain at viewport resolution. CPU image buffers are allocated on demand
+for snapshots and diagnostic readback. Full relighting recomposes material tiles
+instead of retaining full-window material maps.
+
+To measure a fixture at 1280×900 points with 2× backing scale:
+
+```sh
+cd tools/render-audit
+coil run -- --fixture /absolute/path/to/timeline.json --image /tmp/paper.png
+```
+
+The tool reports Metal device allocation and synchronized frame timings before
+PNG readback allocates a CPU output image. Frames 0–2 cover initial/unchanged
+draws; frames 3–8 move the light. These are offscreen measurements, excluding
+window presentation surfaces, and should not be read as total process memory.

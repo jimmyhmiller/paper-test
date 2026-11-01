@@ -90,7 +90,7 @@
                   (CGBitmapContextGetData (.output-context (scene/scene)))
                   (cast u64 bytes))
           (set! (.shade g) reference)
-          (gpu/render (cgrect 0.0 0.0 0.0 0.0) true true)
+          (masks/render-lit (cgrect 0.0 0.0 0.0 0.0) true true)
           (set! (.shade g) accelerated)
           (assert (= (memcmp copy
                              (CGBitmapContextGetData (.output-context (scene/scene)))
@@ -155,6 +155,84 @@
         (assert (= (memcmp copy
                            (CGBitmapContextGetData (.output-context (scene/scene)))
                            (cast u64 bytes))
+                   (: 0 i32))))
+      (render/free (cast (ptr i8) copy)))
+    (o/release pool)))
+
+(deftest interactive-rendering-keeps-working-textures-bounded-and-cpu-bitmaps-lazy
+  (let [pool (o/new c"NSAutoreleasePool")]
+    (scene/init)
+    (set! (.width (scene/scene)) 2563)
+    (set! (.height (scene/scene)) 1801)
+    (set! (.scale (scene/scene)) 2.0)
+    (render/setup)
+    (when (.available (gpu/gpu))
+      (let [s (scene/scene)
+            g (gpu/gpu)
+            textures
+              [(.colors g)
+               (.materials g)
+               (.micro g)
+               (.finish-shape g)
+               (.finish-weight g)]]
+        (for [i 0 5]
+          (let [texture (get textures i)]
+            (assert (<= (o/msg u64 texture (o/sel c"width") []) 512))
+            (assert (<= (o/msg u64 texture (o/sel c"height") []) 512))))
+        (host/paper_begin 0xeee8d9)
+        (panel (rect 230.0 220.0 590.0 480.0) 12.0 32.0 (sage))
+        (label 240.0 250.0 18.0 0x202020 0 c"Crossing tile boundaries")
+        (render/render-frame false)
+        (gpu/synchronize)
+        (assert (= (.color-context s) (o/nil)))
+        (assert (= (.height-context s) (o/nil)))
+        (assert (= (.material-context s) (o/nil)))
+        (assert (= (.output-context s) (o/nil)))
+        (assert (<= (o/msg u64
+                           (.texture (masks/visibility))
+                           (o/sel c"width")
+                           [])
+                    512))
+        (assert (= (o/msg u64 (.heights g) (o/sel c"width") []) 2563))
+        (assert (= (o/msg u64 (.output g) (o/sel c"height") []) 1801))
+        (gpu/read-output)
+        (assert (!= (.output-context s) (o/nil)))
+        (assert (= (.color-context s) (o/nil)))))
+    (o/release pool)))
+
+(defn tile-boundary-fixture [(phase i64)] (-> i64)
+  (let [shift (* (cast f64 phase) 7.25)]
+    (host/paper_begin 0xeee8d9)
+    (host/paper_light (+ -100.0 shift) 750.0 90.0 1.9 1.0)
+    (panel (rect 3.0 4.0 690.0 670.0) 16.0 12.0 (cream))
+    (panel (rect (+ 300.5 shift) (+ 315.25 shift) 210.0 190.0) 23.0 38.0 (sage))
+    (label (+ 305.25 shift) (+ 338.5 shift) 23.0 0x202020 1 c"Across seams")
+    (begin-sheet)
+    (oval-path (rect (+ 350.25 shift) 398.0 40.0 75.0))
+    (cut-through 0.0))
+  0)
+
+(deftest tiled-incremental-damage-and-shadow-halos-match-full-rendering
+  (let [pool (o/new c"NSAutoreleasePool")]
+    (scene/init)
+    (set! (.width (scene/scene)) 1071)
+    (set! (.height (scene/scene)) 1033)
+    (set! (.scale (scene/scene)) 1.5)
+    (render/setup)
+    (let [bytes (cast u64 (* (* 1071 1033) 4))
+          copy (cast (ptr u8) (alloc/malloc (cast isize bytes)))]
+      (for [phase 0 5]
+        (tile-boundary-fixture phase)
+        (render/render)
+        (memcpy copy
+                (CGBitmapContextGetData (.output-context (scene/scene)))
+                bytes)
+        (set! (.valid (damage/cache)) false)
+        (set! (.geometry-dirty (scene/scene)) true)
+        (render/render)
+        (assert (= (memcmp copy
+                           (CGBitmapContextGetData (.output-context (scene/scene)))
+                           bytes)
                    (: 0 i32))))
       (render/free (cast (ptr i8) copy)))
     (o/release pool)))
