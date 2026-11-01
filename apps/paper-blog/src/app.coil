@@ -873,21 +873,15 @@
         color (stack/color (.path post))
         text (index (text-buffer) 0)]
     (when excluded
-      ;; A blue-green backing sheet lies nine points below the burgundy index.
-      ;; The curved cut lip exposes the index stock and casts into the cavity.
-      (beveled-recess (inset r 4.0)
-                      3.0
-                      14.0
-                      9.0
-                      2.5
-                      (tint (t/paper t/INDEX) 0xc1818b 0.16)
-                      (t/paper 0x193b46)))
+      ;; Match the hovered sheet's outline and stock, with its elevation
+      ;; mirrored below the index surface instead of raised above it.
+      (recess r 1.0 14.0 11.0 0.35 (t/paper t/INDEX) (t/paper color)))
     (when active
       (panel r 1.0 25.0 (t/paper color))
       (when (.selection-locked s)
         (frame (inset r 1.5) 0.5 0.8 26.0 (t/paper 0x291b2c))))
-    (ink-height (if excluded 5.5 (if active 25.5 15.0)))
-    (let [ink (cast u32 (if excluded 0xa3c6cc (if active 0x291b2c t/INK)))]
+    (ink-height (if excluded 3.5 (if active 25.5 15.0)))
+    (let [ink (cast u32 (if (or excluded active) 0x291b2c t/INK))]
       (label (+ (.x r) 8.0)
              (+ (.y r) 9.0)
              10.5
