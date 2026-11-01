@@ -164,7 +164,12 @@
 (defn state [] (-> (ptr light/Lighting))
   (let [s (p/alloc-static light/Lighting)]
     (when (<= (.height s) 0.0)
-      (set! s (light/lighting 0.16 -0.18 760.0 1.05 1.0))
+      (set! s
+            (light/lighting 0.5564874387254903
+                            0.11212713068181701
+                            760.0
+                            1.05
+                            1.0))
       (restore-settings s))
     s))
 
