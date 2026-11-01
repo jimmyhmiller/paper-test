@@ -1496,9 +1496,20 @@
           true)
         false)))
 
+(defn pointer-clicks [] (-> (ptr i64))
+  (primitive/alloc-static i64))
+
+;;; Native click count during a pointer callback; zero outside dispatch.
+(defn paper_click_count [] (-> i64)
+  (load (pointer-clicks)))
+
 (defn pointer-event-with-focus [(event (ptr i8))
                                 (kind i64)
                                 (resign-first-responder bool)] (-> i64)
+  (set! (pointer-clicks)
+        (if (or (= kind 1) (= kind 3))
+            (msg i64 event (sel c"clickCount") [])
+            0))
   (let [app (host)
         p (msg CGPoint event (sel c"locationInWindow") [])
         x (* (/ (.x p) (.window-w app)) (logical-width))
@@ -1515,6 +1526,7 @@
                (or (!= kind 3) (= (.drag app) (hit-test x y))))
       (dispatch kind (.drag app) x y))
     (when (= kind 3) (set! (.drag app) 0)))
+  (set! (pointer-clicks) 0)
   (paper_redraw)
   0)
 

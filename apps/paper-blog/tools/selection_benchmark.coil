@@ -31,7 +31,8 @@
 (defn x-at [(r v/Layout) (d (ptr m/Dataset)) (day i64)] (-> f64)
   (+ (.x (.plot r))
      (* (.w (.plot r))
-        (/ (cast f64 day) (cast f64 (m/maximum 1 (- (.days d) 1)))))))
+        (/ (cast f64 (- day (range/view-first d)))
+           (cast f64 (m/maximum 1 (- (range/view-count d) 1)))))))
 
 (defn gesture [(frame i64)] (-> i64)
   (let [d (field (source/state) data)
@@ -48,10 +49,15 @@
       (set! (.selection-locked (app/interaction)) (= phase 2))
       (when (= phase 1) (range/set-range d quarter (+ quarter half)))
       (when (= phase 2)
-        (range/set-range d half (m/maximum half (- (.days d) 1))))
+        (range/set-range d half (m/maximum half (- (.days d) 1)))
+        (range/focus-selection d))
       (when (= phase 3) (range/set-range d 0 (- (.days d) 1)))
       (set! id
-            (case phase 1 range/MOVE 2 range/RIGHT 3 range/LEFT app/DAY_BASE))
+            (case phase
+              1 (+ app/DAY_BASE quarter)
+              2 range/RIGHT
+              3 range/LEFT
+              app/DAY_BASE))
       (set! (.drag (host/host)) (load id))
       (app/event 1
                  (load id)

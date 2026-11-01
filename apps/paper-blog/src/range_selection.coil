@@ -15,6 +15,9 @@
 
 (defstruct Selection
   [(active bool)
+   (focused bool)
+   (view-start i64)
+   (view-end i64)
    (gesture bool)
    (dragging bool)
    (mode i64)
@@ -32,6 +35,9 @@
   (set! (state)
         (Selection
           :active false
+          :focused false
+          :view-start 0
+          :view-end 0
           :gesture false
           :dragging false
           :mode 0
@@ -75,6 +81,38 @@
     (set! (.dragging (state)) false))
   0)
 
+(defn view-first [(d (ptr m/Dataset))] (-> i64)
+  (if (.focused (state)) (bounded d (.view-start (state))) 0))
+
+(defn view-last [(d (ptr m/Dataset))] (-> i64)
+  (if (.focused (state))
+      (bounded d (.view-end (state)))
+      (m/maximum 0 (- (.days d) 1))))
+
+(defn view-count [(d (ptr m/Dataset))] (-> i64)
+  (if (> (.days d) 0) (+ 1 (- (view-last d) (view-first d))) 0))
+
+(defn view-contains? [(d (ptr m/Dataset)) (day i64)] (-> bool)
+  (and (> (.days d) 0) (>= day (view-first d)) (<= day (view-last d))))
+
+(defn day-at [(d (ptr m/Dataset)) (r Rect) (x f64)] (-> i64)
+  (+ (view-first d) (v/bucket-at x r (view-count d))))
+
+(defn focus-selection [(d (ptr m/Dataset))] (-> i64)
+  (let [s (state)]
+    (when (.active s)
+      (if (and (.focused s)
+               (= (first d) (view-first d))
+               (= (last d) (view-last d)))
+          (set! (.focused s) false)
+          (do
+            (set! (.view-start s) (+ (.start d) (* (first d) m/DAY)))
+            (set! (.view-end s) (+ (.start d) (* (last d) m/DAY)))
+            (set! (.focused s) true)))
+      (set! (.gesture s) false)
+      (set! (.dragging s) false)))
+  0)
+
 (defn handle [(d (ptr m/Dataset))
               (r Rect)
               (kind i64)
@@ -83,13 +121,16 @@
               (overview bool)]
   (-> bool)
   (let [s (state)
-        day (v/bucket-at x r (.days d))
+        day (day-at d r x)
         own (and (>= id MOVE) (<= id RIGHT))]
     (cond (and (= kind 1) (> (.days d) 0) (or overview own))
             (do
               (set! (.gesture s) true)
               (set! (.dragging s) false)
-              (set! (.mode s) (if own (+ 1 (- id MOVE)) 0))
+              (set! (.mode s)
+                    (if own
+                        (+ 1 (- id MOVE))
+                        (if (and (.active s) (contains? d day)) 1 0)))
               (set! (.anchor s) (+ (.start d) (* day m/DAY)))
               (set! (.pointer s) x)
               (set! (.base-first s) (+ (.start d) (* (first d) m/DAY)))
@@ -104,8 +145,8 @@
                                 (- (bounded d (.base-last s))
                                    (bounded d (.base-first s)))
                               lo
-                                (m/maximum 0
-                                           (min-day (- (- (.days d) 1) width)
+                                (m/maximum (view-first d)
+                                           (min-day (- (view-last d) width)
                                                     (+ (bounded d
                                                                 (.base-first s))
                                                        (- day
@@ -134,12 +175,16 @@
           :else false)))
 
 (defn bounds [(r Rect) (d (ptr m/Dataset))] (-> Rect)
-  (let [step (/ (.w r) (cast f64 (m/maximum 1 (- (.days d) 1))))
-        left (maximum (.x r) (+ (.x r) (* step (- (cast f64 (first d)) 0.5))))
+  (let [step (/ (.w r) (cast f64 (m/maximum 1 (- (view-count d) 1))))
+        left
+          (maximum (.x r)
+                   (+ (.x r)
+                      (* step (- (cast f64 (- (first d) (view-first d))) 0.5))))
         right
           (minimum (+ (.x r) (.w r))
-                   (+ (.x r) (* step (+ (cast f64 (last d)) 0.5))))]
-    (if (= (.days d) 1)
+                   (+ (.x r)
+                      (* step (+ (cast f64 (- (last d) (view-first d))) 0.5))))]
+    (if (= (view-count d) 1)
         r
         (rect left (.y r) (maximum 1.0 (- right left)) (.h r)))))
 
@@ -152,15 +197,9 @@
       (host/paper_rule (.x b) (+ (.y b) (.h b)) (.w b) 1.2 t/GOLD)
       (host/paper_rule (.x b) (.y b) 1.2 (.h b) t/GOLD)
       (host/paper_rule (+ (.x b) (.w b)) (.y b) 1.2 (.h b) t/GOLD)
-      (ink-height 52.5)
-      (host/paper_hit MOVE
-                      (.x b)
-                      (.y b)
-                      (.w b)
-                      (.h b)
-                      c"Move selected date range"
-                      1
-                      0.0)
+      ;; Keep the interior transparent to chart hit testing. A pointer-down
+      ;; on an existing day or paper band can become a range move after the
+      ;; drag threshold; ordinary hover and clicks keep their chart meaning.
       (for [i 0 2]
         (let [x (if (= i 0) (.x b) (+ (.x b) (.w b)))
               tab

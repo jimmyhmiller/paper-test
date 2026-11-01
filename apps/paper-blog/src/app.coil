@@ -259,17 +259,27 @@
 (defn date-axis [(r Rect) (d (ptr m/Dataset)) (cells bool)] (-> i64)
   (date-axis-range r d cells 0 (.days d)))
 
+(defn overview-peak [(d (ptr m/Dataset))] (-> i64)
+  (let [(mut peak) 0]
+    (for [day
+          (range/view-first d)
+          (+ (range/view-first d) (range/view-count d))]
+      (set! peak (m/maximum (load peak) (load (index (.totals d) day)))))
+    (axis-peak (load peak))))
+
 (defn daily-chart [(l v/Layout) (d (ptr m/Dataset))] (-> i64)
   (let [r (.plot l)
         s (interaction)
-        peak (axis-peak (.peak d))
+        peak (overview-peak d)
         text (index (text-buffer) 0)]
     (overview/prepare r d peak)
     (grid r peak)
     (ink-height 14.0)
-    (for [day 0 (.days d)]
-      (let [step (/ (.w r) (cast f64 (if (> (.days d) 1) (- (.days d) 1) 1)))
-            x (+ (.x r) (* step (cast f64 day)))
+    (for [day
+          (range/view-first d)
+          (+ (range/view-first d) (range/view-count d))]
+      (let [step (/ (.w r) (cast f64 (m/maximum 1 (- (range/view-count d) 1))))
+            x (+ (.x r) (* step (cast f64 (- day (range/view-first d)))))
             left (maximum (.x r) (- x (* step 0.5)))
             right (minimum (+ (.x r) (.w r)) (+ x (* step 0.5)))]
         (cast i64
@@ -318,12 +328,12 @@
                              text
                              0
                              0.0)))
-    (when (and (>= (.day s) 0) (< (.day s) (.days d)))
+    (when (range/view-contains? d (.day s))
       (let [x
               (+ (.x r)
                  (* (.w r)
-                    (/ (cast f64 (.day s))
-                       (cast f64 (if (> (.days d) 1) (- (.days d) 1) 1)))))]
+                    (/ (cast f64 (- (.day s) (range/view-first d)))
+                       (cast f64 (m/maximum 1 (- (range/view-count d) 1))))))]
         (panel (rect (- x 0.4) (.y r) 0.8 (.h r)) 0.0 51.0 (t/paper t/INK)))
       (cast i64
             (snprintf text
@@ -353,7 +363,7 @@
              0
              text))
     (range/draw r d)
-    (date-axis r d false)
+    (date-axis-range r d false (range/view-first d) (range/view-count d))
     (ink-height 54.0)
     (label (+ (.x (.daily l)) 22.0)
            (+ (.y (.daily l)) 18.0)
@@ -420,8 +430,7 @@
           :values (.totals d)
           :hours (.heat d)))))
 
-(defn clear-selection [] (-> i64)
-  (range/reset)
+(defn clear-post-selection [] (-> i64)
   (let [s (interaction)]
     (set! (.selected s) -1)
     (set! (.selection-locked s) false)
@@ -430,10 +439,14 @@
     (set! (.pinned-hour s) -1))
   0)
 
+(defn clear-selection [] (-> i64)
+  (range/reset)
+  (clear-post-selection))
+
 (defn toggle-selection [(post i64)] (-> i64)
   (let [s (interaction)]
     (if (and (.selection-locked s) (= post (.selected s)))
-        (clear-selection)
+        (clear-post-selection)
         (do (select post) (set! (.selection-locked s) true)))
     ;; Do not immediately preview the row that has just been unpinned.
     (set! (.last-hover s) post))
@@ -950,7 +963,7 @@
   (-> i64)
   (let [s (interaction)]
     (cond (and (>= id LAYER_BASE) (< id (+ LAYER_BASE (.count d))))
-            (set! (.day s) (v/bucket-at x (.plot l) (.days d)))
+            (set! (.day s) (range/day-at d (.plot l) x))
           (= id HEAT_ID)
             (when (> (.days d) 0)
               (set! (.day s)
@@ -1137,20 +1150,69 @@
       (limit-offset l)))
   0)
 
+(defstruct FocusClick
+  [(valid bool)
+   (selected i64)
+   (locked bool)
+   (keyboard bool)
+   (day i64)
+   (hour i64)])
+
+(defn focus-click [] (-> (ptr FocusClick))
+  (p/alloc-static FocusClick))
+
+(defn overview-hit? [(d (ptr m/Dataset)) (id i64)] (-> bool)
+  (or (and (>= id DAY_BASE) (< id (+ DAY_BASE (.days d))))
+      (and (>= id LAYER_BASE) (< id (+ LAYER_BASE (.count d))))))
+
+(defn handle-focus [(d (ptr m/Dataset)) (r Rect) (kind i64) (id i64) (x f64)]
+  (-> bool)
+  (let [click (focus-click)
+        ui (interaction)
+        inside
+          (and (overview-hit? d id)
+               (.active (range/state))
+               (range/contains? d (range/day-at d r x)))]
+    (when (and (= kind 1) (= (host/paper_click_count) 1))
+      (set! click
+            (FocusClick
+              :valid inside
+              :selected (.selected ui)
+              :locked (.selection-locked ui)
+              :keyboard (.keyboard-mode ui)
+              :day (.pinned-day ui)
+              :hour (.pinned-hour ui))))
+    (if (and (= kind 3)
+             (= (host/paper_click_count) 2)
+             inside
+             (.valid click)
+             (not (.dragging (range/state))))
+        (do
+          ;; The first click stays immediate. Restore its pin change when the OS
+          ;; identifies the pair as a double click, then focus the date range.
+          (set! (.selected ui) (.selected click))
+          (set! (.selection-locked ui) (.locked click))
+          (set! (.keyboard-mode ui) (.keyboard click))
+          (set! (.pinned-day ui) (.day click))
+          (set! (.pinned-hour ui) (.hour click))
+          (set! (.valid click) false)
+          (range/focus-selection d)
+          (host/paper_redraw)
+          true)
+        false)))
+
 (defn event [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
   (let [d (field (source/state) data)
         ui (interaction)
         l (v/layout (host/logical-width) (host/logical-height) (.count d))]
     (if (or (sun/handle kind id x y)
+            (handle-focus d (.plot l) kind id x)
             (range/handle d
                           (.plot l)
                           kind
                           id
                           x
-                          (or (and (>= id DAY_BASE)
-                                   (< id (+ DAY_BASE (.days d))))
-                              (and (>= id LAYER_BASE)
-                                   (< id (+ LAYER_BASE (.count d)))))))
+                          (overview-hit? d id)))
         (do
           (when (and (.dragging (range/state)) (not (.selection-locked ui)))
             (set! (.selected ui) -1))

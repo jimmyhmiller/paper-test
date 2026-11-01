@@ -1,0 +1,47 @@
+(module papercut.pointer-click-test)
+(import "coil.primitive" :as p)
+(import "paper.scene" :as scene)
+(import "paper.platform" :as host)
+(import "paper.objc" :as o)
+(import "paper.ffi" :use [CGPoint])
+
+(defn seen [] (-> (ptr i64))
+  (p/alloc-static i64))
+
+(defn record-click [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
+  (set! (seen) (host/paper_click_count))
+  0)
+
+(deftest native-pointer-callback-exposes-the-system-click-count-only-during-dispatch
+  (let [pool (o/new c"NSAutoreleasePool")
+        h (host/host)]
+    (scene/init)
+    (host/paper_configure c"Click count test" 320.0 240.0)
+    (set! (.window-w h) 320.0)
+    (set! (.window-h h) 240.0)
+    (set! (.event h) (fnptr-of record-click))
+    (host/paper_begin 0x211526)
+    (host/paper_hit 42 0.0 0.0 100.0 100.0 c"Test" 0 0.0)
+    (let [event
+            (o/msg (ptr i8)
+                   (o/class c"NSEvent")
+                   (o/sel c"mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:")
+                   [u64 CGPoint u64 f64 i64 (ptr i8) i64 i64 f32]
+                   1
+                   (CGPoint :x 50.0 :y 190.0)
+                   0
+                   0.0
+                   0
+                   (o/nil)
+                   0
+                   2
+                   (: 1.0 f32))]
+      (assert (= (o/msg i64 event (o/sel c"clickCount") []) 2))
+      (assert (= (host/hit-test 50.0 50.0) 42))
+      (host/pointer-event-with-focus event 1 false)
+      (assert (= (load (seen)) 2))
+      (assert (= (host/paper_click_count) 0))
+      (host/pointer-event-with-focus event 3 false)
+      (assert (= (load (seen)) 2))
+      (assert (= (host/paper_click_count) 0)))
+    (o/release pool)))
