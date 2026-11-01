@@ -1,0 +1,194 @@
+{
+  "version": 1,
+  "name": "Alpine lakeshore",
+  "seed": 1741,
+  "terrain": {
+    "kind": "lake",
+    "horizon": 425,
+    "water_top": 459,
+    "water_bottom": 720,
+    "water_center": 600,
+    "water_half_width": 260,
+    "shore_sweep": 45
+  },
+  "protected_opening": [
+    475,
+    225,
+    740,
+    485
+  ],
+  "backdrop": {
+    "ridge_count": 2,
+    "ridge_center": 625,
+    "ridge_scale": 1.05,
+    "cloud_count": 2,
+    "cloud_height": [
+      75,
+      155
+    ]
+  },
+  "placement": {
+    "candidate_pool": 650,
+    "alternatives": 28,
+    "minimum_visible_height": 18,
+    "frame_margin": 28,
+    "preferences": {
+      "density": 1,
+      "near_tangency": 1.1,
+      "crowding": 1.7,
+      "neighbor_similarity": 0.75,
+      "individual_quality": 0.55
+    },
+    "paper_stack": [
+      30.8,
+      44.8
+    ]
+  },
+  "layers": [
+    {
+      "family": "conifer",
+      "count": 7,
+      "bounds": [
+        70,
+        450,
+        1125,
+        675
+      ],
+      "density_field": [
+        {
+          "center": [
+            180,
+            540
+          ],
+          "radius": [
+            145,
+            130
+          ],
+          "weight": 1
+        },
+        {
+          "center": [
+            1040,
+            550
+          ],
+          "radius": [
+            135,
+            135
+          ],
+          "weight": 0.9
+        }
+      ],
+      "scale": [
+        0.62,
+        1.2
+      ]
+    },
+    {
+      "family": "rock",
+      "count": 4,
+      "bounds": [
+        130,
+        468,
+        1100,
+        676
+      ],
+      "density_field": [
+        {
+          "center": [
+            300,
+            560
+          ],
+          "radius": [
+            130,
+            110
+          ],
+          "weight": 1
+        },
+        {
+          "center": [
+            900,
+            575
+          ],
+          "radius": [
+            140,
+            120
+          ],
+          "weight": 1
+        }
+      ],
+      "scale": [
+        0.6,
+        1.05
+      ],
+      "water_distance": [
+        0,
+        65
+      ]
+    },
+    {
+      "family": "grasses",
+      "count": 6,
+      "bounds": [
+        100,
+        480,
+        1110,
+        688
+      ],
+      "density_field": [
+        {
+          "center": [
+            240,
+            610
+          ],
+          "radius": [
+            160,
+            100
+          ],
+          "weight": 1
+        },
+        {
+          "center": [
+            1010,
+            620
+          ],
+          "radius": [
+            120,
+            110
+          ],
+          "weight": 0.8
+        }
+      ],
+      "scale": [
+        0.7,
+        1.2
+      ],
+      "water_distance": [
+        0,
+        100
+      ]
+    }
+  ],
+  "states": [
+    {
+      "name": "summer",
+      "season": "summer",
+      "daylight": 1,
+      "moisture": 0.7,
+      "wind": 0.32,
+      "snow": 0,
+      "cloud": 0.2
+    },
+    {
+      "name": "winter",
+      "season": "winter",
+      "daylight": 0.92,
+      "moisture": 0.7,
+      "wind": 0.2,
+      "snow": 0.85,
+      "cloud": 0.3
+    }
+  ],
+  "ecology": {
+    "moisture": 0.7
+  }
+}

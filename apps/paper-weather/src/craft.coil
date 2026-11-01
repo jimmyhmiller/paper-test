@@ -1,0 +1,245 @@
+(module paper-weather.craft)
+(import "paper.flow" :use *)
+(import "paper.ffi" :use [sin cos])
+
+;;; Each primitive submits real paper geometry. No artwork is loaded as pixels.
+(defn triangle [(ax f64)
+                (ay f64)
+                (bx f64)
+                (by f64)
+                (cx f64)
+                (cy f64)
+                (z f64)
+                (color u32)] (-> i64)
+  (begin-sheet)
+  (move-to ax ay)
+  (line-to bx by)
+  (line-to cx cy)
+  (close-path)
+  (finish-sheet z (cotton color)))
+
+(defn circle [(x f64) (y f64) (r f64) (z f64) (color u32)] (-> i64)
+  (disc (- x r) (- y r) (* r 2.0) z (cotton color)))
+
+(defn sun [(x f64) (y f64) (r f64) (z f64)] (-> i64)
+  (for [i 0 8]
+    (let [a (* (cast f64 i) (/ 3.141592653589793 4.0))
+          inner (* r 1.22)
+          outer (* r 1.8)
+          half (* r 0.2)
+          dx (cos a)
+          dy (sin a)]
+      (triangle (+ x (- (* inner dx) (* half dy)))
+                (+ y (+ (* inner dy) (* half dx)))
+                (+ x (* outer dx))
+                (+ y (* outer dy))
+                (+ x (+ (* inner dx) (* half dy)))
+                (+ y (- (* inner dy) (* half dx)))
+                z
+                0xf5b47a)))
+  (circle x y r z 0xe7a16e)
+  (circle x y (- r 1.8) (+ z 1.0) 0xf5b47a))
+
+(defn cloud-piece [(x f64) (y f64) (s f64) (z f64) (color u32)] (-> i64)
+  (begin-sheet)
+  (move-to (+ x (* 0.16 s)) (+ y (* 0.8 s)))
+  (curve-to (- x (* 0.04 s))
+            (+ y (* 0.8 s))
+            (- x (* 0.06 s))
+            (+ y (* 0.47 s))
+            (+ x (* 0.18 s))
+            (+ y (* 0.43 s)))
+  (curve-to (+ x (* 0.16 s))
+            (+ y (* 0.17 s))
+            (+ x (* 0.43 s))
+            (+ y (* 0.08 s))
+            (+ x (* 0.56 s))
+            (+ y (* 0.28 s)))
+  (curve-to (+ x (* 0.66 s))
+            (- y (* 0.03 s))
+            (+ x (* 1.01 s))
+            (+ y (* 0.06 s))
+            (+ x (* 1.02 s))
+            (+ y (* 0.38 s)))
+  (curve-to (+ x (* 1.3 s))
+            (+ y (* 0.31 s))
+            (+ x (* 1.39 s))
+            (+ y (* 0.79 s))
+            (+ x (* 1.12 s))
+            (+ y (* 0.8 s)))
+  (close-path)
+  (finish-sheet z (cotton color)))
+
+(defn cloud [(x f64) (y f64) (s f64) (z f64)] (-> i64)
+  (cloud-piece (+ x (* 0.06 s)) (+ y (* 0.13 s)) s z 0xd9d4c7)
+  (cloud-piece x y s (+ z 4.0) 0xf5eddd))
+
+;;; Two separate cardstock faces meet at the mountain's central fold.
+(defn mountain [(x f64)
+                (top f64)
+                (w f64)
+                (bottom f64)
+                (z f64)
+                (left u32)
+                (right u32)] (-> i64)
+  (let [peak (+ x (* w 0.5))
+        fold (+ x (* w 0.56))
+        h (- bottom top)]
+    (triangle x bottom peak top fold bottom z left)
+    (triangle peak top (+ x w) bottom fold bottom (+ z 0.5) right)
+    (begin-sheet)
+    (move-to peak top)
+    (line-to (- peak (* w 0.21)) (+ top (* h 0.42)))
+    (line-to (- peak (* w 0.065)) (+ top (* h 0.3)))
+    (line-to (- peak (* w 0.045)) (+ top (* h 0.4)))
+    (line-to (+ peak (* w 0.05)) (+ top (* h 0.27)))
+    (close-path)
+    (finish-sheet (+ z 2.0) (cotton 0xf6efdf))
+    (begin-sheet)
+    (move-to peak top)
+    (line-to (+ peak (* w 0.21)) (+ top (* h 0.42)))
+    (line-to (+ peak (* w 0.1)) (+ top (* h 0.32)))
+    (line-to (+ peak (* w 0.05)) (+ top (* h 0.4)))
+    (close-path)
+    (finish-sheet (+ z 2.5) (cotton 0xe2dccd)))
+  0)
+
+(defn pine [(x f64) (y f64) (s f64) (z f64)] (-> i64)
+  (panel (rect (+ x (* s 0.43))
+               (+ y (* s 1.25))
+               (* s 0.14)
+               (* s 0.5))
+         0.0
+         z
+         (cotton 0x927250))
+  (for [i 0 3]
+    (let [step (cast f64 i)
+          width (* s (- 1.0 (* step 0.19)))
+          top (+ y (* s (- 0.72 (* step 0.35))))
+          base (+ top (* s 0.78))
+          cx (+ x (* s 0.5))
+          layer (+ z (+ 2.0 (* step 2.5)))]
+      (triangle (- cx (* width 0.5))
+                base
+                cx
+                top
+                (+ cx (* width 0.5))
+                base
+                layer
+                0x687d60)
+      (triangle cx
+                top
+                (+ cx (* width 0.5))
+                base
+                cx
+                base
+                (+ layer 0.4)
+                0x536d55)))
+  0)
+
+(defn snowflake [(x f64) (y f64) (r f64) (z f64)] (-> i64)
+  (for [i 0 6]
+    (let [a (* (cast f64 i) (/ 3.141592653589793 3.0))
+          dx (cos a)
+          dy (sin a)]
+      (begin-sheet)
+      (move-to (- x (* dy 1.5)) (+ y (* dx 1.5)))
+      (line-to (+ x (- (* dx r) (* dy 1.5)))
+               (+ y (+ (* dy r) (* dx 1.5))))
+      (line-to (+ x (+ (* dx r) (* dy 1.5)))
+               (+ y (- (* dy r) (* dx 1.5))))
+      (line-to (+ x (* dy 1.5)) (- y (* dx 1.5)))
+      (close-path)
+      (finish-sheet z (cotton 0xc8e0e5))))
+  (circle x y 3.0 z 0xc8e0e5))
+
+(defn droplet [(x f64) (y f64) (s f64) (z f64)] (-> i64)
+  (begin-sheet)
+  (move-to (+ x (* s 0.5)) y)
+  (curve-to (+ x (* s 0.7))
+            (+ y (* s 0.4))
+            (+ x s)
+            (+ y (* s 0.67))
+            (+ x s)
+            (+ y (* s 0.92)))
+  (curve-to (+ x s)
+            (+ y (* s 1.55))
+            x
+            (+ y (* s 1.55))
+            x
+            (+ y (* s 0.92)))
+  (curve-to x
+            (+ y (* s 0.67))
+            (+ x (* s 0.3))
+            (+ y (* s 0.4))
+            (+ x (* s 0.5))
+            y)
+  (close-path)
+  (finish-sheet z (cotton 0xa6cbd8)))
+
+(defn moon [(x f64) (y f64) (r f64) (z f64)] (-> i64)
+  (begin-sheet)
+  (move-to (+ x (* r 0.4)) (- y r))
+  (curve-to (- x (* r 0.4))
+            (- y (* r 0.8))
+            (- x (* r 0.3))
+            (+ y (* r 0.55))
+            (+ x r)
+            (+ y (* r 0.35)))
+  (curve-to (+ x (* r 0.4))
+            (+ y (* r 1.35))
+            (- x r)
+            (+ y (* r 0.95))
+            (- x r)
+            y)
+  (curve-to (- x r)
+            (- y (* r 0.6))
+            (- x (* r 0.3))
+            (- y (* r 1.1))
+            (+ x (* r 0.4))
+            (- y r))
+  (close-path)
+  (finish-sheet z (cotton 0x8cb4c5)))
+
+;;; Each weather code uses individually rendered cut-paper pieces.
+;;; kind: 0 sun, 1 partly cloudy, 2 cloud, 3 snow, 4 moon, 5 rain, 6 storm, 7 fog.
+(defn weather-icon [(kind i64) (x f64) (y f64) (s f64) (z f64)] (-> i64)
+  (case kind
+    0 (sun x y (* s 0.3) z)
+    1
+      (do
+        (circle (+ x (* s 0.15)) (- y (* s 0.1)) (* s 0.29) z 0xf2b17d)
+        (cloud (- x (* s 0.48)) (- y (* s 0.15)) (* s 0.65) (+ z 2.0)))
+    2 (cloud (- x (* s 0.53)) (- y (* s 0.35)) (* s 0.8) z)
+    3 (snowflake x y (* s 0.45) z)
+    4 (moon x y (* s 0.44) z)
+    5
+      (do
+        (cloud (- x (* s 0.53)) (- y (* s 0.48)) (* s 0.8) z)
+        (for [i 0 3]
+          (droplet (+ (- x (* s 0.3)) (* (cast f64 i) (* s 0.25)))
+                   (+ y (* s 0.27))
+                   (* s 0.09)
+                   (+ z 3.0))))
+    6
+      (do
+        (cloud (- x (* s 0.53)) (- y (* s 0.48)) (* s 0.8) z)
+        (begin-sheet)
+        (move-to x (+ y (* s 0.12)))
+        (line-to (- x (* s 0.17)) (+ y (* s 0.46)))
+        (line-to x (+ y (* s 0.43)))
+        (line-to (- x (* s 0.06)) (+ y (* s 0.72)))
+        (line-to (+ x (* s 0.25)) (+ y (* s 0.28)))
+        (line-to (+ x (* s 0.07)) (+ y (* s 0.3)))
+        (close-path)
+        (finish-sheet (+ z 3.0) (cotton 0xefb470)))
+    (do
+      (cloud (- x (* s 0.53)) (- y (* s 0.48)) (* s 0.8) z)
+      (for [i 0 2]
+        (panel (rect (- x (* s 0.5))
+                     (+ y (+ (* s 0.28) (* (cast f64 i) (* s 0.17))))
+                     s
+                     (* s 0.065))
+               (* s 0.03)
+               (+ z 3.0)
+               (cotton 0xa6cbd8))))))

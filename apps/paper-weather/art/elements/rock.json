@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "name": "Folded shore stone",
+  "construction": "rock-v1",
+  "variation": {
+    "mass": {
+      "mean": 0.55,
+      "deviation": 0.25,
+      "range": [
+        0.15,
+        0.95
+      ]
+    },
+    "weathering": {
+      "mean": 0.45,
+      "deviation": 0.23,
+      "range": [
+        0.05,
+        0.9
+      ]
+    },
+    "gesture": {
+      "mean": 0,
+      "deviation": 0.3,
+      "range": [
+        -0.75,
+        0.75
+      ]
+    }
+  },
+  "form": {
+    "width": {
+      "base": 40,
+      "mass": 55
+    },
+    "aspect": {
+      "base": 1.55,
+      "weathering": 0.65
+    },
+    "shoulder": {
+      "base": 0.25,
+      "gesture": 0.09
+    },
+    "facet_balance": {
+      "base": 0.49,
+      "gesture": 0.12
+    }
+  },
+  "constraints": {
+    "width": [
+      45,
+      95
+    ],
+    "aspect": [
+      1.5,
+      2.2
+    ],
+    "shoulder": [
+      0.17,
+      0.33
+    ],
+    "facet_balance": [
+      0.38,
+      0.59
+    ]
+  },
+  "preferences": {
+    "aspect": {
+      "target": 1.95,
+      "tolerance": 0.45,
+      "weight": 1
+    },
+    "smallest_face": {
+      "target": 0.18,
+      "tolerance": 0.14,
+      "weight": 0.6
+    }
+  },
+  "placement": {
+    "support": "soil",
+    "root_radius": 0.33,
+    "spacing": 0.72,
+    "moisture": [
+      0,
+      1
+    ]
+  },
+  "construction_rules": {
+    "foot_inset": 0.04,
+    "snow_depth": 0.16,
+    "minimum_face_area": 0.075
+  }
+}

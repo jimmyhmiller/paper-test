@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "name": "Layered cloud mass",
+  "construction": "cloud-v1",
+  "variation": {
+    "fullness": {
+      "mean": 0.6,
+      "deviation": 0.22,
+      "range": [
+        0.2,
+        0.95
+      ]
+    },
+    "exposure": {
+      "mean": 0.3,
+      "deviation": 0.25,
+      "range": [
+        0,
+        0.95
+      ]
+    },
+    "gesture": {
+      "mean": 0,
+      "deviation": 0.35,
+      "range": [
+        -0.8,
+        0.8
+      ]
+    }
+  },
+  "form": {
+    "width": {
+      "base": 105,
+      "fullness": 95
+    },
+    "aspect": {
+      "base": 0.27,
+      "fullness": 0.13,
+      "exposure": -0.055
+    },
+    "lobes": {
+      "base": 2,
+      "fullness": 3
+    },
+    "asymmetry": {
+      "base": 0,
+      "gesture": 0.12
+    }
+  },
+  "constraints": {
+    "width": [
+      120,
+      200
+    ],
+    "aspect": [
+      0.24,
+      0.4
+    ],
+    "lobes": [
+      3,
+      5
+    ],
+    "asymmetry": [
+      -0.1,
+      0.1
+    ]
+  },
+  "preferences": {
+    "aspect": {
+      "target": 0.32,
+      "tolerance": 0.1,
+      "weight": 1
+    },
+    "asymmetry": {
+      "target": 0,
+      "tolerance": 0.1,
+      "weight": 0.3
+    }
+  },
+  "placement": {
+    "support": "sky",
+    "root_radius": 0,
+    "spacing": 1.1,
+    "moisture": [
+      0,
+      1
+    ]
+  },
+  "construction_rules": {
+    "back_offset": [
+      3,
+      4
+    ],
+    "lobe_variation": 0.08,
+    "bottom_lift": 0.07
+  }
+}

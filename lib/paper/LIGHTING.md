@@ -11,3 +11,14 @@ Route events through `handle state base-id kind id x y` before application contr
 `examples/minimal.coil` is the complete small integration. Paper Calculator, all four Studio apps, and Paper Terminal use the same component. Each keeps its own initial lighting and reset values. Studio synchronizes it with the existing workbench controls. Terminal reserves a strip beside its native Metal surface and forwards changes to the terminal shader; its material controls remain available.
 
 Draw the popover at the root elevation, after other sheets. Apps embedding native views must reserve space beside them: native views render above Paper and do not participate in its modal hit scope. `Lighting.bounds` contains the current panel rectangle, and the caller chooses its anchor. Lighting values and open state are app-owned; persistence is optional and no preferences are written by this component.
+
+Apps may opt into a third **Paper height** slider by setting
+`paper-height-enabled` on their `Lighting` instance. Reserve `base-id + 8` in
+addition to the original eight IDs. Its `paper-height` value ranges from 0.25 to
+1.3 and scales the physical height of the entire rendered paper stack uniformly.
+`apply-light` combines this scale with the existing relief multiplier. Geometry,
+ink, and hit ordering stay in the original canonical elevation space, preventing
+layer clipping or different pieces changing by different amounts. Light height
+is unchanged.
+Reset animates it back to `default-paper-height` (1.0). Paper Weather enables it for all paper: landscape, panels, icons, and controls. Existing apps keep the
+original two-slider layout unless they opt in.

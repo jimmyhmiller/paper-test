@@ -1,0 +1,468 @@
+{
+  "version": 1,
+  "authority": "WMO International Cloud Atlas, 2017 online classification",
+  "scope": "All named cloud genera/species/varieties/supplementary/accessory categories, special-origin examples and upper-atmospheric cases. Origin relationships are provenance, not additional genera. The compatibility tables list common WMO associations, not a claim that rarer physical cases cannot occur.",
+  "sources": {
+    "classification": "https://cloudatlas.wmo.int/en/cloud-classification-summary.html",
+    "species": "https://cloudatlas.wmo.int/en/clouds-species-and-genera-most-frequently-occur-table.html",
+    "varieties": "https://cloudatlas.wmo.int/clouds-varieties-and-genera-most-frequently-occur-table.html",
+    "features": "https://cloudatlas.wmo.int/en/clouds-supplementary-features-and-genera-most-frequently-occur-table.html",
+    "accessories": "https://cloudatlas.wmo.int/en/clouds-accessory-and-genera-most-frequently-occur-table.html",
+    "special": "https://cloudatlas.wmo.int/en/clouds-special.html",
+    "upper": "https://cloudatlas.wmo.int/en/upper-atmospheric-clouds.html"
+  },
+  "genera": {
+    "cirrus": {
+      "code": "Ci",
+      "level": "high",
+      "default_species": "fibratus",
+      "construction": "fibrous",
+      "traits": {
+        "spread": [
+          0.75,
+          1.05
+        ],
+        "curvature": [
+          -0.16,
+          0.16
+        ],
+        "density": [
+          0.35,
+          0.8
+        ]
+      },
+      "signature": "Fine tapering filaments; gently curved, not bulbous.",
+      "species": [
+        "fibratus",
+        "uncinus",
+        "spissatus",
+        "castellanus",
+        "floccus"
+      ]
+    },
+    "cirrocumulus": {
+      "code": "Cc",
+      "level": "high",
+      "default_species": "stratiformis",
+      "construction": "fine-cloudlet-field",
+      "traits": {
+        "spread": [
+          0.8,
+          1.05
+        ],
+        "curvature": [
+          -0.08,
+          0.08
+        ],
+        "density": [
+          0.5,
+          0.9
+        ]
+      },
+      "signature": "Small bright grains and ripples; no intrinsic dark undersides.",
+      "species": [
+        "stratiformis",
+        "lenticularis",
+        "castellanus",
+        "floccus"
+      ]
+    },
+    "cirrostratus": {
+      "code": "Cs",
+      "level": "high",
+      "default_species": "nebulosus",
+      "construction": "fibrous-veil",
+      "traits": {
+        "spread": [
+          0.85,
+          1.05
+        ],
+        "curvature": [
+          -0.08,
+          0.08
+        ],
+        "density": [
+          0.4,
+          0.8
+        ]
+      },
+      "signature": "Thin extensive pale veil, smooth or fibrous.",
+      "species": [
+        "fibratus",
+        "nebulosus"
+      ]
+    },
+    "altocumulus": {
+      "code": "Ac",
+      "level": "middle",
+      "default_species": "stratiformis",
+      "construction": "shaded-cloudlet-field",
+      "traits": {
+        "spread": [
+          0.85,
+          1.05
+        ],
+        "curvature": [
+          -0.1,
+          0.1
+        ],
+        "density": [
+          0.5,
+          0.9
+        ]
+      },
+      "signature": "Medium-sized rounded elements with shaded portions and gaps.",
+      "species": [
+        "stratiformis",
+        "lenticularis",
+        "castellanus",
+        "floccus",
+        "volutus"
+      ]
+    },
+    "altostratus": {
+      "code": "As",
+      "level": "middle",
+      "default_species": null,
+      "construction": "striated-sheet",
+      "traits": {
+        "spread": [
+          0.85,
+          1.05
+        ],
+        "curvature": [
+          -0.08,
+          0.08
+        ],
+        "density": [
+          0.6,
+          0.9
+        ]
+      },
+      "signature": "Extensive blue-grey layer; thin parts can show a diffuse sun, without a halo.",
+      "species": []
+    },
+    "nimbostratus": {
+      "code": "Ns",
+      "level": "multilevel",
+      "default_species": null,
+      "construction": "rain-layer",
+      "traits": {
+        "spread": [
+          0.9,
+          1.05
+        ],
+        "curvature": [
+          -0.08,
+          0.08
+        ],
+        "density": [
+          0.75,
+          1
+        ]
+      },
+      "signature": "Deep opaque rain layer with diffuse precipitation and ragged scud.",
+      "species": []
+    },
+    "stratocumulus": {
+      "code": "Sc",
+      "level": "low",
+      "default_species": "stratiformis",
+      "construction": "low-roll-field",
+      "traits": {
+        "spread": [
+          0.85,
+          1.05
+        ],
+        "curvature": [
+          -0.1,
+          0.1
+        ],
+        "density": [
+          0.6,
+          0.95
+        ]
+      },
+      "signature": "Large low rounded or rolled elements, with substantial dark portions.",
+      "species": [
+        "stratiformis",
+        "lenticularis",
+        "castellanus",
+        "floccus",
+        "volutus"
+      ]
+    },
+    "stratus": {
+      "code": "St",
+      "level": "low",
+      "default_species": "nebulosus",
+      "construction": "low-sheet",
+      "traits": {
+        "spread": [
+          0.85,
+          1.05
+        ],
+        "curvature": [
+          -0.08,
+          0.08
+        ],
+        "density": [
+          0.5,
+          0.9
+        ]
+      },
+      "signature": "Low feature-poor grey layer with a fairly even base, or ragged fragments.",
+      "species": [
+        "nebulosus",
+        "fractus"
+      ]
+    },
+    "cumulus": {
+      "code": "Cu",
+      "level": "vertical",
+      "default_species": "humilis",
+      "construction": "convective-domes",
+      "traits": {
+        "spread": [
+          0.85,
+          1.05
+        ],
+        "curvature": [
+          -0.1,
+          0.1
+        ],
+        "density": [
+          0.5,
+          0.9
+        ]
+      },
+      "signature": "Detached crisp domes or towers over a relatively flat shaded base.",
+      "species": [
+        "humilis",
+        "mediocris",
+        "congestus",
+        "fractus"
+      ]
+    },
+    "cumulonimbus": {
+      "code": "Cb",
+      "level": "vertical",
+      "default_species": "capillatus",
+      "construction": "deep-convection",
+      "traits": {
+        "spread": [
+          0.85,
+          1.05
+        ],
+        "curvature": [
+          -0.08,
+          0.08
+        ],
+        "density": [
+          0.65,
+          0.95
+        ]
+      },
+      "signature": "Deep towering body, dark base and a smooth or fibrous ice crown.",
+      "species": [
+        "calvus",
+        "capillatus"
+      ]
+    }
+  },
+  "varieties": {
+    "intortus": [
+      "cirrus"
+    ],
+    "vertebratus": [
+      "cirrus"
+    ],
+    "undulatus": [
+      "cirrocumulus",
+      "cirrostratus",
+      "altocumulus",
+      "altostratus",
+      "stratocumulus",
+      "stratus"
+    ],
+    "radiatus": [
+      "cirrus",
+      "altocumulus",
+      "altostratus",
+      "stratocumulus",
+      "cumulus"
+    ],
+    "lacunosus": [
+      "cirrocumulus",
+      "altocumulus",
+      "stratocumulus"
+    ],
+    "duplicatus": [
+      "cirrus",
+      "cirrostratus",
+      "altocumulus",
+      "altostratus",
+      "stratocumulus"
+    ],
+    "perlucidus": [
+      "altocumulus",
+      "stratocumulus"
+    ],
+    "opacus": [
+      "altocumulus",
+      "altostratus",
+      "stratocumulus",
+      "stratus"
+    ],
+    "translucidus": [
+      "altocumulus",
+      "altostratus",
+      "stratocumulus",
+      "stratus"
+    ]
+  },
+  "features": {
+    "incus": [
+      "cumulonimbus"
+    ],
+    "mamma": [
+      "cirrus",
+      "cirrocumulus",
+      "altocumulus",
+      "altostratus",
+      "stratocumulus",
+      "cumulonimbus"
+    ],
+    "virga": [
+      "cirrocumulus",
+      "altocumulus",
+      "altostratus",
+      "nimbostratus",
+      "stratocumulus",
+      "cumulus",
+      "cumulonimbus"
+    ],
+    "praecipitatio": [
+      "altostratus",
+      "nimbostratus",
+      "stratocumulus",
+      "stratus",
+      "cumulus",
+      "cumulonimbus"
+    ],
+    "arcus": [
+      "cumulus",
+      "cumulonimbus"
+    ],
+    "tuba": [
+      "cumulus",
+      "cumulonimbus"
+    ],
+    "asperitas": [
+      "altocumulus",
+      "stratocumulus"
+    ],
+    "fluctus": [
+      "cirrus",
+      "altocumulus",
+      "stratocumulus",
+      "stratus",
+      "cumulus"
+    ],
+    "cavum": [
+      "cirrocumulus",
+      "altocumulus",
+      "stratocumulus"
+    ],
+    "murus": [
+      "cumulonimbus"
+    ],
+    "cauda": [
+      "cumulonimbus"
+    ]
+  },
+  "accessories": {
+    "pileus": [
+      "cumulus",
+      "cumulonimbus"
+    ],
+    "velum": [
+      "cumulus",
+      "cumulonimbus"
+    ],
+    "pannus": [
+      "altostratus",
+      "nimbostratus",
+      "cumulus",
+      "cumulonimbus"
+    ],
+    "flumen": [
+      "cumulonimbus"
+    ]
+  },
+  "origins": {
+    "flammagenitus": [
+      "cumulus",
+      "cumulonimbus"
+    ],
+    "homogenitus": [
+      "cirrus",
+      "stratus",
+      "cumulus",
+      "cumulonimbus"
+    ],
+    "homomutatus": [
+      "cirrus",
+      "cirrocumulus",
+      "cirrostratus"
+    ],
+    "cataractagenitus": [
+      "stratus",
+      "cumulus"
+    ],
+    "silvagenitus": [
+      "stratus"
+    ]
+  },
+  "upper": [
+    "nacreous",
+    "nitric-acid-water-psc",
+    "noctilucent"
+  ],
+  "paper_rules": {
+    "base_depth": 30.1,
+    "cloud_relief": 0.32,
+    "minimum_filament_width": 1.25,
+    "minimum_cloudlet_size": 5,
+    "max_pieces": 180,
+    "max_commands": 16000
+  },
+  "aesthetic_preferences": {
+    "silhouette_readability": 1,
+    "coherent_flow": 1.2,
+    "limited_relief": 1,
+    "avoid_uniform_grid": 0.8,
+    "retain_genus_signature": 2
+  },
+  "limitations": [
+    "Opaque native paper stocks stand in for atmospheric translucency; actual alpha-scattering is not implemented.",
+    "Common-association validation is deliberately conservative.",
+    "Generative paper studies are not a validated automatic cloud-identification or forecasting model.",
+    "Factual morphology guides construction; visual acceptance still requires review."
+  ],
+  "grammar_limits": {
+    "arrangement_choices": [
+      "intortus",
+      "vertebratus",
+      "undulatus",
+      "radiatus",
+      "lacunosus"
+    ],
+    "structural_feature_choices": [
+      "cavum",
+      "asperitas",
+      "fluctus"
+    ],
+    "explanation": "The first art grammar admits one arrangement and one structural-layer feature. Structural-layer features cannot be combined with an arrangement or an origin recipe. These are implementation restrictions, not claims of meteorological impossibility. Layer duplication, opacity and additive attachments remain separate operations."
+  }
+}

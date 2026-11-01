@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "name": "Folded conifer host rules",
+  "source": "../trees/folded-conifer.json",
+  "placement": {
+    "support": "soil",
+    "root_radius": 0.02,
+    "spacing": 0.28,
+    "moisture": [
+      0,
+      1
+    ]
+  }
+}

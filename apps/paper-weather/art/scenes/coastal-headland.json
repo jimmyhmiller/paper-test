@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "name": "Coastal headland",
+  "seed": 3997,
+  "terrain": {
+    "kind": "coast",
+    "horizon": 320,
+    "water_top": 333,
+    "water_bottom": 720,
+    "water_center": 600,
+    "water_half_width": 600,
+    "shore_sweep": 65
+  },
+  "protected_opening": [
+    480,
+    170,
+    940,
+    455
+  ],
+  "backdrop": {
+    "ridge_count": 1,
+    "ridge_center": 1090,
+    "ridge_scale": 1.12,
+    "cloud_count": 3,
+    "cloud_height": [
+      60,
+      150
+    ],
+    "relief": 0.22
+  },
+  "placement": {
+    "candidate_pool": 650,
+    "alternatives": 28,
+    "minimum_visible_height": 18,
+    "frame_margin": 28,
+    "preferences": {
+      "density": 1,
+      "near_tangency": 1.1,
+      "crowding": 1.7,
+      "neighbor_similarity": 0.75,
+      "individual_quality": 0.55
+    },
+    "paper_stack": [
+      30.8,
+      44.8
+    ]
+  },
+  "layers": [
+    {
+      "family": "rock",
+      "count": 6,
+      "bounds": [
+        70,
+        430,
+        1125,
+        689
+      ],
+      "density_field": [
+        {
+          "center": [
+            240,
+            580
+          ],
+          "radius": [
+            180,
+            130
+          ],
+          "weight": 1
+        },
+        {
+          "center": [
+            1040,
+            635
+          ],
+          "radius": [
+            105,
+            100
+          ],
+          "weight": 0.6
+        }
+      ],
+      "scale": [
+        0.75,
+        1.5
+      ],
+      "water_distance": [
+        0,
+        160
+      ]
+    },
+    {
+      "family": "grasses",
+      "count": 10,
+      "bounds": [
+        60,
+        435,
+        1140,
+        690
+      ],
+      "density_field": [
+        {
+          "center": [
+            155,
+            540
+          ],
+          "radius": [
+            150,
+            145
+          ],
+          "weight": 1
+        },
+        {
+          "center": [
+            360,
+            640
+          ],
+          "radius": [
+            140,
+            100
+          ],
+          "weight": 0.8
+        }
+      ],
+      "scale": [
+        0.65,
+        1.6
+      ],
+      "water_distance": [
+        0,
+        170
+      ]
+    }
+  ],
+  "states": [
+    {
+      "name": "clear",
+      "season": "summer",
+      "daylight": 1,
+      "moisture": 0.3,
+      "wind": 0.2,
+      "snow": 0,
+      "cloud": 0.12
+    },
+    {
+      "name": "windy-overcast",
+      "season": "autumn",
+      "daylight": 0.72,
+      "moisture": 0.58,
+      "wind": 0.85,
+      "snow": 0,
+      "cloud": 0.88
+    }
+  ],
+  "ecology": {
+    "moisture": 0.3
+  }
+}

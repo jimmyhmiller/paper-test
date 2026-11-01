@@ -1697,7 +1697,7 @@
                 0)
               true)
           (> editor 0)
-            (do (set! (.key-flags app) flags) (dispatch 4 key 0.0 0.0) false)
+            (do (set! (.key-flags app) flags) (= (dispatch 4 key 0.0 0.0) 1))
           (and (>= key 123) (<= key 126) (> (.focus app) 0))
             (let [backward (or (= key 123) (= key 125))
                   next
@@ -2160,6 +2160,7 @@
                      [bool]
                      true)))
           (accessibility-init)
+          (start-resize-observer)
           (resize-responsive w h)
           (refresh)
           (frame-clock/start view
@@ -2207,25 +2208,11 @@
                     (msg i64 (.app app) (sel c"sendEvent:") [(ptr i8)] ev))))
               (poll-inputs)
               (poll-pointer)
-              (let [bounds (msg CGRect view (sel c"bounds") [])
-                    now (CACurrentMediaTime)]
-                (when (or (primitive/fcmp-ne (.w bounds) (.window-w app))
-                          (primitive/fcmp-ne (.h bounds) (.window-h app)))
-                  (set! (.window-w app) (.w bounds))
-                  (set! (.window-h app) (.h bounds))
-                  (when (.available (gpu/gpu))
-                    (gpu/layer-size (.layer app)
-                                    (.w bounds)
-                                    (.h bounds)
-                                    (msg f64
-                                         window
-                                         (sel c"backingScaleFactor")
-                                         [])))
-                  (resize-responsive (.w bounds) (.h bounds))
-                  (when (.shape-available app) (update-window-mask))
-                  (paper_redraw))
+              (let [now (CACurrentMediaTime)]
+                (sync-window-size)
                 (tick-if-due now 0.0))
               (release iteration-pool)))
+          (stop-resize-observer)
           (frame-clock/stop)
           (gpu/synchronize)
           (workers/stop)
@@ -2371,7 +2358,87 @@
               false))))
     (load taken)))
 
+(defn sync-window-size [] (-> bool)
+  (let [app (host)]
+    (if (or (.headless app) (= (.view app) (nil)))
+        false
+        (let [bounds (msg CGRect (.view app) (sel c"bounds") [])]
+          (if (and (> (.w bounds) 0.0)
+                   (> (.h bounds) 0.0)
+                   (or (primitive/fcmp-ne (.w bounds) (.window-w app))
+                       (primitive/fcmp-ne (.h bounds) (.window-h app))))
+              (do
+                (set! (.window-w app) (.w bounds))
+                (set! (.window-h app) (.h bounds))
+                (when (.available (gpu/gpu))
+                  (gpu/layer-size (.layer app)
+                                  (.w bounds)
+                                  (.h bounds)
+                                  (msg f64
+                                       (.window app)
+                                       (sel c"backingScaleFactor")
+                                       [])))
+                (resize-responsive (.w bounds) (.h bounds))
+                (when (.shape-available app) (update-window-mask))
+                (paper_redraw)
+                true)
+              false)))))
+
+(defstruct ResizeObserver [(target (ptr i8))])
+
+(defn resize-observer [] (-> (ptr ResizeObserver))
+  (primitive/alloc-static ResizeObserver))
+
+(defn window-did-resize [(object (ptr i8))
+                         (selector (ptr i8))
+                         (notification (ptr i8))] (-> void)
+  ;; Notifications arrive inside AppKit's native tracking loop. Rebuild the
+  ;; paper and reposition Cocoa fields in this same resize update.
+  (when (sync-window-size) (refresh)))
+
+(defn stop-resize-observer [] (-> i64)
+  (let [observer (resize-observer)]
+    (when (!= (.target observer) (nil))
+      (msg i64
+           (msg (ptr i8)
+                (class c"NSNotificationCenter")
+                (sel c"defaultCenter")
+                [])
+           (sel c"removeObserver:")
+           [(ptr i8)]
+           (.target observer))
+      (release (.target observer))
+      (set! (.target observer) (nil))))
+  0)
+
+(defn start-resize-observer [] (-> i64)
+  (stop-resize-observer)
+  (when (= (class c"CoilPaperResizeObserver") (nil))
+    (let [cls
+            (objc_allocateClassPair (class c"NSObject")
+                                    c"CoilPaperResizeObserver"
+                                    0)]
+      (assert (class_addMethod cls
+                               (sel c"paperWindowDidResize:")
+                               (cast (ptr i8) (fnptr-of window-did-resize))
+                               c"v@:@"))
+      (objc_registerClassPair cls)))
+  (set! (.target (resize-observer)) (new c"CoilPaperResizeObserver"))
+  (msg i64
+       (msg (ptr i8) (class c"NSNotificationCenter") (sel c"defaultCenter") [])
+       (sel c"addObserver:selector:name:object:")
+       [(ptr i8) (ptr i8) (ptr i8) (ptr i8)]
+       (.target (resize-observer))
+       (sel c"paperWindowDidResize:")
+       (constant-object c"NSWindowDidResizeNotification")
+       (.window (host)))
+  0)
+
 (defn display-frame [] (-> i64)
+  ;; AppKit runs a nested tracking loop during live resize. The display link
+  ;; is installed in common modes, so synchronize here before layout/input
+  ;; instead of waiting for sendEvent: to return to the outer event loop.
+  (sync-window-size)
   (let [parts (frame-parts)
         started (profile/now)]
     (profile/measure-ms (.poll parts)

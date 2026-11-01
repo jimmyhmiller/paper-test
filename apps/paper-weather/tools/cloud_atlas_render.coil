@@ -1,0 +1,89 @@
+(module paper-weather.cloud-atlas-render)
+(import "paper.flow" :use *)
+(import "paper.platform" :as host)
+(import "paper.scene" :as scene)
+(import "paper.render" :as render)
+(import "paper.workers" :as workers)
+(import "paper.lighting" :as light)
+(import "paper.objc" :use *)
+(import "paper.ffi" :use [strcmp])
+(import "paper-weather.scene-document" :as doc)
+(import "paper-weather.service" :as json)
+
+(defn main [(argc i32) (argv (ptr (ptr i8)))] (-> i64)
+  (assert (= argc (: 4 i32)))
+  (let [pool (new c"NSAutoreleasePool")
+        d (doc/document)]
+    (assert (doc/load-file d (load (index argv 1))))
+    (scene/init)
+    (set! (.headless (host/host)) true)
+    (host/paper_configure c"Native paper cloud atlas" (.width d) (.height d))
+    (set! (.width (scene/scene)) (cast i64 (.width d)))
+    (set! (.height (scene/scene)) (cast i64 (.height d)))
+    (set! (.scale (scene/scene)) 1.0)
+    (render/setup)
+    (host/paper_begin 0xf3ead9)
+    (let [(mut settings) (light/lighting -0.1 -0.25 1300.0 0.35 0.8)]
+      (light/apply-light settings (rect 0.0 0.0 (.width d) (.height d))))
+    (doc/draw d (rect 0.0 0.0 (.width d) (.height d)) 0.0)
+    (ink-height 46.0)
+    (if (= (strcmp (load (index argv 2)) c"-") 0)
+        (let [title (json/text (json/item (.root d) c"title"))
+              ink
+                (if (msg bool
+                         (ns title)
+                         (sel c"containsString:")
+                         [(ptr i8)]
+                         (ns c"Noctilucent"))
+                    (cast u32 0xe9efeb)
+                    (cast u32 0x294b5f))]
+          (text-box (rect 35.0 32.0 (- (.width d) 70.0) 48.0) 29.0 ink 1 title)
+          (label 35.0
+                 (- (.height d) 40.0)
+                 12.0
+                 ink
+                 0
+                 c"Native cut-paper morphology study"))
+        (let [data
+                (msg (ptr i8)
+                     (class c"NSData")
+                     (sel c"dataWithContentsOfFile:")
+                     [(ptr i8)]
+                     (ns (load (index argv 2))))
+              root (json/decode data)
+              labels (json/item root c"labels")]
+          (assert (!= root (nil)))
+          (label 23.0
+                 24.0
+                 29.0
+                 0x23465b
+                 1
+                 (json/text (json/item root c"title")))
+          (for [i 0 (json/count labels)]
+            (let [entry (json/at labels i)
+                  x (json/value (json/item entry c"x"))
+                  y (json/value (json/item entry c"y"))
+                  width (json/value (json/item entry c"width"))]
+              (text-box (rect x y width 44.0)
+                        17.0
+                        0x23465b
+                        1
+                        (json/text (json/item entry c"title")))
+              (label x
+                     (+ y 39.0)
+                     10.0
+                     0x637b88
+                     0
+                     (json/text (json/item entry c"note")))))
+          (label 23.0
+                 (- (.height d) 23.0)
+                 10.0
+                 0x637b88
+                 0
+                 c"WMO-informed morphology · native paper geometry · art studies for review")))
+    (render/render-frame true)
+    (assert (= (render/snapshot (load (index argv 3))) 0))
+    (workers/stop)
+    (doc/dispose d)
+    (release pool))
+  0)

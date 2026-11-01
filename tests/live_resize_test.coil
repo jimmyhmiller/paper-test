@@ -1,0 +1,100 @@
+(module papercut.live-resize-test)
+(import "coil.primitive" :as p)
+(import "coil.arraylist" :as al)
+(import "coil.alloc" :as alloc)
+(import "paper.platform" :as host)
+(import "paper.scene" :as scene)
+(import "paper.render" :as render)
+(import "paper.gpu" :as gpu)
+(import "paper.objc" :use *)
+(import "paper.ffi" :use *)
+(import "paper.flow" :use [panel rect cotton])
+
+(defn draws [] (-> (ptr i64))
+  (p/alloc-static i64))
+
+(defn draw-fixture [] (-> i64)
+  (host/paper_begin 0xf1eadb)
+  (panel (rect 20.0 30.0 200.0 44.0) 12.0 30.0 (cotton 0xf1eadb))
+  (host/paper_input 100 30.0 40.0 180.0 24.0 c"Search locations")
+  (store! (draws) (+ (load (draws)) 1))
+  0)
+
+(defn event-fixture [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
+  0)
+
+(deftest display-callback-resizes-paper-and-native-input-before-outer-loop-polls
+  (let [pool (new c"NSAutoreleasePool")
+        application
+          (msg (ptr i8) (class c"NSApplication") (sel c"sharedApplication") [])
+        app (host/host)]
+    (scene/init)
+    (host/paper_configure c"Live resize test" 640.0 480.0)
+    (host/paper_responsive 320.0 240.0)
+    (set! (.app app) application)
+    (set! (.headless app) false)
+    (set! (.shape-available app) false)
+    (set! (.inputs app)
+          (al/ArrayList::new [host/Input] (alloc/malloc-allocator)))
+    (set! (.draw app) (fnptr-of draw-fixture))
+    (set! (.event app) (fnptr-of event-fixture))
+    (set! (.width (scene/scene)) 1280)
+    (set! (.height (scene/scene)) 960)
+    (render/setup)
+    (let [window (host/create-window 640.0 480.0)
+          view (msg (ptr i8) window (sel c"contentView") [])]
+      (set! (.window app) window)
+      (set! (.view app) view)
+      (set! (.window-w app) 640.0)
+      (set! (.window-h app) 480.0)
+      (msg i64 window (sel c"setReleasedWhenClosed:") [bool] false)
+      (msg i64 view (sel c"setWantsLayer:") [bool] true)
+      (set! (.layer app)
+            (if (.available (gpu/gpu))
+                (gpu/create-layer view 640.0 480.0 2.0)
+                (msg (ptr i8) view (sel c"layer") [])))
+      (host/accessibility-init)
+      (store! (draws) 0)
+      (host/refresh)
+      (host/start-resize-observer)
+      (let [input (get (.inputs app) 0)]
+        (msg i64
+             (.view input)
+             (sel c"setStringValue:")
+             [(ptr i8)]
+             (ns c"Aspen"))
+        ;; AppKit updates view bounds inside live tracking. Do not poll the
+        ;; application's outer event loop before invoking its display callback.
+        (msg i64
+             window
+             (sel c"setContentSize:")
+             [CGSize]
+             (CGSize :w 800.0 :h 600.0))
+        ;; The resize notification must update both surfaces immediately,
+        ;; even before a display-link callback or outer event poll occurs.
+        (assert (= (load (draws)) 2))
+        (host/display-frame)
+        (assert (= (host/logical-width) 800.0))
+        (assert (= (host/logical-height) 600.0))
+        (assert (= (load (draws)) 2))
+        (let [bounds (msg CGRect (.container input) (sel c"frame") [])
+              field (msg CGRect (.view input) (sel c"frame") [])]
+          (assert (= (.x bounds) 30.0))
+          (assert (= (.y bounds) 536.0))
+          (assert (= (.w bounds) 180.0))
+          (assert (= (.h bounds) 24.0))
+          (assert (= (.w field) 180.0)))
+        (assert (msg bool
+                     (msg (ptr i8) (.view input) (sel c"stringValue") [])
+                     (sel c"isEqualToString:")
+                     [(ptr i8)]
+                     (ns c"Aspen")))
+        (release (.previous input))
+        (release (.view input))
+        (release (.container input)))
+      (host/stop-resize-observer)
+      (gpu/synchronize)
+      (free! (mut (.inputs app)))
+      (msg i64 window (sel c"close") [])
+      (release window))
+    (release pool)))

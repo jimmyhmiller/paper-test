@@ -1,0 +1,451 @@
+{
+  "type": "object",
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "title": {
+      "type": "string",
+      "maxLength": 127
+    },
+    "viewBox": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "number",
+          "minimum": 100,
+          "maximum": 2000
+        },
+        {
+          "type": "number",
+          "minimum": 100,
+          "maximum": 2000
+        }
+      ],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "materials": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "day": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 16777215
+          },
+          "night": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 16777215
+          },
+          "winter": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 16777215
+          }
+        },
+        "required": [
+          "day",
+          "night"
+        ],
+        "additionalProperties": false
+      },
+      "minProperties": 1,
+      "maxProperties": 32
+    },
+    "conditions": {
+      "type": "object",
+      "properties": {
+        "night": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "winter": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "snow": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "rain": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "wind": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "snowfall": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/node"
+      },
+      "minItems": 1,
+      "maxItems": 512
+    }
+  },
+  "required": [
+    "version",
+    "title",
+    "viewBox",
+    "materials",
+    "conditions",
+    "nodes"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "node": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96
+        },
+        "path": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "const": "M"
+                  },
+                  {
+                    "type": "number",
+                    "minimum": -4000,
+                    "maximum": 4000
+                  },
+                  {
+                    "type": "number",
+                    "minimum": -4000,
+                    "maximum": 4000
+                  }
+                ],
+                "items": false,
+                "minItems": 3,
+                "maxItems": 3
+              },
+              {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "const": "L"
+                  },
+                  {
+                    "type": "number",
+                    "minimum": -4000,
+                    "maximum": 4000
+                  },
+                  {
+                    "type": "number",
+                    "minimum": -4000,
+                    "maximum": 4000
+                  }
+                ],
+                "items": false,
+                "minItems": 3,
+                "maxItems": 3
+              },
+              {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "const": "C"
+                  },
+                  {
+                    "type": "number",
+                    "minimum": -4000,
+                    "maximum": 4000
+                  },
+                  {
+                    "type": "number",
+                    "minimum": -4000,
+                    "maximum": 4000
+                  },
+                  {
+                    "type": "number",
+                    "minimum": -4000,
+                    "maximum": 4000
+                  },
+                  {
+                    "type": "number",
+                    "minimum": -4000,
+                    "maximum": 4000
+                  },
+                  {
+                    "type": "number",
+                    "minimum": -4000,
+                    "maximum": 4000
+                  },
+                  {
+                    "type": "number",
+                    "minimum": -4000,
+                    "maximum": 4000
+                  }
+                ],
+                "items": false,
+                "minItems": 7,
+                "maxItems": 7
+              },
+              {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "const": "Z"
+                  }
+                ],
+                "items": false,
+                "minItems": 1,
+                "maxItems": 1
+              }
+            ]
+          },
+          "minItems": 3,
+          "maxItems": 512
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node"
+          },
+          "minItems": 1,
+          "maxItems": 512
+        },
+        "emitter": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "rain",
+                "snow"
+              ]
+            },
+            "bounds": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 2000
+                },
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 2000
+                },
+                {
+                  "type": "number",
+                  "minimum": 1e-06,
+                  "maximum": 2000
+                },
+                {
+                  "type": "number",
+                  "minimum": 1e-06,
+                  "maximum": 2000
+                }
+              ],
+              "items": false,
+              "minItems": 4,
+              "maxItems": 4
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 96
+            },
+            "seed": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100000
+            }
+          },
+          "required": [
+            "kind",
+            "bounds",
+            "count"
+          ],
+          "additionalProperties": false
+        },
+        "material": {
+          "type": "string"
+        },
+        "z": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 48
+        },
+        "transform": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number",
+              "minimum": -4000,
+              "maximum": 4000
+            },
+            {
+              "type": "number",
+              "minimum": -4000,
+              "maximum": 4000
+            },
+            {
+              "type": "number",
+              "minimum": -180,
+              "maximum": 180
+            },
+            {
+              "type": "number",
+              "minimum": -4000,
+              "maximum": 4000
+            },
+            {
+              "type": "number",
+              "minimum": -4000,
+              "maximum": 4000
+            }
+          ],
+          "items": false,
+          "minItems": 5,
+          "maxItems": 5
+        },
+        "motion": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "sway"
+                },
+                "amplitude": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 4
+                },
+                "period": {
+                  "type": "number",
+                  "minimum": 2,
+                  "maximum": 120
+                },
+                "phase": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 6.283185307
+                }
+              },
+              "required": [
+                "kind",
+                "amplitude",
+                "period"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "drift"
+                },
+                "amplitude": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 35
+                },
+                "period": {
+                  "type": "number",
+                  "minimum": 2,
+                  "maximum": 120
+                },
+                "phase": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 6.283185307
+                }
+              },
+              "required": [
+                "kind",
+                "amplitude",
+                "period"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "show": {
+          "type": "object",
+          "properties": {
+            "channel": {
+              "enum": [
+                "night",
+                "winter",
+                "snow",
+                "rain",
+                "wind",
+                "snowfall"
+              ]
+            },
+            "min": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "max": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "channel",
+            "min",
+            "max"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "path",
+            "material"
+          ]
+        },
+        {
+          "required": [
+            "children"
+          ]
+        },
+        {
+          "required": [
+            "emitter",
+            "material"
+          ]
+        }
+      ]
+    }
+  },
+  "description": "Data-only native paper scenes. Runtime additionally enforces unique UTF-8 IDs <=96 bytes, closed path subpaths, depth <=8, <=512 total nodes, <=20000 total commands and <=128 total particle slots; show.min <= show.max; <=1 MiB file. Coordinates are paper design points. transform=[tx,ty,rotationDegrees,pivotX,pivotY]. z is absolute native sheet height. Curve C is cubic. Closed subpaths create even-odd holes. No images, scripts, URLs or native calls."
+}

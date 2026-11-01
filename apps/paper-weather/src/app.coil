@@ -1,0 +1,869 @@
+(module paper-weather.app)
+(import "paper.flow" :use *)
+(import "coil.primitive" :as p)
+(import "paper.platform" :as host)
+(import "paper.lettering" :as letters)
+(import "paper.lighting" :as light)
+(import "paper-weather.craft" :as craft)
+(import "paper-weather.service" :as weather)
+(import "paper-weather.units" :as units)
+(import "paper.objc" :as o)
+(import "paper.ffi" :use [strlen])
+
+(defn center-width [] (-> f64)
+  (- (host/logical-width) 604.0))
+
+(defn hero-height [] (-> f64)
+  (- (host/logical-height) 360.0))
+
+(defn scene-x [(fraction f64)] (-> f64)
+  (+ 244.0 (* fraction (center-width))))
+
+(defn compact-scene [] (-> bool)
+  (or (< (hero-height) 620.0) (< (center-width) 780.0)))
+
+(defn scene-y [(fraction f64)] (-> f64)
+  (if (compact-scene)
+      (+ 160.0 (* fraction (- (hero-height) 280.0)))
+      (* fraction (hero-height))))
+
+(defn forecast-x [(reference f64)] (-> f64)
+  (+ (- (host/logical-width) 1536.0) reference))
+
+(defn bottom-y [(reference f64)] (-> f64)
+  (+ (- (host/logical-height) 1024.0) reference))
+
+(defn lighting [] (-> (ptr light/Lighting))
+  (p/alloc-static light/Lighting))
+
+(defn selected-nav [] (-> (ptr i64))
+  (p/alloc-static i64))
+
+(defn selected-metric [] (-> (ptr i64))
+  (p/alloc-static i64))
+
+(defn nav-title [(i i64)] (-> (ptr i8))
+  (case i
+    0 c"Today"
+    1 c"Locations"
+    2 c"Radar"
+    3 c"Alerts"
+    c"Settings"))
+
+(defn control-style [(size f64) (font i64) (z f64)] (-> SelectionStyle)
+  (let [(mut style)
+          (selection-style (cotton 0xf3ead9)
+                           (cotton 0xc4d7da)
+                           (cotton 0xe2d6c0))]
+    (set! (.ink style) 0x16394f)
+    (set! (.active-ink style) 0x16394f)
+    (set! (.size style) size)
+    (set! (.font style) font)
+    (set! (.z style) z)
+    (set! (.treatment style) 2)
+    (load style)))
+
+(defstruct Day
+  [(name (ptr i8))
+   (high (ptr i8))
+   (low (ptr i8))
+   (description (ptr i8))
+   (kind i64)])
+
+(defn day [(i i64)] (-> Day)
+  (let [code (weather/code (weather/daily c"weather_code" i))]
+    (Day
+      :name (weather/date-text (weather/daily c"time" i) c"EEE")
+      :high (units/temperature-label (weather/daily c"temperature_2m_max" i))
+      :low (units/temperature-label (weather/daily c"temperature_2m_min" i))
+      :description (weather/condition code)
+      :kind (weather/icon code true))))
+
+(defstruct Hour [(time (ptr i8)) (temperature (ptr i8)) (value f64) (kind i64)])
+
+(defn hour [(i i64)] (-> Hour)
+  (Hour
+    :time (weather/date-text (weather/hourly c"time" i) c"h a")
+    :temperature (units/temperature-label (weather/hourly c"temperature_2m" i))
+    :value (weather/value (weather/hourly c"temperature_2m" i))
+    :kind
+      (weather/icon (weather/code (weather/hourly c"weather_code" i))
+                    (> (weather/value (weather/hourly c"is_day" i)) 0.0))))
+
+(defn temperature-label [(x f64) (y f64) (width f64) (size f64)] (-> i64)
+  (let [text (units/temperature-label (weather/current c"temperature_2m"))
+        measured (text-width text size 4)
+        fitted (* size (minimum 1.0 (/ width (maximum 1.0 measured))))]
+    (label x y fitted 0x173b51 4 text)))
+
+(defn current-description [] (-> (ptr i8))
+  (if (weather/ready)
+      (weather/condition (weather/code (weather/current c"weather_code")))
+      (if (.loading (weather/state))
+          c"Loading weather…"
+          c"Search for a place")))
+
+(defn current-detail [] (-> (ptr i8))
+  (if (weather/ready)
+      (weather/joined (weather/joined (weather/joined c"Feels like "
+                                                      (units/temperature-label (weather/current c"apparent_temperature")))
+                                      (weather/joined c" · H "
+                                                      (units/temperature-label (weather/daily c"temperature_2m_max"
+                                                                                              0))))
+                      (weather/joined c"  L "
+                                      (units/temperature-label (weather/daily c"temperature_2m_min"
+                                                                              0))))
+      c""))
+
+(defn glyph [(x f64)
+             (y f64)
+             (w f64)
+             (h f64)
+             (text (ptr i8))
+             (size f64)
+             (z f64)
+             (color u32)] (-> i64)
+  (letters/centered-lettering-path (rect x y w h) text size 0)
+  (finish-sheet z (cotton color)))
+
+(defn centered [(x f64)
+                (y f64)
+                (width f64)
+                (size f64)
+                (color u32)
+                (font i64)
+                (text (ptr i8))] (-> i64)
+  (let [(mut measure) (text-measure text size font)
+        width-text (.width (measure-text (text-data measure) 1000.0))]
+    (label (+ x (* 0.5 (- width width-text))) y size color font text)))
+
+(defn sidebar [] (-> i64)
+  (panel (rect 0.0 0.0 244.0 (host/logical-height)) 0.0 42.0 (cotton 0xf3ead9))
+  (label 28.0 43.0 46.0 0x15354b 1 c"Weather")
+  (panel (rect 22.0 123.0 200.0 48.0) 24.0 46.0 (cotton 0xf8f1e4))
+  (ring 37.0 137.0 16.0 1.8 48.0 (cotton 0x23465b))
+  (craft/triangle 50.0 150.0 59.0 157.0 57.0 159.0 48.0 0x23465b)
+  (ink-height 48.0)
+  (host/paper_input 100 68.0 136.0 141.0 25.0 c"Search locations")
+  ;; Headless snapshots have no Cocoa text views; print the same placeholder.
+  (when (.headless (host/host))
+    (label 68.0 137.0 14.0 0x546575 0 c"Search locations"))
+  (selection-surface 3
+                     110
+                     (rect 22.0 207.0 200.0 52.0)
+                     (weather/location-name)
+                     true
+                     (control-style 22.0 1 46.0))
+  (glyph 34.0 218.0 26.0 26.0 c"⌖" 27.0 48.0 0x193e52)
+  (ink-height 48.0)
+  (text-box (rect 77.0 219.0 130.0 30.0)
+            20.0
+            0x16394f
+            1
+            (weather/location-name))
+  (for [i 0 5]
+    (let [y (+ 295.0 (* (cast f64 i) 76.0))]
+      (selection-surface 1
+                         (+ 200 i)
+                         (rect 22.0 (- y 10.0) 200.0 52.0)
+                         (nav-title i)
+                         (= i (load (selected-nav)))
+                         (control-style 23.0 1 46.0))
+      (case i
+        0 (craft/weather-icon 0 46.0 (+ y 14.0) 31.0 48.0)
+        1 (glyph 31.0 y 30.0 30.0 c"◈" 28.0 48.0 0x193e52)
+        2 (glyph 31.0 y 30.0 30.0 c"◎" 29.0 48.0 0x193e52)
+        3 (glyph 31.0 y 30.0 30.0 c"△" 29.0 48.0 0x193e52)
+        (glyph 31.0 y 30.0 30.0 c"⚙" 29.0 48.0 0x193e52))
+      (ink-height 48.0)
+      (label 77.0 (+ y 1.0) 21.0 0x16394f 1 (nav-title i))))
+
+  0)
+
+(defn paper-caption [(r Rect) (size f64) (font i64) (color u32) (text (ptr i8))]
+  (-> i64)
+  (let [width (minimum (.w r) (text-width text size font))]
+    (when (> width 0.0)
+      (letters/lettering-path (rect (.x r) (.y r) width (.h r))
+                              text
+                              size
+                              font
+                              false)
+      (finish-sheet 5.0 (cotton color))))
+  0)
+
+(defn alpine-scene [] (-> i64)
+  ;; A single authored paper composition. This is an art study, not geography
+  ;; inferred from the selected location. New scenes should be authored first.
+  (let [w (center-width)
+        h (hero-height)]
+    (with-clip (rect 244.0 0.0 w h)
+               (panel (rect 244.0 0.0 w h) 0.0 2.0 (cotton 0xbcd9e0))
+               (craft/moon (scene-x 0.77) (scene-y 0.21) 66.0 10.0)
+               (craft/cloud (scene-x 0.38) (scene-y 0.16) 100.0 12.0)
+               (craft/cloud (scene-x 0.88) (scene-y 0.29) 80.0 14.0)
+               (craft/cloud (scene-x 0.36) (scene-y 0.43) 65.0 13.0)
+               (craft/mountain (scene-x 0.26)
+                               (scene-y 0.60)
+                               (* w 0.20)
+                               (* h 0.90)
+                               18.0
+                               0x83a9b7
+                               0x5e8b9e)
+               (craft/mountain (scene-x 0.32)
+                               (scene-y 0.53)
+                               (* w 0.25)
+                               (* h 0.95)
+                               20.0
+                               0x7299aa
+                               0x365f76)
+               (craft/mountain (scene-x 0.43)
+                               (scene-y 0.35)
+                               (* w 0.38)
+                               (* h 0.98)
+                               22.0
+                               0x7197a8
+                               0x305a72)
+               (craft/mountain (scene-x 0.68)
+                               (scene-y 0.44)
+                               (* w 0.24)
+                               (* h 0.94)
+                               24.0
+                               0x739bac
+                               0x345f76)
+               (craft/mountain (scene-x 0.82)
+                               (scene-y 0.59)
+                               (* w 0.17)
+                               (* h 0.93)
+                               26.0
+                               0x88a9b4
+                               0x557e90)
+               (craft/mountain (scene-x 0.89)
+                               (scene-y 0.52)
+                               (* w 0.12)
+                               (* h 0.92)
+                               28.0
+                               0x8ba9b1
+                               0x5f8393)
+               (begin-sheet)
+               (move-to 244.0 (* h 0.83))
+               (curve-to (scene-x 0.25)
+                         (* h 0.79)
+                         (scene-x 0.42)
+                         (* h 0.97)
+                         (scene-x 0.67)
+                         (* h 0.88))
+               (curve-to (scene-x 0.84)
+                         (* h 0.83)
+                         (scene-x 0.95)
+                         (* h 0.82)
+                         (scene-x 1.0)
+                         (* h 0.85))
+               (line-to (scene-x 1.0) h)
+               (line-to 244.0 h)
+               (close-path)
+               (finish-sheet 31.0 (cotton 0xe2e7dc))
+               (craft/pine (scene-x 0.01) (* h 0.63) 74.0 33.0)
+               (craft/pine (scene-x 0.10) (* h 0.67) 78.0 34.0)
+               (craft/pine (scene-x 0.28) (* h 0.73) 72.0 35.0)
+               (craft/pine (scene-x 0.78) (* h 0.72) 68.0 35.0)
+               (craft/pine (scene-x 0.91) (* h 0.66) 78.0 34.0)
+               (begin-sheet)
+               (move-to 244.0 (* h 0.89))
+               (curve-to (scene-x 0.25)
+                         (* h 0.84)
+                         (scene-x 0.42)
+                         (* h 1.01)
+                         (scene-x 0.65)
+                         (* h 0.93))
+               (curve-to (scene-x 0.82)
+                         (* h 0.91)
+                         (scene-x 0.94)
+                         (* h 0.94)
+                         (scene-x 1.0)
+                         (* h 0.94))
+               (line-to (scene-x 1.0) h)
+               (line-to 244.0 h)
+               (close-path)
+               (finish-sheet 32.0 (cotton 0xf3ead9))
+               (begin-sheet)
+               (move-to (scene-x 0.38) h)
+               (curve-to (scene-x 0.61)
+                         (* h 0.88)
+                         (scene-x 0.75)
+                         (* h 0.94)
+                         (scene-x 1.0)
+                         h)
+               (close-path)
+               (finish-sheet 33.0 (cotton 0xa6cdd7))))
+  0)
+
+(defn landscape [] (-> i64)
+  (let [w (center-width)
+        color (cast u32 0x183d51)]
+    (alpine-scene)
+    (if (compact-scene)
+        (do
+          (paper-caption (rect 281.0 32.0 (- w 170.0) 54.0)
+                         40.0
+                         1
+                         color
+                         (weather/location-name))
+          (paper-caption (rect 285.0 89.0 (- w 80.0) 24.0)
+                         12.0
+                         0
+                         color
+                         (weather/region (.location (weather/state))))
+          (paper-caption (rect 277.0 104.0 190.0 160.0)
+                         132.0
+                         4
+                         color
+                         (units/temperature-label (weather/current c"temperature_2m")))
+          (paper-caption (rect 485.0 139.0 (- w 280.0) 42.0)
+                         28.0
+                         1
+                         color
+                         (current-description))
+          (paper-caption (rect 485.0 188.0 (- w 280.0) 48.0)
+                         15.0
+                         0
+                         color
+                         (current-detail)))
+        (do
+          (paper-caption (rect 281.0 42.0 (- w 100.0) 68.0)
+                         52.0
+                         1
+                         color
+                         (weather/location-name))
+          (paper-caption (rect 286.0 114.0 (- w 80.0) 24.0)
+                         14.0
+                         0
+                         color
+                         (weather/region (.location (weather/state))))
+          (paper-caption (rect 276.0 145.0 370.0 170.0)
+                         184.0
+                         4
+                         color
+                         (units/temperature-label (weather/current c"temperature_2m")))
+          (paper-caption (rect 284.0 333.0 (- w 80.0) 54.0)
+                         38.0
+                         1
+                         color
+                         (current-description))
+          (paper-caption (rect 286.0 392.0 (- w 80.0) 30.0)
+                         19.0
+                         0
+                         color
+                         (current-detail)))))
+  0)
+
+(defn chart-x [(i i64)] (-> f64)
+  (+ 290.0 (* (cast f64 i) (/ (- (center-width) 92.0) 7.0))))
+
+(defn metric-object [(i i64)] (-> (ptr i8))
+  (weather/hourly (case (load (selected-metric))
+                    1 c"precipitation_probability"
+                    2 c"wind_speed_10m"
+                    c"temperature_2m")
+                  i))
+
+(defn metric-value [(i i64)] (-> f64)
+  (weather/value (metric-object i)))
+
+(defn metric-label [(i i64)] (-> (ptr i8))
+  (case (load (selected-metric))
+    1 (weather/formatted (metric-object i) c"%")
+    2 (units/wind-label (metric-object i))
+    (units/temperature-label (metric-object i))))
+
+(defn chart-min [] (-> f64)
+  (let [(mut result) 0.0
+        (mut found) false]
+    (for [i 0 8]
+      (when (weather/number? (metric-object i))
+        (when (or (not (load found)) (< (metric-value i) (load result)))
+          (set! result (metric-value i)))
+        (set! found true)))
+    (load result)))
+
+(defn chart-max [] (-> f64)
+  (let [(mut result) 0.0
+        (mut found) false]
+    (for [i 0 8]
+      (when (weather/number? (metric-object i))
+        (when (or (not (load found)) (> (metric-value i) (load result)))
+          (set! result (metric-value i)))
+        (set! found true)))
+    (load result)))
+
+(defn chart-y [(i i64)] (-> f64)
+  (- (bottom-y 848.0)
+     (* 52.0
+        (/ (- (metric-value i) (chart-min))
+           (maximum 5.0 (- (chart-max) (chart-min)))))))
+
+(defn chart-ribbon [(first i64) (last i64)] (-> i64)
+  (when (> last first)
+    (let [tangent (* 0.5 (- (chart-x 1) (chart-x 0)))]
+      (begin-sheet)
+      (move-to (chart-x first) (chart-y first))
+      (for [i (+ first 1) (+ last 1)]
+        (let [px (chart-x (- i 1))
+              py (chart-y (- i 1))
+              nx (chart-x i)
+              ny (chart-y i)]
+          (curve-to (+ px tangent) py (- nx tangent) ny nx ny)))
+      (line-to (chart-x last) (+ (chart-y last) 4.0))
+      (for [step 0 (- last first)]
+        (let [i (- (- last 1) step)
+              px (chart-x (+ i 1))
+              py (+ (chart-y (+ i 1)) 4.0)
+              nx (chart-x i)
+              ny (+ (chart-y i) 4.0)]
+          (curve-to (- px tangent) py (+ nx tangent) ny nx ny)))
+      (close-path)
+      (finish-sheet 50.0 (cotton 0xe68d70))))
+  0)
+
+(defn hourly [] (-> i64)
+  (panel (rect 244.0 (hero-height) (center-width) 360.0)
+         0.0
+         46.0
+         (cotton 0xf3ead9))
+  (label 279.0 (+ (hero-height) 18.0) 30.0 0x16394f 1 c"Hourly Forecast")
+  (for [i 0 2]
+    (let [x (+ (- (host/logical-width) 514.0) (* (cast f64 i) 64.0))]
+      (selection-surface 5
+                         (+ 610 i)
+                         (rect x (+ (hero-height) 16.0) 58.0 34.0)
+                         (if (= i 0)
+                             c"Fahrenheit and miles per hour"
+                             c"Celsius and kilometers per hour")
+                         (= i (load (units/mode)))
+                         (control-style 16.0 0 49.0))
+      (ink-height 50.0)
+      (centered x
+                (+ (hero-height) 23.0)
+                58.0
+                16.0
+                0x16394f
+                0
+                (if (= i 0) c"°F" c"°C"))))
+  (for [i 0 3]
+    (let [x (+ (- (host/logical-width) 752.0) (* (cast f64 i) 128.0))
+          title (case i 0 c"Temperature" 1 c"Precipitation" c"Wind")]
+      (selection-row 2
+                     (choice (+ 300 i) title c"")
+                     (rect x (+ (hero-height) 62.0) 126.0 36.0)
+                     (= i (load (selected-metric)))
+                     (control-style 14.0 0 49.0))))
+  (when (weather/ready)
+    ;; Missing readings break the ribbon instead of inventing zero values.
+    (let [(mut first) -1]
+      (for [i 0 9]
+        (if (and (< i 8) (weather/number? (metric-object i)))
+            (when (< (load first) 0) (set! first i))
+            (when (>= (load first) 0)
+              (chart-ribbon (load first) (- i 1))
+              (set! first -1)))))
+    (for [i 0 8]
+      (let [h (hour i)
+            x (chart-x i)
+            y (chart-y i)]
+        (when (weather/number? (metric-object i))
+          (craft/circle x (+ y 1.0) 7.0 53.0 0xe48a6b))
+        (ink-height 54.0)
+        (centered (- x 45.0)
+                  (- y 37.0)
+                  90.0
+                  (if (= (load (selected-metric)) 2) 17.0 23.0)
+                  0x173a50
+                  1
+                  (metric-label i))
+        (craft/weather-icon (.kind h) x (bottom-y 913.0) 44.0 51.0)
+        (ink-height 54.0)
+        (centered (- x 40.0) (bottom-y 962.0) 80.0 17.0 0x26485a 0 (.time h)))))
+  0)
+
+(defn wind-icon [(x f64) (y f64)] (-> i64)
+  (begin-sheet)
+  (move-to x y)
+  (line-to (+ x 31.0) y)
+  (curve-to (+ x 47.0) y (+ x 47.0) (- y 21.0) (+ x 33.0) (- y 21.0))
+  (curve-to (+ x 25.0) (- y 21.0) (+ x 25.0) (- y 12.0) (+ x 30.0) (- y 11.0))
+  (line-to (+ x 31.0) (- y 15.0))
+  (curve-to (+ x 35.0) (- y 19.0) (+ x 42.0) (- y 13.0) (+ x 39.0) (- y 7.0))
+  (curve-to (+ x 37.0) (- y 3.0) (+ x 32.0) (- y 4.0) (+ x 28.0) (- y 4.0))
+  (line-to x (- y 4.0))
+  (close-path)
+  (finish-sheet 51.0 (cotton 0xb7d4df))
+  (panel (rect x (+ y 6.0) 39.0 4.0) 2.0 51.0 (cotton 0xb7d4df))
+  (panel (rect x (+ y 16.0) 27.0 4.0) 2.0 51.0 (cotton 0xb7d4df))
+  0)
+
+(defn sunrise [(x f64) (y f64) (color u32)] (-> i64)
+  (begin-sheet)
+  (move-to (- x 18.0) y)
+  (curve-to (- x 18.0) (- y 24.0) (+ x 18.0) (- y 24.0) (+ x 18.0) y)
+  (close-path)
+  (finish-sheet 51.0 (cotton color))
+  (panel (rect (- x 23.0) (+ y 3.0) 46.0 3.0) 1.5 52.0 (cotton 0xb6d0db))
+  0)
+
+(defn forecast [] (-> i64)
+  (panel (rect (forecast-x 1176.0) 0.0 360.0 (host/logical-height))
+         0.0
+         46.0
+         (cotton 0x1c3e55))
+  (label (forecast-x 1210.0) 40.0 34.0 0xf6eddd 1 c"7-Day Forecast")
+  (rule (forecast-x 1210.0) 100.0 291.0 0x64808e)
+  (for [i 0 (if (weather/ready) 7 0)]
+    (let [d (day i)
+          y (+ 121.0 (* (cast f64 i) (/ (- (host/logical-height) 471.0) 7.0)))]
+      (ink-height 47.0)
+      (label (forecast-x 1210.0) (+ y 12.0) 23.0 0xf6eddd 1 (.name d))
+      (craft/weather-icon (.kind d) (forecast-x 1303.0) (+ y 28.0) 39.0 50.0)
+      (ink-height 55.0)
+      (label (forecast-x 1363.0) (+ y 4.0) 23.0 0xf6eddd 1 (.high d))
+      (label (forecast-x 1441.0) (+ y 4.0) 23.0 0xc6d6dc 1 (.low d))
+      (label (forecast-x 1363.0) (+ y 32.0) 12.0 0xd4e0e4 0 (.description d))
+      (ink-height 47.0)
+      (rule (forecast-x 1210.0)
+            (+ y (- (/ (- (host/logical-height) 471.0) 7.0) 6.0))
+            291.0
+            0x506d7c)))
+  (wind-icon (forecast-x 1211.0) (bottom-y 736.0))
+  (craft/droplet (forecast-x 1387.0) (bottom-y 708.0) 29.0 51.0)
+  (craft/droplet (forecast-x 1219.0) (bottom-y 826.0) 22.0 51.0)
+  (craft/sun (forecast-x 1402.0) (bottom-y 846.0) 15.0 51.0)
+  (ink-height 56.0)
+  (label (forecast-x 1268.0) (bottom-y 713.0) 14.0 0xe4e9e5 0 c"Wind")
+  (label (forecast-x 1268.0)
+         (bottom-y 738.0)
+         21.0
+         0xf5ecdc
+         0
+         (units/wind-label (weather/current c"wind_speed_10m")))
+  (label (forecast-x 1268.0)
+         (bottom-y 767.0)
+         14.0
+         0xc6d6dc
+         0
+         (weather/wind-direction))
+  (label (forecast-x 1434.0) (bottom-y 713.0) 14.0 0xe4e9e5 0 c"Humidity")
+  (label (forecast-x 1434.0)
+         (bottom-y 741.0)
+         25.0
+         0xf5ecdc
+         0
+         (weather/formatted (weather/current c"relative_humidity_2m") c"%"))
+  (label (forecast-x 1268.0) (bottom-y 822.0) 13.0 0xe4e9e5 0 c"Rain today")
+  (label (forecast-x 1268.0)
+         (bottom-y 849.0)
+         24.0
+         0xf5ecdc
+         0
+         (weather/formatted (weather/daily c"precipitation_probability_max" 0)
+                            c"%"))
+  (label (forecast-x 1434.0) (bottom-y 822.0) 14.0 0xe4e9e5 0 c"UV max")
+  (label (forecast-x 1434.0)
+         (bottom-y 849.0)
+         24.0
+         0xf5ecdc
+         0
+         (weather/formatted (weather/daily c"uv_index_max" 0) c""))
+  (label (forecast-x 1434.0)
+         (bottom-y 880.0)
+         13.0
+         0xc6d6dc
+         0
+         (if (weather/ready)
+             (cond (< (weather/value (weather/daily c"uv_index_max" 0)) 3.0)
+                     c"Low"
+                   (< (weather/value (weather/daily c"uv_index_max" 0)) 6.0)
+                     c"Moderate"
+                   (< (weather/value (weather/daily c"uv_index_max" 0)) 8.0)
+                     c"High"
+                   :else c"Very high")
+             c""))
+  (ink-height 47.0)
+  (rule (forecast-x 1210.0) (bottom-y 806.0) 291.0 0x506d7c)
+  (rule (forecast-x 1210.0) (bottom-y 917.0) 291.0 0x506d7c)
+  (sunrise (forecast-x 1231.0) (bottom-y 963.0) 0xf4b576)
+  (sunrise (forecast-x 1403.0) (bottom-y 963.0) 0xe99872)
+  (ink-height 55.0)
+  (label (forecast-x 1268.0) (bottom-y 938.0) 13.0 0xd4e0e4 0 c"Sunrise")
+  (label (forecast-x 1268.0)
+         (bottom-y 960.0)
+         18.0
+         0xf5ecdc
+         0
+         (weather/date-text (weather/daily c"sunrise" 0) c"h:mm a"))
+  (label (forecast-x 1434.0) (bottom-y 938.0) 13.0 0xd4e0e4 0 c"Sunset")
+  (label (forecast-x 1434.0)
+         (bottom-y 960.0)
+         18.0
+         0xf5ecdc
+         0
+         (weather/date-text (weather/daily c"sunset" 0) c"h:mm a"))
+  0)
+
+(defn nav-content [] (-> i64)
+  (let [selected (load (selected-nav))]
+    (when (> selected 0)
+      (panel (rect 278.0
+                   (- (hero-height) 220.0)
+                   (minimum 582.0 (- (center-width) 68.0))
+                   195.0)
+             18.0
+             54.0
+             (cotton 0xf3ead9))
+      (label 304.0
+             (+ (hero-height) -218.0)
+             30.0
+             0x16394f
+             1
+             (nav-title selected))
+      (case selected
+        1
+          (do
+            (label 304.0
+                   (+ (hero-height) -171.0)
+                   18.0
+                   0x34566a
+                   0
+                   (weather/joined (weather/joined (weather/location-name)
+                                                   c", ")
+                                   (weather/region (.location (weather/state)))))
+            (label 304.0
+                   (+ (hero-height) -141.0)
+                   16.0
+                   0x526b79
+                   0
+                   (current-description)))
+        2
+          (do
+            (label 304.0
+                   (+ (hero-height) -171.0)
+                   18.0
+                   0x34566a
+                   0
+                   c"Weather radar")
+            (label 304.0
+                   (+ (hero-height) -141.0)
+                   16.0
+                   0x526b79
+                   0
+                   c"Radar imagery is not connected yet."))
+        3
+          (label 304.0
+                 (+ (hero-height) -171.0)
+                 18.0
+                 0x34566a
+                 0
+                 c"Weather alerts are not connected yet.")
+        (do
+          (label 304.0
+                 (+ (hero-height) -171.0)
+                 18.0
+                 0x34566a
+                 0
+                 (if (= (load (units/mode)) 1)
+                     c"Temperature: Celsius"
+                     c"Temperature: Fahrenheit"))
+          (label 304.0
+                 (+ (hero-height) -141.0)
+                 18.0
+                 0x34566a
+                 0
+                 (if (= (load (units/mode)) 1)
+                     c"Wind speed: km/h"
+                     c"Wind speed: mph"))))
+      (with-elevation 20.0
+                      (button 400
+                              (rect (+ 244.0
+                                       (minimum 418.0 (- (center-width) 220.0)))
+                                    (+ (hero-height) -106.0)
+                                    170.0
+                                    36.0)
+                              c"Back to Today"
+                              false
+                              (cotton 0xc4d7da)))))
+  0)
+
+(defn live-status [] (-> i64)
+  (ink-height 56.0)
+  (text-box (rect 278.0
+                  (- (host/logical-height) 27.0)
+                  (- (center-width) 190.0)
+                  20.0)
+            11.0
+            0x516a78
+            0
+            (cond (.loading (weather/state))
+                    (weather/joined c"Loading weather for "
+                                    (weather/text (weather/item (.pending-location (weather/state))
+                                                                c"name")))
+                  (!= (.forecast-error (weather/state)) (o/nil))
+                    (weather/text (.forecast-error (weather/state)))
+                  (weather/ready)
+                    (weather/joined c"Open-Meteo · Updated "
+                                    (weather/date-text (weather/current c"time")
+                                                       c"h:mm a"))
+                  :else c"Weather data: Open-Meteo"))
+  (with-elevation 18.0
+                  (button 600
+                          (rect (- (host/logical-width) 500.0)
+                                (- (host/logical-height) 34.0)
+                                112.0
+                                28.0)
+                          c"Refresh"
+                          false
+                          (cotton 0xe5ddcd)))
+  0)
+
+(defn search-results [] (-> i64)
+  (let [s (weather/state)]
+    (when (and (.search-open s) (not (.open (lighting))))
+      (let [count (weather/count (.results s))
+            height (+ 48.0 (* 64.0 (cast f64 count)))]
+        (panel (rect 22.0 181.0 420.0 height) 16.0 58.0 (cotton 0xf5eddf))
+        (ink-height 59.0)
+        (label 40.0
+               196.0
+               14.0
+               0x526b79
+               0
+               (cond (.searching s) c"Searching…"
+                     (!= (.search-error s) (o/nil))
+                       (weather/text (.search-error s))
+                     (> count 0) c"Choose a location"
+                     (< (strlen (weather/text (.query s))) (: 2 u64))
+                       c"Type at least two characters"
+                     :else c"No locations found"))
+        (for [i 0 count]
+          (let [location (weather/at (.results s) i)
+                y (+ 222.0 (* (cast f64 i) 64.0))]
+            (selection-surface 4
+                               (+ 700 i)
+                               (rect 30.0 y 404.0 60.0)
+                               (weather/joined (weather/joined (weather/text (weather/item location
+                                                                                           c"name"))
+                                                               c", ")
+                                               (weather/region location))
+                               (= i (.selected-result s))
+                               (control-style 18.0 0 59.0))
+            (ink-height 60.0)
+            (text-box (rect 44.0 (+ y 6.0) 376.0 24.0)
+                      18.0
+                      0x16394f
+                      0
+                      (weather/text (weather/item location c"name")))
+            (text-box (rect 44.0 (+ y 33.0) 376.0 20.0)
+                      12.0
+                      0x526b79
+                      0
+                      (weather/region location)))))))
+  0)
+
+(defn lighting-anchor [] (-> Rect)
+  (rect 22.0 (bottom-y 930.0) 200.0 48.0))
+
+(defn draw [] (-> i64)
+  (host/paper_begin 0xf3ead9)
+  (light/apply-light (lighting)
+                     (rect 0.0 0.0 (host/logical-width) (host/logical-height)))
+  (landscape)
+  (hourly)
+  (sidebar)
+  (forecast)
+  (nav-content)
+  (live-status)
+  (panel (lighting-anchor) 16.0 46.0 (control-stock 500 (cotton 0xe6ddcb)))
+  (light/sun (rect 34.0 (bottom-y 941.0) 26.0 26.0) 49.0)
+  (ink-height 50.0)
+  (label 76.0 (bottom-y 944.0) 16.0 0x23465b 0 c"Adjust lighting")
+  (hit 500 (lighting-anchor) c"Adjust lighting")
+  (search-results)
+  (with-elevation 8.0 (light/popover-panel (lighting) 500 (lighting-anchor)))
+  (host/paper_drag_area (rect 0.0 0.0 (host/logical-width) 36.0))
+  0)
+
+(defn tick-policy [] (-> i64)
+  (host/paper_tick_interval (cond (.animating (lighting)) (/ 1.0 60.0)
+                                  (> (.due (weather/state)) 0.0) 0.1
+                                  :else 1.0)))
+
+(defn event [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
+  (when (= kind 6)
+    (weather/poll)
+    (when (host/paper_window_visible) (host/paper_redraw)))
+  (let [result
+          (cond (= kind 0)
+                  (do
+                    (units/init)
+                    (store! (selected-nav) 0)
+                    (store! (selected-metric) 0)
+                    (store! (lighting)
+                            (light/lighting (/ 130.0 1536.0)
+                                            (/ -360.0 1024.0)
+                                            1300.0
+                                            0.7
+                                            0.75))
+                    (set! (.paper-height-enabled (lighting)) true)
+                    (when (not (.headless (host/host))) (weather/start))
+                    (host/paper_tick_interval 0.1))
+                (and (= kind 5) (= id 100))
+                  (do
+                    (weather/query-changed (host/paper_input_value 100))
+                    (host/paper_tick_interval 0.1)
+                    0)
+                (and (= kind 4) (= id 53) (.search-open (weather/state)))
+                  (do
+                    (set! (.search-open (weather/state)) false)
+                    (host/paper_redraw)
+                    1)
+                (and (= kind 4)
+                     (= id 36)
+                     (.search-open (weather/state))
+                     (> (weather/count (.results (weather/state))) 0))
+                  (do
+                    (weather/select-location (weather/at (.results (weather/state))
+                                                         (.selected-result (weather/state))))
+                    1)
+                (and (= kind 4)
+                     (or (= id 125) (= id 126))
+                     (.search-open (weather/state))
+                     (> (weather/count (.results (weather/state))) 0))
+                  (do
+                    (let [count (weather/count (.results (weather/state)))]
+                      (set! (.selected-result (weather/state))
+                            (% (+ (.selected-result (weather/state))
+                                  (if (= id 125) 1 (- count 1)))
+                               count)))
+                    (host/paper_redraw)
+                    1)
+                (light/handle (lighting) 500 kind id x y) 0
+                (= kind 3)
+                  (do
+                    (when (or (< id 700) (>= id 706))
+                      (set! (.search-open (weather/state)) false))
+                    (cond (and (>= id 700) (< id 706))
+                            (weather/select-location (weather/at (.results (weather/state))
+                                                                 (- id 700)))
+                          (or (= id 610) (= id 611)) (units/select (- id 610))
+                          (= id 600)
+                            (when (weather/valid-location? (.pending-location (weather/state)))
+                              (weather/select-location (.pending-location (weather/state))))
+                          (= id 204) (set! (.open (lighting)) true)
+                          (and (>= id 200) (<= id 203))
+                            (store! (selected-nav) (- id 200))
+                          (and (>= id 300) (<= id 302))
+                            (store! (selected-metric) (- id 300))
+                          (= id 110) (host/paper_focus 100)
+                          (= id 400) (store! (selected-nav) 0)
+                          :else 0)
+                    (host/paper_redraw))
+                :else 0)]
+    (tick-policy)
+    result))

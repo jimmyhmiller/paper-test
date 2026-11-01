@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "name": "Grass and reed tuft",
+  "construction": "grasses-v1",
+  "variation": {
+    "vigour": {
+      "mean": 0.6,
+      "deviation": 0.22,
+      "range": [
+        0.2,
+        0.95
+      ]
+    },
+    "exposure": {
+      "mean": 0.4,
+      "deviation": 0.23,
+      "range": [
+        0,
+        0.95
+      ]
+    },
+    "gesture": {
+      "mean": 0,
+      "deviation": 0.4,
+      "range": [
+        -0.85,
+        0.85
+      ]
+    }
+  },
+  "form": {
+    "height": {
+      "base": 28,
+      "vigour": 38
+    },
+    "spread": {
+      "base": 0.36,
+      "exposure": 0.18
+    },
+    "bend": {
+      "base": 0.09,
+      "exposure": 0.22,
+      "gesture": 0.08
+    },
+    "blades": {
+      "base": 3,
+      "vigour": 4
+    },
+    "blade_width": {
+      "base": 0.022,
+      "vigour": 0.018
+    }
+  },
+  "constraints": {
+    "height": [
+      33,
+      70
+    ],
+    "spread": [
+      0.35,
+      0.55
+    ],
+    "bend": [
+      0.01,
+      0.38
+    ],
+    "blades": [
+      3,
+      7
+    ],
+    "blade_width": [
+      0.02,
+      0.04
+    ]
+  },
+  "preferences": {
+    "spread": {
+      "target": 0.45,
+      "tolerance": 0.18,
+      "weight": 1
+    },
+    "bend": {
+      "target": 0.18,
+      "tolerance": 0.18,
+      "weight": 0.7
+    }
+  },
+  "placement": {
+    "support": "soil",
+    "root_radius": 0.09,
+    "spacing": 0.4,
+    "moisture": [
+      0,
+      1
+    ]
+  },
+  "construction_rules": {
+    "blade_length_variation": 0.22,
+    "fan_jitter": 0.09,
+    "reed_moisture": 0.68,
+    "seed_heads": 2
+  }
+}

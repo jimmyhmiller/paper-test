@@ -1,0 +1,45 @@
+(module paper-weather.units)
+(import "coil.primitive" :as p)
+(import "paper.objc" :use *)
+(import "paper.platform" :as host)
+(import "paper-weather.service" :as weather)
+
+;;; User preference, independent of the searched location. Provider values stay
+;;; canonical Celsius/km/h; conversion happens once at the presentation boundary.
+;;; 0: US customary (Fahrenheit, mph), 1: metric (Celsius, km/h).
+(defn mode [] (-> (ptr i64))
+  (p/alloc-static i64))
+
+(defn init [] (-> i64)
+  (store! (mode) (if (= (host/paper_pref_get c"weather.metric" 0) 1) 1 0))
+  0)
+
+(defn select [(value i64)] (-> i64)
+  (store! (mode) (if (= value 1) 1 0))
+  (host/paper_pref_set c"weather.metric" (load (mode)))
+  (host/paper_redraw)
+  0)
+
+(defn temperature [(number (ptr i8))] (-> (ptr i8))
+  (if (or (not (weather/number? number)) (= (load (mode)) 1))
+      number
+      (msg (ptr i8)
+           (class c"NSNumber")
+           (sel c"numberWithDouble:")
+           [f64]
+           (+ (* (weather/value number) 1.8) 32.0))))
+
+(defn wind [(number (ptr i8))] (-> (ptr i8))
+  (if (or (not (weather/number? number)) (= (load (mode)) 1))
+      number
+      (msg (ptr i8)
+           (class c"NSNumber")
+           (sel c"numberWithDouble:")
+           [f64]
+           (* (weather/value number) 0.621371192237334))))
+
+(defn temperature-label [(number (ptr i8))] (-> (ptr i8))
+  (weather/formatted (temperature number) c"°"))
+
+(defn wind-label [(number (ptr i8))] (-> (ptr i8))
+  (weather/formatted (wind number) (if (= (load (mode)) 1) c" km/h" c" mph")))

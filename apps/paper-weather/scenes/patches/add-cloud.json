@@ -1,0 +1,9 @@
+[
+  {"op":"append","parent":null,"node":{
+    "id":"ai-added-cloud","transform":[520,70,0,0,0],
+    "motion":{"kind":"drift","amplitude":12,"period":40,"phase":1},
+    "children":[{"id":"ai-added-cloud-face","material":"cloud","z":7,
+      "path":[["M",0,30],["C",-12,30,-12,10,3,10],["C",0,-8,25,-12,33,3],["C",42,-12,65,-7,66,12],["C",90,8,94,30,75,31],["Z"]]}
+    ]
+  }}
+]

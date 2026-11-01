@@ -1,0 +1,9 @@
+(module paper-weather.scene-validate)
+(import "paper-weather.scene-document" :as doc)
+(import "paper.objc" :as o)
+(defn main [(argc i32) (argv (ptr (ptr i8)))] (-> i64)
+  (let [pool (o/new c"NSAutoreleasePool")
+        ok (if (= argc (: 2 i32)) (doc/load-file (doc/document) (load (index argv 1))) false)]
+    (doc/dispose (doc/document))
+    (o/release pool)
+    (if ok 0 1)))

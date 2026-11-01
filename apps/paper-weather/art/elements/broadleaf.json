@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "name": "Branching broadleaf",
+  "construction": "broadleaf-v1",
+  "variation": {
+    "age": {
+      "mean": 0.6,
+      "deviation": 0.22,
+      "range": [
+        0.15,
+        0.95
+      ]
+    },
+    "vigour": {
+      "mean": 0.65,
+      "deviation": 0.2,
+      "range": [
+        0.25,
+        0.95
+      ]
+    },
+    "exposure": {
+      "mean": 0.3,
+      "deviation": 0.2,
+      "range": [
+        0,
+        0.85
+      ]
+    },
+    "gesture": {
+      "mean": 0,
+      "deviation": 0.35,
+      "range": [
+        -0.8,
+        0.8
+      ]
+    }
+  },
+  "form": {
+    "height": {
+      "base": 110,
+      "age": 110,
+      "vigour": 15
+    },
+    "crown_ratio": {
+      "base": 0.58,
+      "vigour": 0.28,
+      "age": -0.05
+    },
+    "crown_height": {
+      "base": 0.55,
+      "vigour": 0.12
+    },
+    "lean": {
+      "base": 0,
+      "gesture": 0.055,
+      "exposure": 0.012
+    },
+    "irregularity": {
+      "base": 0.075,
+      "exposure": 0.075
+    },
+    "branch_count": {
+      "base": 3,
+      "age": 3
+    }
+  },
+  "constraints": {
+    "height": [
+      125,
+      235
+    ],
+    "crown_ratio": [
+      0.55,
+      0.87
+    ],
+    "crown_height": [
+      0.55,
+      0.69
+    ],
+    "lean": [
+      -0.06,
+      0.07
+    ],
+    "irregularity": [
+      0.07,
+      0.145
+    ],
+    "branch_count": [
+      3,
+      6
+    ]
+  },
+  "preferences": {
+    "crown_ratio": {
+      "target": 0.75,
+      "tolerance": 0.14,
+      "weight": 1
+    },
+    "crown_height": {
+      "target": 0.63,
+      "tolerance": 0.12,
+      "weight": 1
+    },
+    "lean": {
+      "target": 0.012,
+      "tolerance": 0.04,
+      "weight": 0.4
+    }
+  },
+  "placement": {
+    "support": "soil",
+    "root_radius": 0.018,
+    "spacing": 0.24,
+    "moisture": [
+      0.25,
+      1
+    ]
+  },
+  "construction_rules": {
+    "crown_points": 20,
+    "fold_bow": 0.045,
+    "branch_taper": 0.28,
+    "bark_marks": 3
+  }
+}

@@ -21,12 +21,10 @@
            [root
             (aligned (row (grow 1.0) (grow 1.0) 24.0) 0.5 0.0)
             [brand (box (fixed (text-width c"papercut" 25.0 1)) (fixed 36.0))]
-            [edition (box (fixed 110.0) (fixed 18.0))]
             [space (box (grow 1.0) (grow 1.0))]
             [tabs (box (fixed 646.0) (fixed 40.0))]
             [end-space (box (grow 1.0) (grow 1.0))]]
            (caption brand 25.0 (live-colors/brand-color) 1 c"papercut")
-           (caption edition 10.0 0x9eaa98 2 c"STUDIO / 01")
            (let [(mut style) (selection-style (linen 0x424a40) (cream) (moss))]
              (set! (.treatment style) 1)
              (set! (.z style) 14.0)
@@ -37,10 +35,10 @@
              (set! (.padding style) 12.0)
              (tab-strip 1
                         tabs
-                        (: [(choice 1 c"01  AgentHub" c"")
-                            (choice 2 c"02  Herbarium" c"")
-                            (choice 3 c"03  Listening room" c"")
-                            (choice 4 c"04  Elsewhere" c"")]
+                        (: [(choice 1 c"AgentHub" c"")
+                            (choice 2 c"Herbarium" c"")
+                            (choice 3 c"Listening room" c"")
+                            (choice 4 c"Elsewhere" c"")]
                            (slice Choice))
                         (+ (.app (state)) 1)
                         10.0

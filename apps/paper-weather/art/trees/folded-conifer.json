@@ -1,0 +1,241 @@
+{
+  "name": "Folded conifer",
+  "version": 1,
+  "construction": "folded-conifer-v1",
+  "variation": {
+    "age": {
+      "mean": 0.58,
+      "deviation": 0.24,
+      "range": [
+        0.12,
+        0.95
+      ]
+    },
+    "vigour": {
+      "mean": 0.66,
+      "deviation": 0.19,
+      "range": [
+        0.25,
+        0.95
+      ]
+    },
+    "exposure": {
+      "mean": 0.32,
+      "deviation": 0.26,
+      "range": [
+        0.0,
+        0.9
+      ]
+    },
+    "gesture": {
+      "mean": 0.0,
+      "deviation": 0.38,
+      "range": [
+        -0.85,
+        0.85
+      ]
+    }
+  },
+  "form": {
+    "height": {
+      "base": 132,
+      "age": 115,
+      "vigour": 15
+    },
+    "width_ratio": {
+      "base": 0.44,
+      "age": -0.08,
+      "vigour": 0.17,
+      "exposure": -0.055
+    },
+    "trunk_ratio": {
+      "base": 0.018,
+      "age": 0.012
+    },
+    "clearance": {
+      "base": 0.18,
+      "age": 0.05,
+      "vigour": -0.07
+    },
+    "lean": {
+      "base": 0.0,
+      "gesture": 0.035,
+      "exposure": 0.025
+    },
+    "tier_count": {
+      "base": 3,
+      "age": 3.4
+    },
+    "taper_power": {
+      "base": 0.68,
+      "age": 0.16,
+      "vigour": -0.12
+    },
+    "branch_sag": {
+      "base": 0.12,
+      "age": 0.055,
+      "exposure": 0.04
+    },
+    "asymmetry": {
+      "base": 0.0,
+      "gesture": 0.07,
+      "exposure": 0.055
+    }
+  },
+  "construction_rules": {
+    "tier_overlap": 0.88,
+    "local_width_variation": 0.045,
+    "tier_step_variation": 0.06,
+    "fold_offset": 0.035,
+    "sheet_step": 0.3
+  },
+  "constraints": {
+    "height": [
+      140,
+      270
+    ],
+    "width_ratio": [
+      0.36,
+      0.65
+    ],
+    "clearance": [
+      0.12,
+      0.24
+    ],
+    "absolute_lean": [
+      0,
+      0.065
+    ],
+    "tier_count": [
+      3,
+      7
+    ],
+    "minimum_tier_overlap": 0.12
+  },
+  "preferences": {
+    "proportion": {
+      "weight": 1.0,
+      "target": 0.5,
+      "tolerance": 0.09
+    },
+    "branch_rhythm": {
+      "weight": 0.55,
+      "target": 0.04,
+      "tolerance": 0.05
+    },
+    "trunk_exposure": {
+      "weight": 0.7,
+      "target": 0.16,
+      "tolerance": 0.07
+    },
+    "gesture": {
+      "weight": 0.3,
+      "target": 0.018,
+      "tolerance": 0.035
+    }
+  },
+  "paper": {
+    "stocks": [
+      {
+        "face": "899b83",
+        "fold": "647d70"
+      },
+      {
+        "face": "9ba88b",
+        "fold": "758b78"
+      },
+      {
+        "face": "7c9587",
+        "fold": "59766e"
+      },
+      {
+        "face": "a1ab91",
+        "fold": "7b907b"
+      }
+    ],
+    "trunk": "9b8061",
+    "trunk_fold": "7e6a53"
+  },
+  "placement": {
+    "seed": 731,
+    "count": 18,
+    "candidate_pool": 1600,
+    "alternatives_per_tree": 36,
+    "region": [
+      65,
+      405,
+      1135,
+      688
+    ],
+    "density_field": [
+      {
+        "center": [
+          240,
+          475
+        ],
+        "radius": [
+          145,
+          125
+        ],
+        "weight": 1.0
+      },
+      {
+        "center": [
+          970,
+          485
+        ],
+        "radius": [
+          160,
+          145
+        ],
+        "weight": 0.9
+      },
+      {
+        "center": [
+          150,
+          640
+        ],
+        "radius": [
+          85,
+          80
+        ],
+        "weight": 0.6
+      },
+      {
+        "center": [
+          1040,
+          640
+        ],
+        "radius": [
+          90,
+          85
+        ],
+        "weight": 0.65
+      }
+    ],
+    "protected_opening": [
+      480,
+      260,
+      710,
+      665
+    ],
+    "perspective_scale": [
+      0.6,
+      1.5
+    ],
+    "minimum_root_spacing": 35,
+    "crown_clearance": 0.1,
+    "preferences": {
+      "density": 1.0,
+      "crowding": 1.5,
+      "near_tangency": 1.4,
+      "neighbor_repetition": 0.8,
+      "individual_quality": 0.65
+    },
+    "paper_stack": {
+      "base": 31,
+      "tree_band": 0.85,
+      "tier_step": 0.06
+    }
+  }
+}

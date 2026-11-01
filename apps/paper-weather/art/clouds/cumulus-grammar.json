@@ -1,0 +1,138 @@
+{
+  "version": 2,
+  "name": "Budding cumulus",
+  "production": "Cloud \u2192 Base + Shoulders + Root \u2192 PrimaryBud \u2192 FlankBuds \u2192 SummitBud \u2192 UnionBoundary \u2192 Backing + Face",
+  "traits": {
+    "growth": {
+      "range": [
+        0,
+        1
+      ],
+      "default": 0.48
+    },
+    "lean": {
+      "range": [
+        -1,
+        1
+      ],
+      "default": 0.15
+    },
+    "breadth": {
+      "range": [
+        0,
+        1
+      ],
+      "default": 0.5
+    }
+  },
+  "base": {
+    "half_length": 0.27,
+    "y": 0.01,
+    "radius": 0.075
+  },
+  "breadth_spread": 0.06,
+  "lobes": [
+    {
+      "id": "left-shoulder",
+      "x": -0.22,
+      "y": -0.095,
+      "radius": 0.145
+    },
+    {
+      "id": "right-shoulder",
+      "x": 0.23,
+      "y": -0.095,
+      "radius": 0.14
+    },
+    {
+      "id": "root",
+      "x": 0.015,
+      "y": -0.105,
+      "radius": 0.16
+    },
+    {
+      "id": "primary",
+      "parent": "root",
+      "activation": [
+        0.04,
+        0.68
+      ],
+      "radius": 0.145,
+      "emergence": 0.045,
+      "lean": 0.035,
+      "parent_offset": [
+        0.09,
+        -0.6
+      ]
+    },
+    {
+      "id": "right-flank",
+      "parent": "root",
+      "activation": [
+        0.2,
+        0.78
+      ],
+      "radius": 0.1,
+      "emergence": 0.025,
+      "lean": 0.025,
+      "parent_offset": [
+        0.63,
+        -0.4
+      ]
+    },
+    {
+      "id": "left-flank",
+      "parent": "primary",
+      "activation": [
+        0.4,
+        0.88
+      ],
+      "radius": 0.1,
+      "emergence": 0.025,
+      "lean": 0.015,
+      "parent_offset": [
+        -0.6,
+        -0.25
+      ]
+    },
+    {
+      "id": "summit",
+      "parent": "primary",
+      "activation": [
+        0.64,
+        1.0
+      ],
+      "radius": 0.108,
+      "emergence": 0.035,
+      "lean": 0.025,
+      "parent_offset": [
+        0.2,
+        -0.68
+      ]
+    }
+  ],
+  "construction": {
+    "backing_offset": [
+      3,
+      6
+    ],
+    "backing_height": 37,
+    "face_height": 40
+  },
+  "stocks": {
+    "sky": "bad5df",
+    "face": "f7efdc",
+    "backing": "e4dfd0"
+  },
+  "rules": [
+    "Base and original shoulders remain fixed throughout growth.",
+    "A bud starts inside its parent, expands locally and emerges; later buds attach to earlier buds.",
+    "Activation uses smoothstep; lobe radius begins at zero without a popping detached piece.",
+    "Mature lobes keep their radius. There is no growth-dependent coordinate scale or aspect ratio.",
+    "Analytic intersections retain only exposed arcs and base edges, merging all masses into one cut.",
+    "One fixed uniform scale is used for every stage; the base datum never moves.",
+    "This is an art grammar, not a physical cloud simulation.",
+    "Parent offsets are fractions of the current parent radius; newborn buds begin inside the parent rather than forming small exterior warts.",
+    "The merged silhouette fills enclosed interior pockets; detached outer components are rejected."
+  ]
+}

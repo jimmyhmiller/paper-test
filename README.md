@@ -43,6 +43,15 @@ These are local example applications. Agent metrics and charts use fixtures; the
 
 The native application stores agent names, care selections, the latest observation, music favorites, and saved destinations with NSUserDefaults. Keys use the `studio.papercut.` prefix. Task checkmarks and trip length are session state. UI verification added a `PaperTester` agent and a sample observation to this machine's example workspace.
 
+## Paper Weather mockup
+
+[Paper Weather](apps/paper-weather/README.md) recreates the alpine weather concept
+with native cut-paper geometry, shared materials and lighting, live Open-Meteo
+forecasts, and real location search. Resize and place-specific scene design remain
+provisional. Build it from `apps/paper-weather` with
+`coil build -o ../../build/paper-weather`, then run `build/paper-weather` from the
+repository root.
+
 ## Standalone terminal
 
 [Paper Terminal](apps/paper-terminal/README.md) embeds real Ghostty sessions in the paper renderer: independent shell tabs, native terminal input, responsive layout, and a folded paper cursor. Its separate app bundle includes all runtime resources and does not depend on Sieve.

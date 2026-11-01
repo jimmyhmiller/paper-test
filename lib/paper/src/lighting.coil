@@ -3,6 +3,7 @@
 (import "paper.platform" :as host)
 
 ;;; App-owned lighting and popover state. Reserve base-id through base-id + 7.
+;;; With paper-height-enabled, also reserve base-id + 8 for the uniform physical paper-height scale.
 ;;; Coordinates are normalized to the app viewport, allowing the light outside it.
 (defstruct Lighting
   [(x f64)
@@ -10,6 +11,11 @@
    (height f64)
    (depth f64)
    (grain f64)
+   (paper-height f64)
+   (paper-height-enabled bool)
+   (default-paper-height f64)
+   (start-paper-height f64)
+   (target-paper-height f64)
    (default-x f64)
    (default-y f64)
    (default-height f64)
@@ -36,13 +42,19 @@
    (bounds Rect)
    (viewport Rect)])
 
-(defn lighting [(x f64) (y f64) (height f64) (depth f64) (grain f64)] (-> Lighting)
+(defn lighting [(x f64) (y f64) (height f64) (depth f64) (grain f64)]
+  (-> Lighting)
   (Lighting
     :x x
     :y y
     :height height
     :depth depth
     :grain grain
+    :paper-height 1.0
+    :paper-height-enabled false
+    :default-paper-height 1.0
+    :start-paper-height 1.0
+    :target-paper-height 1.0
     :default-x x
     :default-y y
     :default-height height
@@ -80,6 +92,8 @@
                      (depth f64)
                      (grain f64)
                      (now f64)] (-> i64)
+  (set! (.start-paper-height s) (.paper-height s))
+  (set! (.target-paper-height s) (.paper-height s))
   (set! (.start-x s) (.x s))
   (set! (.start-y s) (.y s))
   (set! (.start-height s) (.height s))
@@ -110,7 +124,9 @@
                  (.default-height s)
                  (.default-depth s)
                  (.default-grain s)
-                 now))
+                 now)
+  (set! (.target-paper-height s) (.default-paper-height s))
+  0)
 
 (defn animate-default [(s (ptr Lighting))] (-> i64)
   (animate-default-at s (host/CACurrentMediaTime)))
@@ -127,6 +143,8 @@
       (let [progress (clamp (/ (- now (.animation-start s)) 0.32) 0.0 1.0)
             remaining (- 1.0 progress)
             amount (- 1.0 (* remaining (* remaining remaining)))]
+        (set! (.paper-height s)
+              (mix (.start-paper-height s) (.target-paper-height s) amount))
         (set! (.x s) (mix (.start-x s) (.target-x s) amount))
         (set! (.y s) (mix (.start-y s) (.target-y s) amount))
         (set! (.height s) (mix (.start-height s) (.target-height s) amount))
@@ -143,17 +161,31 @@
   (host/paper_light (+ (.x viewport) (* (.x s) (.w viewport)))
                     (+ (.y viewport) (* (.y s) (.h viewport)))
                     (.height s)
-                    (.depth s)
+                    (* (.depth s) (.paper-height s))
                     (.grain s)))
+
+(defn track-spacing [(s (ptr Lighting))] (-> f64)
+  (if (and (.paper-height-enabled s) (< (.h (.bounds s)) 260.0)) 28.0 36.0))
+
+(defn controls-height [(s (ptr Lighting))] (-> f64)
+  (+ 27.0 (* (if (.paper-height-enabled s) 3.0 2.0) (track-spacing s))))
 
 (defn map-bounds [(s (ptr Lighting))] (-> Rect)
   (let [r (.bounds s)]
-    (rect (+ (.x r) 22.0) (+ (.y r) 61.0) (- (.w r) 44.0) (- (.h r) 178.0))))
+    (rect (+ (.x r) 22.0)
+          (+ (.y r) 61.0)
+          (- (.w r) 44.0)
+          (- (.h r)
+             (if (.paper-height-enabled s)
+                 (+ 73.0 (controls-height s))
+                 178.0)))))
 
 (defn track-bounds [(s (ptr Lighting)) (row i64)] (-> Rect)
   (let [r (.bounds s)]
     (rect (+ (.x r) 100.0)
-          (+ (.y r) (+ (- (.h r) 99.0) (* (cast f64 row) 36.0)))
+          (+ (.y r)
+             (+ (- (.h r) (controls-height s))
+                (* (cast f64 row) (track-spacing s))))
           (- (.w r) 126.0)
           24.0)))
 
@@ -191,7 +223,10 @@
   (when (.open s)
     (let [v (if (> (.w (.drag-limits s)) 0.0) (.drag-limits s) (.viewport s))
           width (clamp (- (.w v) 32.0) 240.0 310.0)
-          height (clamp (- (.h v) 32.0) 208.0 310.0)
+          height
+            (clamp (- (.h v) 32.0)
+                   208.0
+                   (if (.paper-height-enabled s) 346.0 310.0))
           preferred-y
             (if (>= (- (.y anchor) (+ height 16.0)) (+ (.y v) 16.0))
                 (- (.y anchor) (+ height 16.0))
@@ -237,7 +272,7 @@
             54.0
             (ochre))
       (hit (+ base-id 1) map c"Light position")
-      (for [i 0 2]
+      (for [i 0 (if (.paper-height-enabled s) 3 2)]
         (let [rtrack (track-bounds s i)]
           (ink-height 48.0)
           (label (+ (.x r) 22.0)
@@ -245,13 +280,14 @@
                  12.0
                  0x6b5d46
                  0
-                 (if (= i 0) c"Height" c"Relief"))
-          (track (+ base-id (+ 2 i))
+                 (case i 0 c"Light height" 1 c"Relief" c"Paper height"))
+          (track (+ base-id (case i 0 2 1 3 8))
                  rtrack
-                 (if (= i 0) c"Light height" c"Paper relief")
-                 (if (= i 0)
-                     (/ (- (.height s) 200.0) 1800.0)
-                     (/ (.depth s) 1.5)))))
+                 (case i 0 c"Light height" 1 c"Paper relief" c"Paper height")
+                 (case i
+                   0 (/ (- (.height s) 200.0) 1800.0)
+                   1 (/ (.depth s) 1.5)
+                   (/ (- (.paper-height s) 0.25) 1.05)))))
       (ink-height 48.0)
       (label (+ (.x r) 22.0)
              (+ (.y r) (- (.h r) 28.0))
@@ -291,7 +327,9 @@
         (= kind 6) (advance-animation s x)
         (and (.open s) (= kind 4) (= id 53))
           (do (set! (.open s) false) (host/paper_redraw) true)
-        (or (< id base-id) (> id (+ base-id 7))) (.open s)
+        (or (< id base-id)
+            (> id (+ base-id (if (.paper-height-enabled s) 8 7))))
+          (.open s)
         :else
           (do
             (cond (and (.open s) (= id (+ base-id 7)) (= kind 1))
@@ -328,12 +366,24 @@
                                       (- (* 3.0 (fraction x (.x r) (.w r))) 1.0))
                                 (set! (.y s)
                                       (- (* 3.0 (fraction y (.y r) (.h r))) 1.0)))
-                            (or (= id (+ base-id 2)) (= id (+ base-id 3)))
-                              (let [r (track-bounds s (- id (+ base-id 2)))
+                            (or (= id (+ base-id 2))
+                                (= id (+ base-id 3))
+                                (and (.paper-height-enabled s)
+                                     (= id (+ base-id 8))))
+                              (let [r
+                                      (track-bounds s
+                                                    (if (= id (+ base-id 8))
+                                                        2
+                                                        (- id (+ base-id 2))))
                                     v (fraction x (.x r) (.w r))]
-                                (if (= id (+ base-id 2))
-                                    (set! (.height s) (+ 200.0 (* v 1800.0)))
-                                    (set! (.depth s) (* v 1.5))))
+                                (cond (= id (+ base-id 2))
+                                        (set! (.height s)
+                                              (+ 200.0 (* v 1800.0)))
+                                      (= id (+ base-id 3))
+                                        (set! (.depth s) (* v 1.5))
+                                      :else
+                                        (set! (.paper-height s)
+                                              (+ 0.25 (* v 1.05)))))
                             :else 0))
                   :else 0)
             (when (= kind 3) (set! (.dragging s) false))

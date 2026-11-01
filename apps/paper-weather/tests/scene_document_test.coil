@@ -1,0 +1,174 @@
+(module paper-weather.scene-document-test)
+(import "coil.primitive" :as p)
+(import "paper-weather.scene-document" :as doc)
+(import "paper-weather.service" :as json)
+(import "paper.flow" :use *)
+(import "paper.objc" :use *)
+(import "paper.ffi" :use [fabs strcmp])
+
+(defn scratch [] (-> (ptr doc/Document))
+  (p/alloc-static doc/Document))
+
+(defn parsed [(source (ptr i8))] (-> (ptr i8))
+  (json/decode (msg (ptr i8) (ns source) (sel c"dataUsingEncoding:") [u64] 4)))
+
+(defn mutable-copy [(root (ptr i8))] (-> (ptr i8))
+  (let [(mut error) (nil)
+        data
+          (msg (ptr i8)
+               (class c"NSJSONSerialization")
+               (sel c"dataWithJSONObject:options:error:")
+               [(ptr i8) u64 (ptr (ptr i8))]
+               root
+               0
+               error)]
+    (msg (ptr i8)
+         (class c"NSJSONSerialization")
+         (sel c"JSONObjectWithData:options:error:")
+         [(ptr i8) u64 (ptr (ptr i8))]
+         data
+         1
+         error)))
+
+(defn find [(d (ptr doc/Document)) (id (ptr i8))] (-> (ptr doc/Piece))
+  (let [(mut found) (cast (ptr doc/Piece) 0)]
+    (for [i 0 (.count d)]
+      (let [n (index (field d pieces) i)]
+        (when (= (strcmp (.id n) id) 0) (set! found n))))
+    (load found)))
+
+(deftest supplied-scenes-compile-native-paths-and-named-components
+  (let [pool (new c"NSAutoreleasePool")
+        d (scratch)]
+    (assert (doc/load-file d c"scenes/indianapolis.json"))
+    (assert (!= (find d c"salesforce-face") (cast (ptr doc/Piece) 0)))
+    (assert (> (.count d) 40))
+    (assert (doc/load-file d c"scenes/new-york.json"))
+    (assert (!= (.path (find d c"brooklyn-tower")) (nil)))
+    (assert (doc/load-file d c"scenes/maroon-bells.json"))
+    (assert (!= (.path (find d c"maroon-peak")) (nil)))
+    (doc/dispose d)
+    (release pool)))
+
+(deftest rejected-ai-update-preserves-complete-last-good-scene
+  (let [pool (new c"NSAutoreleasePool")
+        d (scratch)]
+    (assert (doc/load-file d c"scenes/new-york.json"))
+    (let [root (.root d)
+          revision (.revision d)
+          count (.count d)
+          cached (.path (find d c"brooklyn-tower"))
+          bad (mutable-copy root)]
+      (json/put bad c"image" (ns c"https://example.com/photo.png"))
+      (assert (not (doc/accept d bad)))
+      (assert (= (.root d) root))
+      (assert (= (.count d) count))
+      (assert (= (.revision d) revision))
+      (assert (= (.path (find d c"brooklyn-tower")) cached))
+      (assert (not (doc/accept d (parsed c"{\"version\":true}"))))
+      (assert (not (doc/load-file d c"scenes/does-not-exist.json")))
+      (assert (= (.root d) root)))
+    (doc/dispose d)
+    (release pool)))
+
+(deftest arbitrary-piece-edit-and-parent-transform-reach-existing-children
+  (let [pool (new c"NSAutoreleasePool")
+        d (scratch)]
+    (assert (doc/load-file d c"scenes/new-york.json"))
+    (doc/layout d (rect 0.0 0.0 1000.0 600.0) 0.0)
+    (let [before (.tx (.matrix (find d c"brooklyn-tower")))
+          next (mutable-copy (.root d))
+          nodes (json/item next c"nodes")]
+      (for [i 0 (json/count nodes)]
+        (let [node (json/at nodes i)]
+          (when (= (strcmp (json/text (json/item node c"id"))
+                           c"brooklyn-bridge")
+                   0)
+            (json/put node c"transform" (parsed c"[17,0,0,0,0]")))))
+      (assert (doc/accept d next))
+      (doc/layout d (rect 0.0 0.0 1000.0 600.0) 0.0)
+      (assert (< (fabs (- (- (.tx (.matrix (find d c"brooklyn-tower"))) before)
+                          17.0))
+                 0.0001))
+      (assert (= (.tx (.matrix (find d c"brooklyn-tower")))
+                 (.tx (.matrix (find d c"tower-snow-cap"))))))
+    (doc/dispose d)
+    (release pool)))
+
+(deftest surface-snow-and-falling-snow-are-independent-and-motion-is-time-based
+  (let [pool (new c"NSAutoreleasePool")
+        d (scratch)]
+    (assert (doc/load-file d c"scenes/maroon-bells.json"))
+    (doc/set-condition d 2 1.0)
+    (doc/set-condition d 5 0.0)
+    (doc/layout d (rect 0.0 0.0 1000.0 600.0) 0.0)
+    (assert (.visible (find d c"winter-mountain-snow")))
+    (assert (not (.visible (find d c"snowfall"))))
+    (let [path (.path (find d c"valley-cloud-face"))
+          x (.tx (.matrix (find d c"valley-cloud-face")))]
+      (doc/layout d (rect 0.0 0.0 1000.0 600.0) 1.0)
+      (assert (!= x (.tx (.matrix (find d c"valley-cloud-face")))))
+      (let [at-one (.tx (.matrix (find d c"valley-cloud-face")))]
+        (doc/layout d (rect 0.0 0.0 1000.0 600.0) 0.5)
+        (doc/layout d (rect 0.0 0.0 1000.0 600.0) 1.0)
+        (assert (= at-one (.tx (.matrix (find d c"valley-cloud-face"))))))
+      (assert (= path (.path (find d c"valley-cloud-face")))))
+    (doc/dispose d)
+    (release pool)))
+
+(deftest scene-budget-rejects-duplicates-open-paths-and-unbounded-motion
+  (let [pool (new c"NSAutoreleasePool")
+        d (scratch)]
+    (assert (doc/load-file d c"scenes/new-york.json"))
+    (let [bad (mutable-copy (.root d))
+          nodes (json/item bad c"nodes")]
+      (json/put (json/at nodes 1) c"id" (json/item (json/at nodes 0) c"id"))
+      (assert (not (doc/validate bad))))
+    (let [bad (mutable-copy (.root d))
+          node (json/at (json/item bad c"nodes") 0)]
+      (json/put node
+                c"path"
+                (parsed c"[[\"M\",0,0],[\"L\",100,0],[\"L\",100,100]]"))
+      (assert (not (doc/validate bad))))
+    (let [bad (mutable-copy (.root d))
+          node (json/at (json/item bad c"nodes") 1)]
+      (json/put node
+                c"motion"
+                (parsed c"{\"kind\":\"drift\",\"amplitude\":10000,\"period\":0}"))
+      (assert (not (doc/validate bad))))
+    (doc/dispose d)
+    (release pool)))
+
+(deftest scene-rejects-excess-particle-work-and-hierarchy-depth
+  (let [pool (new c"NSAutoreleasePool")
+        d (scratch)]
+    (assert (doc/load-file d c"scenes/new-york.json"))
+    (let [bad (mutable-copy (.root d))
+          extra
+            (parsed c"{\"id\":\"too-many-particles\",\"material\":\"snow\",\"z\":8,\"emitter\":{\"kind\":\"snow\",\"bounds\":[0,0,1000,600],\"count\":96}}")]
+      (msg i64 (json/item bad c"nodes") (sel c"addObject:") [(ptr i8)] extra)
+      (assert (not (doc/validate bad))))
+    (let [bad (mutable-copy (.root d))
+          (mut node) (mutable-copy (json/at (json/item bad c"nodes") 0))]
+      (for [i 0 10]
+        (let [parent
+                (msg (ptr i8)
+                     (class c"NSMutableDictionary")
+                     (sel c"dictionary")
+                     [])
+              children
+                (msg (ptr i8) (class c"NSMutableArray") (sel c"array") [])]
+          (json/put parent
+                    c"id"
+                    (ns (json/joined c"deep-"
+                                     (json/formatted (json/integer i) c""))))
+          (msg i64 children (sel c"addObject:") [(ptr i8)] (load node))
+          (json/put parent c"children" children)
+          (set! node parent)))
+      (let [nodes (new c"NSMutableArray")]
+        (msg i64 nodes (sel c"addObject:") [(ptr i8)] (load node))
+        (json/put bad c"nodes" nodes)
+        (assert (not (doc/validate bad)))
+        (release nodes)))
+    (doc/dispose d)
+    (release pool)))

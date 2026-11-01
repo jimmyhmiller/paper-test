@@ -1,0 +1,38 @@
+(module paper-weather.resize-preview)
+(import "paper-weather.app" :as app)
+(import "paper.platform" :as host)
+(import "paper.scene" :as scene)
+(import "paper.render" :as render)
+(import "paper.workers" :as workers)
+(import "paper.objc" :as o)
+
+(defn verify-size [(width f64) (height f64) (path (ptr i8))] (-> i64)
+  (host/resize-responsive width height)
+  (app/draw)
+  (assert (= (app/center-width) (- width 604.0)))
+  (assert (= (app/forecast-x 1176.0) (- width 360.0)))
+  (assert (= (app/bottom-y 930.0) (- height 94.0)))
+  ;; The logical input and search backing never acquire a resize scale.
+  (for [i 0 (len (.hits (scene/scene)))]
+    (let [hit (get (.hits (scene/scene)) i)]
+      (assert (>= (.x (.bounds hit)) 0.0))
+      (assert (<= (+ (.x (.bounds hit)) (.w (.bounds hit))) width))
+      (assert (<= (+ (.y (.bounds hit)) (.h (.bounds hit))) height))))
+  (render/render-frame true)
+  (assert (= (render/snapshot path) 0))
+  0)
+
+(defn main [(argc i32) (argv (ptr (ptr i8)))] (-> i64)
+  (assert (= argc (: 3 i32)))
+  (let [pool (o/new c"NSAutoreleasePool")]
+    (scene/init)
+    (set! (.headless (host/host)) true)
+    (set! (.scale (scene/scene)) 1.0)
+    (host/paper_configure c"Paper Weather" 1536.0 1024.0)
+    (host/paper_responsive 1244.0 850.0)
+    (app/event 0 0 0.0 0.0)
+    (verify-size 1244.0 850.0 (load (index argv 1)))
+    (verify-size 1800.0 1100.0 (load (index argv 2)))
+    (workers/stop)
+    (o/release pool))
+  0)

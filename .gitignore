@@ -7,3 +7,8 @@
 /.worktrees/
 /.coil-live/
 .coil-live/
+
+# Generated artifacts and Python caches
+/output/
+__pycache__/
+*.py[cod]

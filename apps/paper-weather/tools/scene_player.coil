@@ -1,0 +1,94 @@
+(module paper-weather.scene-player)
+(import "coil.primitive" :as p)
+(import "paper.flow" :use *)
+(import "paper.platform" :as host)
+(import "paper.lighting" :as light)
+(import "paper-weather.scene-document" :as doc)
+(import "paper-weather.service" :as json)
+
+(defn lighting [] (-> (ptr light/Lighting))
+  (p/alloc-static light/Lighting))
+
+(defn draw [] (-> i64)
+  (host/paper_begin 0xf3ead9)
+  (light/apply-light (lighting)
+                     (rect 0.0 0.0 (host/logical-width) (host/logical-height)))
+  (doc/draw (doc/document)
+            (rect 0.0 0.0 (host/logical-width) (- (host/logical-height) 62.0))
+            (.phase (doc/runtime)))
+  (panel (rect 0.0 (- (host/logical-height) 62.0) (host/logical-width) 62.0)
+         0.0
+         45.0
+         (cotton 0xf3ead9))
+  (ink-height 48.0)
+  (text-box (rect 22.0 (- (host/logical-height) 47.0) 440.0 34.0)
+            19.0
+            0x23465b
+            1
+            (json/text (json/item (.root (doc/document)) c"title")))
+  (text-box (rect 480.0
+                  (- (host/logical-height) 45.0)
+                  (maximum 0.0 (- (host/logical-width) 750.0))
+                  34.0)
+            12.0
+            0x526b79
+            0
+            (.error (doc/document)))
+  (let [r
+          (rect (- (host/logical-width) 240.0)
+                (- (host/logical-height) 50.0)
+                90.0
+                35.0)]
+    (panel r 8.0 47.0 (control-stock 800 (cotton 0xc4d7da)))
+    (label (+ (.x r) 14.0)
+           (+ (.y r) 9.0)
+           14.0
+           0x23465b
+           0
+           (if (.paused (doc/runtime)) c"Play" c"Pause"))
+    (hit 800 r c"Pause or play"))
+  (let [r
+          (rect (- (host/logical-width) 138.0)
+                (- (host/logical-height) 50.0)
+                118.0
+                35.0)]
+    (panel r 8.0 47.0 (control-stock 500 (cotton 0xe6ddcb)))
+    (label (+ (.x r) 12.0) (+ (.y r) 9.0) 14.0 0x23465b 0 c"Paper / light")
+    (hit 500 r c"Paper and lighting")
+    (with-elevation 8.0 (light/popover-panel (lighting) 500 r)))
+  0)
+
+(defn event [(kind i64) (id i64) (x f64) (y f64)] (-> i64)
+  (cond (= kind 0)
+          (do
+            (store! (lighting) (light/lighting -0.1 -0.25 1300.0 0.45 0.75))
+            (set! (.paper-height-enabled (lighting)) true)
+            (set! (.error (doc/document))
+                  c"Pass --scene with a paper scene JSON file")
+            (doc/init-arguments))
+        (= kind 6)
+          (do
+            (light/handle (lighting) 500 kind id x y)
+            (when (doc/tick x
+                            (or (.headless (host/host))
+                                (host/paper_window_visible)))
+              (host/paper_redraw)))
+        (light/handle (lighting) 500 kind id x y) 0
+        (and (= kind 3) (= id 800))
+          (do
+            (set! (.paused (doc/runtime)) (not (.paused (doc/runtime))))
+            (host/paper_redraw))
+        :else 0)
+  (host/paper_tick_interval (if (or (.animating (lighting))
+                                    (and (or (.headless (host/host))
+                                             (host/paper_window_visible))
+                                         (not (.paused (doc/runtime)))
+                                         (not (.reduced (doc/runtime)))))
+                                (/ 1.0 60.0)
+                                0.25))
+  0)
+
+(defn main [] (-> i64)
+  (host/paper_configure c"Paper scene proof" 1500.0 962.0)
+  (host/paper_responsive 1000.0 662.0)
+  (host/paper_run (p/fnptr-of draw) (p/fnptr-of event)))

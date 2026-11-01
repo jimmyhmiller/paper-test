@@ -1,0 +1,548 @@
+(module paper-weather.service)
+(import "coil.primitive" :as p)
+(import "paper.objc" :use *)
+(import "paper.ffi"
+        :use
+        [snprintf floor fabs CACurrentMediaTime objc_allocateClassPair
+         class_addMethod objc_registerClassPair])
+(import "paper.platform" :as host)
+
+;;; NSURLSession delegates run on the main operation queue. Response buffers and
+;;; UI state are never shared across threads. Generation IDs reject stale replies.
+(defstruct Service
+  [(session (ptr i8))
+   (delegate (ptr i8))
+   (requests (ptr i8))
+   (formatters (ptr i8))
+   (search-task (ptr i8))
+   (forecast-task (ptr i8))
+   (query (ptr i8))
+   (results (ptr i8))
+   (location (ptr i8))
+   (pending-location (ptr i8))
+   (forecast (ptr i8))
+   (search-generation i64)
+   (forecast-generation i64)
+   (due f64)
+   (updated f64)
+   (searching bool)
+   (loading bool)
+   (persist bool)
+   (search-open bool)
+   (selected-result i64)
+   (search-error (ptr i8))
+   (forecast-error (ptr i8))])
+
+(defn state [] (-> (ptr Service))
+  (p/alloc-static Service))
+
+(defn owns [(slot (ptr (ptr i8))) (object (ptr i8))] (-> i64)
+  (let [next (retain object)] (release (load slot)) (set! slot next))
+  0)
+
+(defn is-a [(object (ptr i8)) (name (ptr i8))] (-> bool)
+  (and (!= object (nil))
+       (msg bool object (sel c"isKindOfClass:") [(ptr i8)] (class name))))
+
+(defn item [(object (ptr i8)) (key (ptr i8))] (-> (ptr i8))
+  (if (is-a object c"NSDictionary")
+      (msg (ptr i8) object (sel c"objectForKey:") [(ptr i8)] (ns key))
+      (nil)))
+
+(defn put [(object (ptr i8)) (key (ptr i8)) (value (ptr i8))] (-> i64)
+  (when (!= value (nil))
+    (msg i64
+         object
+         (sel c"setObject:forKey:")
+         [(ptr i8) (ptr i8)]
+         value
+         (ns key)))
+  0)
+
+(defn count [(array (ptr i8))] (-> i64)
+  (if (is-a array c"NSArray") (msg i64 array (sel c"count") []) 0))
+
+(defn at [(array (ptr i8)) (i i64)] (-> (ptr i8))
+  (if (and (>= i 0) (< i (count array)))
+      (msg (ptr i8) array (sel c"objectAtIndex:") [i64] i)
+      (nil)))
+
+(defn text [(object (ptr i8))] (-> (ptr i8))
+  (if (is-a object c"NSString") (utf8 object) c""))
+
+(defn number? [(object (ptr i8))] (-> bool)
+  (is-a object c"NSNumber"))
+
+(defn value [(object (ptr i8))] (-> f64)
+  (if (number? object) (msg f64 object (sel c"doubleValue") []) 0.0))
+
+(defn integer [(n i64)] (-> (ptr i8))
+  (msg (ptr i8) (class c"NSNumber") (sel c"numberWithLongLong:") [i64] n))
+
+(defn joined [(a (ptr i8)) (b (ptr i8))] (-> (ptr i8))
+  (utf8 (msg (ptr i8)
+             (ns a)
+             (sel c"stringByAppendingString:")
+             [(ptr i8)]
+             (ns b))))
+
+(defn formatted [(number (ptr i8)) (suffix (ptr i8))] (-> (ptr i8))
+  (if (not (number? number))
+      c"—"
+      (let [(mut bytes) (zeroed (array i8 128))]
+        (snprintf (index bytes 0) 128 c"%.0f%s" (value number) suffix)
+        (utf8 (ns (index bytes 0))))))
+
+(defn series [(root (ptr i8)) (group (ptr i8)) (key (ptr i8)) (i i64)]
+  (-> (ptr i8))
+  (at (item (item root group) key) i))
+
+(defn current [(key (ptr i8))] (-> (ptr i8))
+  (item (item (.forecast (state)) c"current") key))
+
+(defn daily [(key (ptr i8)) (i i64)] (-> (ptr i8))
+  (series (.forecast (state)) c"daily" key i))
+
+(defn ready [] (-> bool)
+  (!= (.forecast (state)) (nil)))
+
+(defn location-name [] (-> (ptr i8))
+  (if (is-a (item (.location (state)) c"name") c"NSString")
+      (text (item (.location (state)) c"name"))
+      c"Weather"))
+
+(defn region [(location (ptr i8))] (-> (ptr i8))
+  (let [admin (text (item location c"admin1"))
+        country (text (item location c"country"))]
+    (if (= (msg i64 (ns admin) (sel c"length") []) 0)
+        country
+        (joined (joined admin c", ") country))))
+
+(defn condition [(code i64)] (-> (ptr i8))
+  (case code
+    0 c"Clear sky"
+    1 c"Mainly clear"
+    2 c"Partly cloudy"
+    3 c"Overcast"
+    45 c"Fog"
+    48 c"Rime fog"
+    51 c"Light drizzle"
+    53 c"Drizzle"
+    55 c"Dense drizzle"
+    56 c"Freezing drizzle"
+    57 c"Freezing drizzle"
+    61 c"Light rain"
+    63 c"Rain"
+    65 c"Heavy rain"
+    66 c"Freezing rain"
+    67 c"Freezing rain"
+    71 c"Light snow"
+    73 c"Snow"
+    75 c"Heavy snow"
+    77 c"Snow grains"
+    80 c"Rain showers"
+    81 c"Rain showers"
+    82 c"Heavy showers"
+    85 c"Snow showers"
+    86 c"Heavy snow showers"
+    95 c"Thunderstorm"
+    96 c"Thunder & hail"
+    97 c"Thunderstorm"
+    99 c"Thunder & hail"
+    c"Unavailable"))
+
+(defn icon [(code i64) (day bool)] (-> i64)
+  (cond (< code 0) 2
+        (<= code 1) (if day 0 4)
+        (= code 2) 1
+        (= code 3) 2
+        (or (= code 45) (= code 48)) 7
+        (or (and (>= code 71) (<= code 77)) (= code 85) (= code 86)) 3
+        (>= code 95) 6
+        :else 5))
+
+(defn code [(object (ptr i8))] (-> i64)
+  (if (number? object) (cast i64 (value object)) -1))
+
+(defn hour-index [(i i64)] (-> i64)
+  (let [times (item (item (.forecast (state)) c"hourly") c"time")
+        now (value (current c"time"))
+        (mut start) 0]
+    (for [j 0 (count times)]
+      (when (<= (value (at times j)) now) (set! start j)))
+    (minimum-i (+ (load start) (* i 2)) (- (count times) 1))))
+
+(defn minimum-i [(a i64) (b i64)] (-> i64)
+  (if (< a b) a b))
+
+(defn hourly [(key (ptr i8)) (i i64)] (-> (ptr i8))
+  (series (.forecast (state)) c"hourly" key (hour-index i)))
+
+(defn date-text [(timestamp (ptr i8)) (format (ptr i8))] (-> (ptr i8))
+  (if (not (number? timestamp))
+      c"—"
+      (let [s (state)]
+        (when (= (.formatters s) (nil))
+          (set! (.formatters s) (new c"NSMutableDictionary")))
+        (let [(mut formatter) (item (.formatters s) format)]
+          (when (= (load formatter) (nil))
+            (set! formatter (new c"NSDateFormatter"))
+            (let [locale
+                    (msg (ptr i8)
+                         (msg (ptr i8) (class c"NSLocale") (sel c"alloc") [])
+                         (sel c"initWithLocaleIdentifier:")
+                         [(ptr i8)]
+                         (ns c"en_US_POSIX"))
+                  timezone
+                    (msg (ptr i8)
+                         (class c"NSTimeZone")
+                         (sel c"timeZoneWithName:")
+                         [(ptr i8)]
+                         (item (.forecast s) c"timezone"))]
+              (msg i64 (load formatter) (sel c"setLocale:") [(ptr i8)] locale)
+              (msg i64
+                   (load formatter)
+                   (sel c"setTimeZone:")
+                   [(ptr i8)]
+                   timezone)
+              (msg i64
+                   (load formatter)
+                   (sel c"setDateFormat:")
+                   [(ptr i8)]
+                   (ns format))
+              (put (.formatters s) format (load formatter))
+              (release locale)
+              (release (load formatter))))
+          (utf8 (msg (ptr i8)
+                     (load formatter)
+                     (sel c"stringFromDate:")
+                     [(ptr i8)]
+                     (msg (ptr i8)
+                          (class c"NSDate")
+                          (sel c"dateWithTimeIntervalSince1970:")
+                          [f64]
+                          (value timestamp))))))))
+
+(defn wind-direction [] (-> (ptr i8))
+  (if (not (number? (current c"wind_direction_10m")))
+      c"—"
+      (case (% (cast i64
+                     (floor (/ (+ (value (current c"wind_direction_10m"))
+                                  22.5)
+                               45.0)))
+               8)
+        0 c"N"
+        1 c"NE"
+        2 c"E"
+        3 c"SE"
+        4 c"S"
+        5 c"SW"
+        6 c"W"
+        c"NW")))
+
+(defn valid-location? [(location (ptr i8))] (-> bool)
+  (and (is-a (item location c"name") c"NSString")
+       (number? (item location c"latitude"))
+       (number? (item location c"longitude"))
+       (<= (fabs (value (item location c"latitude"))) 90.0)
+       (<= (fabs (value (item location c"longitude"))) 180.0)))
+
+(defn valid-forecast? [(root (ptr i8))] (-> bool)
+  (and (number? (item (item root c"current") c"temperature_2m"))
+       (number? (item (item root c"current") c"time"))
+       (is-a (item root c"timezone") c"NSString")
+       (>= (count (item (item root c"hourly") c"time")) 24)
+       (>= (count (item (item root c"daily") c"time")) 7)))
+
+(defn decode [(data (ptr i8))] (-> (ptr i8))
+  (let [(mut error) (nil)]
+    (msg (ptr i8)
+         (class c"NSJSONSerialization")
+         (sel c"JSONObjectWithData:options:error:")
+         [(ptr i8) u64 (ptr (ptr i8))]
+         data
+         0
+         error)))
+
+(defn task-key [(task (ptr i8))] (-> (ptr i8))
+  (integer (msg i64 task (sel c"taskIdentifier") [])))
+
+(defn received [(object (ptr i8))
+                (selector (ptr i8))
+                (session (ptr i8))
+                (task (ptr i8))
+                (data (ptr i8))] (-> void)
+  (let [ctx
+          (msg (ptr i8)
+               (.requests (state))
+               (sel c"objectForKey:")
+               [(ptr i8)]
+               (task-key task))
+        buffer (item ctx c"data")]
+    (when (!= buffer (nil))
+      (if (> (+ (msg u64 buffer (sel c"length") [])
+                (msg u64 data (sel c"length") []))
+             (: 2097152 u64))
+          (msg i64 task (sel c"cancel") [])
+          (msg i64 buffer (sel c"appendData:") [(ptr i8)] data)))))
+
+(defn completed [(object (ptr i8))
+                 (selector (ptr i8))
+                 (session (ptr i8))
+                 (task (ptr i8))
+                 (error (ptr i8))] (-> void)
+  (let [s (state)
+        ctx
+          (msg (ptr i8)
+               (.requests s)
+               (sel c"objectForKey:")
+               [(ptr i8)]
+               (task-key task))
+        kind (code (item ctx c"kind"))
+        generation (code (item ctx c"generation"))]
+    (when (and (!= ctx (nil))
+               (= generation
+                  (if (= kind 0)
+                      (.search-generation s)
+                      (.forecast-generation s))))
+      (let [response (msg (ptr i8) task (sel c"response") [])
+            status (msg i64 response (sel c"statusCode") [])
+            root
+              (if (and (= error (nil)) (= status 200))
+                  (decode (item ctx c"data"))
+                  (nil))]
+        (if (= kind 0)
+            (do
+              (set! (.searching s) false)
+              (set! (.search-task s) (nil))
+              (owns (field s results) (item root c"results"))
+              (owns (field s search-error)
+                    (if (is-a root c"NSDictionary")
+                        (nil)
+                        (ns c"Couldn’t search. Try again.")))
+              (set! (.selected-result s) 0)
+              (when (and (= (code (item ctx c"initial")) 1)
+                         (> (count (.results s)) 0))
+                (select-location (at (.results s) 0)))
+              (when (and (= (code (item ctx c"initial")) 1)
+                         (= (count (.results s)) 0))
+                (owns (field s forecast-error)
+                      (ns c"Couldn’t load the starting location. Search for a place."))))
+            (do
+              (set! (.loading s) false)
+              (set! (.forecast-task s) (nil))
+              (if (valid-forecast? root)
+                  (do
+                    (owns (field s forecast) root)
+                    ;; Cache only the current location's formatting objects.
+                    (msg i64 (.formatters s) (sel c"removeAllObjects") [])
+                    (owns (field s location) (item ctx c"location"))
+                    (owns (field s forecast-error) (nil))
+                    (when (and (not (.headless (host/host)))
+                               (!= (.window (host/host)) (nil)))
+                      (msg i64
+                           (.window (host/host))
+                           (sel c"setTitle:")
+                           [(ptr i8)]
+                           (ns (joined c"Paper Weather — " (location-name)))))
+                    (set! (.updated s) (CACurrentMediaTime))
+                    (when (.persist s) (save-location (.location s))))
+                  (owns (field s forecast-error)
+                        (ns c"Couldn’t load weather. Try Refresh.")))))
+        (host/paper_redraw)))
+    (msg i64
+         (.requests s)
+         (sel c"removeObjectForKey:")
+         [(ptr i8)]
+         (task-key task))))
+
+(defn init [] (-> i64)
+  (let [s (state)]
+    (when (= (.session s) (nil))
+      (when (= (class c"PaperWeatherSessionDelegate") (nil))
+        (let [cls
+                (objc_allocateClassPair (class c"NSObject")
+                                        c"PaperWeatherSessionDelegate"
+                                        0)]
+          (class_addMethod cls
+                           (sel c"URLSession:dataTask:didReceiveData:")
+                           (cast (ptr i8) (fnptr-of received))
+                           c"v@:@@@")
+          (class_addMethod cls
+                           (sel c"URLSession:task:didCompleteWithError:")
+                           (cast (ptr i8) (fnptr-of completed))
+                           c"v@:@@@")
+          (objc_registerClassPair cls)))
+      (set! (.requests s) (new c"NSMutableDictionary"))
+      (set! (.delegate s) (new c"PaperWeatherSessionDelegate"))
+      (let [config
+              (msg (ptr i8)
+                   (class c"NSURLSessionConfiguration")
+                   (sel c"ephemeralSessionConfiguration")
+                   [])]
+        (msg i64 config (sel c"setTimeoutIntervalForRequest:") [f64] 15.0)
+        (msg i64 config (sel c"setTimeoutIntervalForResource:") [f64] 30.0)
+        (set! (.session s)
+              (retain (msg (ptr i8)
+                           (class c"NSURLSession")
+                           (sel c"sessionWithConfiguration:delegate:delegateQueue:")
+                           [(ptr i8) (ptr i8) (ptr i8)]
+                           config
+                           (.delegate s)
+                           (msg (ptr i8)
+                                (class c"NSOperationQueue")
+                                (sel c"mainQueue")
+                                [])))))))
+  0)
+
+(defn request [(url (ptr i8)) (kind i64) (generation i64) (initial bool)]
+  (-> (ptr i8))
+  (init)
+  (let [s (state)
+        ctx (new c"NSMutableDictionary")
+        buffer (new c"NSMutableData")
+        native-url
+          (msg (ptr i8)
+               (class c"NSURL")
+               (sel c"URLWithString:")
+               [(ptr i8)]
+               (ns url))
+        task
+          (msg (ptr i8)
+               (.session s)
+               (sel c"dataTaskWithURL:")
+               [(ptr i8)]
+               native-url)]
+    (put ctx c"data" buffer)
+    (put ctx c"kind" (integer kind))
+    (put ctx c"generation" (integer generation))
+    (put ctx c"initial" (integer (if initial 1 0)))
+    (when (= kind 1) (put ctx c"location" (.pending-location s)))
+    (msg i64
+         (.requests s)
+         (sel c"setObject:forKey:")
+         [(ptr i8) (ptr i8)]
+         ctx
+         (task-key task))
+    (release buffer)
+    (release ctx)
+    (msg i64 task (sel c"resume") [])
+    task))
+
+(defn search-now [(initial bool)] (-> i64)
+  (let [s (state)
+        allowed
+          (msg (ptr i8)
+               (class c"NSCharacterSet")
+               (sel c"characterSetWithCharactersInString:")
+               [(ptr i8)]
+               (ns c"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"))
+        encoded
+          (msg (ptr i8)
+               (.query s)
+               (sel c"stringByAddingPercentEncodingWithAllowedCharacters:")
+               [(ptr i8)]
+               allowed)
+        url
+          (joined (joined c"https://geocoding-api.open-meteo.com/v1/search?name="
+                          (text encoded))
+                  c"&count=6&language=en&format=json")]
+    (set! (.due s) 0.0)
+    (set! (.searching s) true)
+    (owns (field s search-error) (nil))
+    (set! (.search-task s) (request url 0 (.search-generation s) initial)))
+  0)
+
+(defn query-changed [(query (ptr i8))] (-> i64)
+  (let [s (state)
+        trimmed
+          (msg (ptr i8)
+               (ns query)
+               (sel c"stringByTrimmingCharactersInSet:")
+               [(ptr i8)]
+               (msg (ptr i8)
+                    (class c"NSCharacterSet")
+                    (sel c"whitespaceAndNewlineCharacterSet")
+                    []))]
+    (msg i64 (.search-task s) (sel c"cancel") [])
+    (set! (.search-task s) (nil))
+    (set! (.search-generation s) (+ (.search-generation s) 1))
+    (owns (field s query) trimmed)
+    (owns (field s results) (nil))
+    (owns (field s search-error) (nil))
+    (set! (.selected-result s) 0)
+    (let [length (msg i64 trimmed (sel c"length") [])]
+      (set! (.search-open s) (> length 0))
+      (set! (.searching s) (>= length 2))
+      (set! (.due s) (if (>= length 2) (+ (CACurrentMediaTime) 0.3) 0.0))))
+  (host/paper_redraw)
+  0)
+
+(defn select-location [(location (ptr i8))] (-> i64)
+  (when (valid-location? location)
+    (let [s (state)
+          (mut url) (zeroed (array i8 2048))]
+      (msg i64 (.forecast-task s) (sel c"cancel") [])
+      (set! (.forecast-generation s) (+ (.forecast-generation s) 1))
+      (owns (field s pending-location) location)
+      (set! (.loading s) true)
+      (set! (.search-open s) false)
+      (owns (field s forecast-error) (nil))
+      (snprintf (index url 0)
+                2048
+                c"https://api.open-meteo.com/v1/forecast?latitude=%.6f&longitude=%.6f&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,cloud_cover,precipitation,snowfall&hourly=temperature_2m,precipitation_probability,weather_code,wind_speed_10m,is_day,snow_depth&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,uv_index_max,precipitation_probability_max&timezone=auto&timeformat=unixtime&forecast_days=7&temperature_unit=celsius&wind_speed_unit=kmh"
+                (value (item location c"latitude"))
+                (value (item location c"longitude")))
+      (set! (.forecast-task s)
+            (request (index url 0) 1 (.forecast-generation s) false))))
+  (host/paper_redraw)
+  0)
+
+(defn save-location [(location (ptr i8))] (-> i64)
+  (let [(mut error) (nil)
+        data
+          (msg (ptr i8)
+               (class c"NSJSONSerialization")
+               (sel c"dataWithJSONObject:options:error:")
+               [(ptr i8) u64 (ptr (ptr i8))]
+               location
+               0
+               error)]
+    (when (!= data (nil))
+      (let [string
+              (msg (ptr i8)
+                   (msg (ptr i8) (class c"NSString") (sel c"alloc") [])
+                   (sel c"initWithData:encoding:")
+                   [(ptr i8) u64]
+                   data
+                   4)]
+        (host/paper_pref_text_set c"weather.location" (utf8 string))
+        (release string))))
+  0)
+
+(defn start [] (-> i64)
+  (init)
+  (let [s (state)
+        saved (host/paper_pref_text c"weather.location" c"")
+        data (msg (ptr i8) (ns saved) (sel c"dataUsingEncoding:") [u64] 4)
+        location (decode data)]
+    (set! (.persist s) true)
+    (if (valid-location? location)
+        (select-location location)
+        (do
+          (owns (field s query) (ns c"Aspen, Colorado"))
+          (set! (.search-generation s) (+ (.search-generation s) 1))
+          (search-now true))))
+  0)
+
+(defn poll [] (-> i64)
+  (let [s (state)
+        now (CACurrentMediaTime)]
+    (when (and (> (.due s) 0.0) (>= now (.due s))) (search-now false))
+    (when (and (ready)
+               (not (.loading s))
+               (not (.search-open s))
+               (> (- now (.updated s)) 600.0))
+      (set! (.updated s) now)
+      (select-location (.location s))))
+  0)

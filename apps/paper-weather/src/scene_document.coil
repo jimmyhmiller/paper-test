@@ -1,0 +1,646 @@
+(module paper-weather.scene-document)
+(import "coil.primitive" :as p)
+(import "paper.flow" :use *)
+(import "paper.scene" :as scene)
+(import "paper.platform" :as host)
+(import "paper.objc" :use *)
+(import "paper.ffi" :use *)
+(import "paper-weather.service" :as json)
+
+;;; Data-only, bounded paper scene interchange. No script/image/font/network nodes.
+;;; Parse/validate before replacing the live document. Cached native paths keep
+;;; Objective-C parsing and path construction out of the animation loop.
+(defstruct Piece
+  [(id (ptr i8))
+   (path (ptr i8))
+   (parent i64)
+   (z f64)
+   (day u32)
+   (night u32)
+   (winter u32)
+   (tx f64)
+   (ty f64)
+   (angle f64)
+   (px f64)
+   (py f64)
+   (motion i64)
+   (amplitude f64)
+   (period f64)
+   (phase f64)
+   (channel i64)
+   (low f64)
+   (high f64)
+   (emitter i64)
+   (bounds Rect)
+   (particles i64)
+   (seed f64)
+   (matrix CGAffine)
+   (visible bool)])
+
+(defstruct Document
+  [(root (ptr i8))
+   (pieces (array Piece 512))
+   (count i64)
+   (width f64)
+   (height f64)
+   (conditions (array f64 6))
+   (error (ptr i8))
+   (revision i64)])
+
+(defstruct Runtime
+  [(document Document)
+   (path (ptr i8))
+   (modified f64)
+   (size i64)
+   (next-poll f64)
+   (phase f64)
+   (last-tick f64)
+   (paused bool)
+   (reduced bool)
+   (requested bool)])
+
+(defstruct Budget [(nodes i64) (commands i64) (particles i64) (ids (ptr i8))])
+
+(defn runtime [] (-> (ptr Runtime))
+  (p/alloc-static Runtime))
+
+(defn document [] (-> (ptr Document))
+  (field (runtime) document))
+
+(defn equal [(a (ptr i8)) (b (ptr i8))] (-> bool)
+  (= (strcmp a b) 0))
+
+(defn string? [(v (ptr i8))] (-> bool)
+  (json/is-a v c"NSString"))
+
+(defn numeric? [(v (ptr i8)) (lo f64) (hi f64)] (-> bool)
+  (and (json/number? v)
+       (not (= v
+               (msg (ptr i8)
+                    (class c"NSNumber")
+                    (sel c"numberWithBool:")
+                    [bool]
+                    true)))
+       (not (= v
+               (msg (ptr i8)
+                    (class c"NSNumber")
+                    (sel c"numberWithBool:")
+                    [bool]
+                    false)))
+       (>= (json/value v) lo)
+       (<= (json/value v) hi)))
+
+(defn array? [(v (ptr i8))] (-> bool)
+  (json/is-a v c"NSArray"))
+
+(defn object? [(v (ptr i8))] (-> bool)
+  (json/is-a v c"NSDictionary"))
+
+(defn whole? [(v (ptr i8)) (lo f64) (hi f64)] (-> bool)
+  (and (numeric? v lo hi) (= (json/value v) (floor (json/value v)))))
+
+(defn optional-number? [(v (ptr i8)) (lo f64) (hi f64)] (-> bool)
+  (or (= v (nil)) (numeric? v lo hi)))
+
+(defn scalar [(v (ptr i8)) (fallback f64)] (-> f64)
+  (if (= v (nil)) fallback (json/value v)))
+
+(defn field-number [(v (ptr i8)) (key (ptr i8)) (fallback f64)] (-> f64)
+  (scalar (json/item v key) fallback))
+
+(defn vector? [(v (ptr i8)) (n i64) (lo f64) (hi f64)] (-> bool)
+  (let [(mut ok) (and (array? v) (= (json/count v) n))]
+    (for [i 0 (json/count v)]
+      (when (not (numeric? (json/at v i) lo hi)) (set! ok false)))
+    (load ok)))
+
+(defn keys? [(v (ptr i8)) (allowed (ptr i8))] (-> bool)
+  (let [keys (msg (ptr i8) v (sel c"allKeys") [])
+        (mut ok) true]
+    (for [i 0 (json/count keys)]
+      (when (not (msg bool
+                      (ns allowed)
+                      (sel c"containsString:")
+                      [(ptr i8)]
+                      (ns (json/joined (json/joined c"|"
+                                                    (json/text (json/at keys i)))
+                                       c"|"))))
+        (set! ok false)))
+    (load ok)))
+
+(defn channel [(name (ptr i8))] (-> i64)
+  (cond (equal name c"night") 0
+        (equal name c"winter") 1
+        (equal name c"snow") 2
+        (equal name c"rain") 3
+        (equal name c"wind") 4
+        (equal name c"snowfall") 5
+        :else -1))
+
+(defn valid-path? [(commands (ptr i8)) (budget (ptr Budget))] (-> bool)
+  (let [(mut ok)
+          (and (array? commands)
+               (> (json/count commands) 2)
+               (<= (json/count commands) 512))
+        (mut open) false]
+    (for [i 0 (json/count commands)]
+      (let [command (json/at commands i)
+            op (json/text (json/at command 0))
+            n (json/count command)]
+        (cond (equal op c"M")
+                (do (when (load open) (set! ok false)) (set! open true))
+              (equal op c"Z")
+                (do (when (not (load open)) (set! ok false)) (set! open false))
+              :else (when (not (load open)) (set! ok false)))
+        (when (not (or (and (or (equal op c"M") (equal op c"L")) (= n 3))
+                       (and (equal op c"C") (= n 7))
+                       (and (equal op c"Z") (= n 1))))
+          (set! ok false))
+        (for [j 1 n]
+          (when (not (numeric? (json/at command j) -4000.0 4000.0))
+            (set! ok false)))))
+    (set! (.commands budget) (+ (.commands budget) (json/count commands)))
+    (and (load ok) (not (load open)) (<= (.commands budget) 20000))))
+
+(defn valid-node? [(node (ptr i8))
+                   (materials (ptr i8))
+                   (budget (ptr Budget))
+                   (depth i64)] (-> bool)
+  (block
+    :result
+      (let [id (json/item node c"id")
+            children (json/item node c"children")
+            path (json/item node c"path")
+            emitter (json/item node c"emitter")
+            motion (json/item node c"motion")
+            show (json/item node c"show")
+            transform (json/item node c"transform")
+            (mut ok) (and (object? node) (<= depth 8))]
+        (when (not (load ok)) (break :result false))
+        (set! (.nodes budget) (+ (.nodes budget) 1))
+        (when (or (> (.nodes budget) 512)
+                  (not (keys? node
+                              c"|id|children|path|emitter|material|z|transform|motion|show|"))
+                  (not (string? id))
+                  (= (strlen (json/text id)) 0)
+                  (> (strlen (json/text id)) 96)
+                  (msg bool
+                       (.ids budget)
+                       (sel c"containsObject:")
+                       [(ptr i8)]
+                       id))
+          (break :result false))
+        (msg i64 (.ids budget) (sel c"addObject:") [(ptr i8)] id)
+        (when (!= transform (nil))
+          (when (or (not (vector? transform 5 -4000.0 4000.0))
+                    (not (numeric? (json/at transform 2) -180.0 180.0)))
+            (set! ok false)))
+        (when (not (optional-number? (json/item node c"z") 0.0 48.0))
+          (set! ok false))
+        (when (!= motion (nil))
+          (when (not (and (object? motion)
+                          (keys? motion c"|kind|amplitude|period|phase|")
+                          (or (equal (json/text (json/item motion c"kind"))
+                                     c"sway")
+                              (equal (json/text (json/item motion c"kind"))
+                                     c"drift"))
+                          (numeric? (json/item motion c"amplitude")
+                                    0.0
+                                    (if (equal (json/text (json/item motion
+                                                                     c"kind"))
+                                               c"sway")
+                                        4.0
+                                        35.0))
+                          (numeric? (json/item motion c"period") 2.0 120.0)
+                          (optional-number? (json/item motion c"phase")
+                                            0.0
+                                            6.283185307)))
+            (set! ok false)))
+        (when (!= show (nil))
+          (when (not (and (object? show)
+                          (keys? show c"|channel|min|max|")
+                          (>= (channel (json/text (json/item show c"channel")))
+                              0)
+                          (numeric? (json/item show c"min") 0.0 1.0)
+                          (numeric? (json/item show c"max") 0.0 1.0)
+                          (<= (json/value (json/item show c"min"))
+                              (json/value (json/item show c"max")))))
+            (set! ok false)))
+        (when (not (= (+ (if (!= path (nil)) 1 0)
+                         (+ (if (!= children (nil)) 1 0)
+                            (if (!= emitter (nil)) 1 0)))
+                      1))
+          (set! ok false))
+        (when (!= children (nil))
+          (when (or (not (array? children)) (= (json/count children) 0))
+            (set! ok false))
+          (for [i 0 (json/count children)]
+            (when (not (valid-node? (json/at children i)
+                                    materials
+                                    budget
+                                    (+ depth 1)))
+              (set! ok false))))
+        (when (or (!= path (nil)) (!= emitter (nil)))
+          (when (not (object? (json/item materials
+                                         (json/text (json/item node c"material")))))
+            (set! ok false)))
+        (when (!= path (nil))
+          (when (not (valid-path? path budget)) (set! ok false)))
+        (when (!= emitter (nil))
+          (when (not (and (object? emitter)
+                          (keys? emitter c"|kind|bounds|count|seed|")
+                          (or (equal (json/text (json/item emitter c"kind"))
+                                     c"rain")
+                              (equal (json/text (json/item emitter c"kind"))
+                                     c"snow"))
+                          (vector? (json/item emitter c"bounds") 4 0.0 2000.0)
+                          (> (json/value (json/at (json/item emitter c"bounds")
+                                                  2))
+                             0.0)
+                          (> (json/value (json/at (json/item emitter c"bounds")
+                                                  3))
+                             0.0)
+                          (whole? (json/item emitter c"count") 1.0 96.0)
+                          (optional-number? (json/item emitter c"seed")
+                                            0.0
+                                            100000.0)))
+            (set! ok false))
+          (set! (.particles budget)
+                (+ (.particles budget)
+                   (cast i64 (json/value (json/item emitter c"count")))))
+          (when (> (.particles budget) 128) (set! ok false)))
+        (load ok))))
+
+(defn validate [(root (ptr i8))] (-> bool)
+  (block :result
+    (when (not (object? root)) (break :result false))
+    (let [materials (json/item root c"materials")
+          nodes (json/item root c"nodes")
+          conditions (json/item root c"conditions")
+          (mut budget) (zeroed Budget)
+          (mut ok)
+            (and (keys? root
+                        c"|version|title|viewBox|materials|conditions|nodes|")
+                 (numeric? (json/item root c"version") 1.0 1.0)
+                 (string? (json/item root c"title"))
+                 (< (strlen (json/text (json/item root c"title"))) 128)
+                 (vector? (json/item root c"viewBox") 2 100.0 2000.0)
+                 (object? materials)
+                 (object? conditions)
+                 (array? nodes)
+                 (> (json/count nodes) 0))]
+      (when (not (load ok)) (break :result false))
+      (when (not (keys? conditions c"|night|winter|snow|rain|wind|snowfall|"))
+        (set! ok false))
+      (let [names (msg (ptr i8) conditions (sel c"allKeys") [])]
+        (for [i 0 (json/count names)]
+          (when (not (numeric? (json/item conditions
+                                          (json/text (json/at names i)))
+                               0.0
+                               1.0))
+            (set! ok false))))
+      (let [keys (msg (ptr i8) materials (sel c"allKeys") [])]
+        (when (or (= (json/count keys) 0) (> (json/count keys) 32))
+          (set! ok false))
+        (for [i 0 (json/count keys)]
+          (let [mat (json/item materials (json/text (json/at keys i)))]
+            (when (not (and (object? mat)
+                            (keys? mat c"|day|night|winter|")
+                            (whole? (json/item mat c"day") 0.0 16777215.0)
+                            (whole? (json/item mat c"night") 0.0 16777215.0)
+                            (or (= (json/item mat c"winter") (nil))
+                                (whole? (json/item mat c"winter")
+                                        0.0
+                                        16777215.0))))
+              (set! ok false)))))
+      (set! (.ids budget) (new c"NSMutableSet"))
+      (for [i 0 (json/count nodes)]
+        (when (not (valid-node? (json/at nodes i) materials budget 0))
+          (set! ok false)))
+      (release (.ids budget))
+      (load ok))))
+
+(defn dispose [(d (ptr Document))] (-> i64)
+  (for [i 0 (.count d)]
+    (CGPathRelease (.path (load (index (field d pieces) i)))))
+  (release (.root d))
+  (set! (.root d) (nil))
+  (set! (.count d) 0)
+  0)
+
+(defn compile-node [(d (ptr Document)) (node (ptr i8)) (parent i64)] (-> i64)
+  (let [i (.count d)
+        (mut piece) (zeroed Piece)
+        transform (json/item node c"transform")
+        motion (json/item node c"motion")
+        show (json/item node c"show")
+        emitter (json/item node c"emitter")
+        commands (json/item node c"path")
+        mat
+          (json/item (json/item (.root d) c"materials")
+                     (json/text (json/item node c"material")))]
+    (set! (.count d) (+ i 1))
+    (set! (.id piece) (json/text (json/item node c"id")))
+    (set! (.parent piece) parent)
+    (set! (.z piece) (field-number node c"z" 2.0))
+    (set! (.day piece) (cast u32 (field-number mat c"day" 0.0)))
+    (set! (.night piece) (cast u32 (field-number mat c"night" 0.0)))
+    (set! (.winter piece)
+          (cast u32 (field-number mat c"winter" (cast f64 (.day piece)))))
+    (set! (.tx piece) (json/value (json/at transform 0)))
+    (set! (.ty piece) (json/value (json/at transform 1)))
+    (set! (.angle piece) (json/value (json/at transform 2)))
+    (set! (.px piece) (json/value (json/at transform 3)))
+    (set! (.py piece) (json/value (json/at transform 4)))
+    (set! (.motion piece)
+          (if (= motion (nil))
+              0
+              (if (equal (json/text (json/item motion c"kind")) c"sway") 1 2)))
+    (set! (.amplitude piece) (field-number motion c"amplitude" 0.0))
+    (set! (.period piece) (field-number motion c"period" 10.0))
+    (set! (.phase piece) (field-number motion c"phase" 0.0))
+    (set! (.channel piece) (channel (json/text (json/item show c"channel"))))
+    (set! (.low piece) (field-number show c"min" 0.0))
+    (set! (.high piece) (field-number show c"max" 1.0))
+    (when (!= commands (nil))
+      (set! (.path piece) (CGPathCreateMutable))
+      (for [j 0 (json/count commands)]
+        (let [v (json/at commands j)
+              op (json/text (json/at v 0))
+              path (.path piece)]
+          (cond (equal op c"M")
+                  (CGPathMoveToPoint path
+                                     (nil)
+                                     (json/value (json/at v 1))
+                                     (json/value (json/at v 2)))
+                (equal op c"L")
+                  (CGPathAddLineToPoint path
+                                        (nil)
+                                        (json/value (json/at v 1))
+                                        (json/value (json/at v 2)))
+                (equal op c"C")
+                  (CGPathAddCurveToPoint path
+                                         (nil)
+                                         (json/value (json/at v 1))
+                                         (json/value (json/at v 2))
+                                         (json/value (json/at v 3))
+                                         (json/value (json/at v 4))
+                                         (json/value (json/at v 5))
+                                         (json/value (json/at v 6)))
+                :else (CGPathCloseSubpath path)))))
+    (when (!= emitter (nil))
+      (let [b (json/item emitter c"bounds")]
+        (set! (.emitter piece)
+              (if (equal (json/text (json/item emitter c"kind")) c"rain") 1 2))
+        (set! (.bounds piece)
+              (rect (json/value (json/at b 0))
+                    (json/value (json/at b 1))
+                    (json/value (json/at b 2))
+                    (json/value (json/at b 3))))
+        (set! (.particles piece)
+              (cast i64 (field-number emitter c"count" 32.0)))
+        (set! (.seed piece) (field-number emitter c"seed" 1.0))))
+    (store! (index (field d pieces) i) (load piece))
+    (let [children (json/item node c"children")]
+      (for [j 0 (json/count children)] (compile-node d (json/at children j) i))))
+  0)
+
+(defn accept [(d (ptr Document)) (root (ptr i8))] (-> bool)
+  (if (not (validate root))
+      (do
+        (set! (.error d)
+              c"Scene rejected: invalid schema, geometry or budget. Previous scene retained.")
+        false)
+      (let [owned (retain root)]
+        (dispose d)
+        (set! (.root d) owned)
+        (set! (.error d) c"")
+        (set! (.width d) (json/value (json/at (json/item root c"viewBox") 0)))
+        (set! (.height d) (json/value (json/at (json/item root c"viewBox") 1)))
+        (let [names (json/item root c"conditions")
+              keys (msg (ptr i8) names (sel c"allKeys") [])]
+          (for [i 0 6] (store! (index (field d conditions) i) 0.0))
+          (for [i 0 (json/count keys)]
+            (let [key (json/text (json/at keys i))]
+              (store! (index (field d conditions) (channel key))
+                      (json/value (json/item names key))))))
+        (let [nodes (json/item root c"nodes")]
+          (for [i 0 (json/count nodes)] (compile-node d (json/at nodes i) -1)))
+        (set! (.revision d) (+ (.revision d) 1))
+        true)))
+
+(defn condition [(d (ptr Document)) (i i64)] (-> f64)
+  (load (index (field d conditions) i)))
+
+(defn set-condition [(d (ptr Document)) (i i64) (v f64)] (-> i64)
+  (when (and (>= i 0) (< i 6))
+    (store! (index (field d conditions) i) (clamp v 0.0 1.0)))
+  0)
+
+(defn compose [(a CGAffine) (b CGAffine)] (-> CGAffine)
+  (CGAffine
+    :a (+ (* (.a a) (.a b)) (* (.c a) (.b b)))
+    :b (+ (* (.b a) (.a b)) (* (.d a) (.b b)))
+    :c (+ (* (.a a) (.c b)) (* (.c a) (.d b)))
+    :d (+ (* (.b a) (.c b)) (* (.d a) (.d b)))
+    :tx (+ (+ (* (.a a) (.tx b)) (* (.c a) (.ty b))) (.tx a))
+    :ty (+ (+ (* (.b a) (.tx b)) (* (.d a) (.ty b))) (.ty a))))
+
+(defn layout [(d (ptr Document)) (viewport Rect) (time f64)] (-> i64)
+  (let [s (minimum (/ (.w viewport) (.width d)) (/ (.h viewport) (.height d)))
+        base
+          (CGAffine
+            :a s
+            :b 0.0
+            :c 0.0
+            :d s
+            :tx (+ (.x viewport) (* 0.5 (- (.w viewport) (* s (.width d)))))
+            :ty (+ (.y viewport) (* 0.5 (- (.h viewport) (* s (.height d))))))]
+    (for [i 0 (.count d)]
+      (let [n (index (field d pieces) i)
+            parent
+              (if (< (.parent n) 0)
+                  base
+                  (.matrix (load (index (field d pieces) (.parent n)))))
+            wave
+              (* (condition d 4)
+                 (sin (+ (/ (* time 6.283185307) (.period n)) (.phase n))))
+            angle
+              (* (+ (.angle n)
+                    (if (= (.motion n) 1) (* (.amplitude n) wave) 0.0))
+                 0.01745329252)
+            c (cos angle)
+            s (sin angle)
+            local
+              (CGAffine
+                :a c
+                :b s
+                :c (- 0.0 s)
+                :d c
+                :tx
+                  (+ (+ (.tx n) (- (.px n) (- (* c (.px n)) (* s (.py n)))))
+                     (if (= (.motion n) 2) (* (.amplitude n) wave) 0.0))
+                :ty (+ (.ty n) (- (.py n) (+ (* s (.px n)) (* c (.py n))))))
+            gate (if (< (.channel n) 0) 0.0 (condition d (.channel n)))]
+        (set! (.matrix n) (compose parent local))
+        (set! (.visible n)
+              (and (or (< (.parent n) 0)
+                       (.visible (load (index (field d pieces) (.parent n)))))
+                   (or (< (.channel n) 0)
+                       (and (>= gate (.low n)) (<= gate (.high n)))))))))
+  0)
+
+(defn mix [(a u32) (b u32) (v f64)] (-> u32)
+  (.pigment (tint (cotton a) b v)))
+
+(defn pigment [(d (ptr Document)) (n (ptr Piece))] (-> u32)
+  (mix (mix (.day n) (.winter n) (condition d 1)) (.night n) (condition d 0)))
+
+(defn wrap [(value f64) (span f64)] (-> f64)
+  (- value (* (floor (/ value span)) span)))
+
+(defn noise [(seed f64)] (-> f64)
+  (wrap (* (sin (* seed 12.9898)) 43758.5453) 1.0))
+
+(defn emit [(d (ptr Document)) (n (ptr Piece)) (time f64)] (-> i64)
+  (let [b (.bounds n)
+        (mut m) (.matrix n)
+        intensity (condition d (if (= (.emitter n) 1) 3 5))
+        count (cast i64 (* intensity (cast f64 (.particles n))))
+        stock (cotton (pigment d n))]
+    (for [i 0 count]
+      (let [f (+ (.seed n) (* (cast f64 i) 7.13))
+            snow (= (.emitter n) 2)
+            speed (if snow 28.0 245.0)
+            x
+              (+ (.x b)
+                 (wrap (+ (* (noise f) (.w b))
+                          (* time (* (condition d 4) 30.0)))
+                       (.w b)))
+            y
+              (+ (.y b)
+                 (wrap (+ (* (noise (+ f 3.0)) (.h b))
+                          (* time (* speed (+ 0.8 (* (noise (+ f 1.0)) 0.4)))))
+                       (.h b)))
+            path (CGPathCreateMutable)]
+        (if snow
+            (CGPathAddEllipseInRect path
+                                    m
+                                    (cgrect x y 2.4 2.4))
+            (do
+              (CGPathMoveToPoint path m x y)
+              (CGPathAddLineToPoint path m (+ x 1.1) y)
+              (CGPathAddLineToPoint path
+                                    m
+                                    (+ x (+ 1.1 (* (condition d 4) 2.0)))
+                                    (+ y 9.0))
+              (CGPathAddLineToPoint path
+                                    m
+                                    (+ x (* (condition d 4) 2.0))
+                                    (+ y 9.0))
+              (CGPathCloseSubpath path)))
+        (begin-sheet)
+        (CGPathAddPath (.path (scene/scene)) (nil) path)
+        (finish-sheet (.z n) stock)
+        (CGPathRelease path))))
+  0)
+
+(defn draw [(d (ptr Document)) (viewport Rect) (time f64)] (-> i64)
+  (when (> (.count d) 0)
+    (layout d viewport time)
+    (with-clip viewport
+               (for [i 0 (.count d)]
+                 (let [n (index (field d pieces) i)]
+                   (when (.visible n)
+                     (when (!= (.path n) (nil))
+                       (begin-sheet)
+                       (CGPathAddPath (.path (scene/scene))
+                                      (field n matrix)
+                                      (.path n))
+                       (finish-sheet (.z n) (cotton (pigment d n))))
+                     (when (> (.emitter n) 0) (emit d n time)))))))
+  0)
+
+(defn file-attributes [(path (ptr i8))] (-> (ptr i8))
+  (msg (ptr i8)
+       (msg (ptr i8) (class c"NSFileManager") (sel c"defaultManager") [])
+       (sel c"attributesOfItemAtPath:error:")
+       [(ptr i8) (ptr i8)]
+       (ns path)
+       (nil)))
+
+(defn load-file [(d (ptr Document)) (path (ptr i8))] (-> bool)
+  (block
+    :result
+      (let [attrs (file-attributes path)
+            size (json/value (json/item attrs c"NSFileSize"))]
+        (when (or (= attrs (nil)) (> size 1048576.0) (<= size 0.0))
+          (set! (.error d)
+                c"Scene file missing, empty or larger than 1 MiB. Previous scene retained.")
+          (break :result false))
+        (let [data
+                (msg (ptr i8)
+                     (class c"NSData")
+                     (sel c"dataWithContentsOfFile:")
+                     [(ptr i8)]
+                     (ns path))]
+          (if (or (= data (nil)) (> (msg u64 data (sel c"length") []) 1048576))
+              (do
+                (set! (.error d)
+                      c"Could not read bounded scene file. Previous scene retained.")
+                false)
+              (accept d (json/decode data)))))))
+
+(defn init-arguments [] (-> i64)
+  (let [r (runtime)
+        args
+          (msg (ptr i8)
+               (msg (ptr i8) (class c"NSProcessInfo") (sel c"processInfo") [])
+               (sel c"arguments")
+               [])]
+    (for [i 1 (- (json/count args) 1)]
+      (when (equal (json/text (json/at args i)) c"--scene")
+        (set! (.requested r) true)
+        (release (.path r))
+        (set! (.path r) (retain (json/at args (+ i 1))))
+        (load-file (document) (utf8 (.path r))))
+      (when (equal (json/text (json/at args i)) c"--time")
+        (set! (.phase r)
+              (clamp (msg f64 (json/at args (+ i 1)) (sel c"doubleValue") [])
+                     0.0
+                     86400.0)))))
+  0)
+
+(defn tick [(now f64) (visible bool)] (-> bool)
+  (let [r (runtime)
+        (mut changed) false]
+    (when (and (.requested r) (>= now (.next-poll r)))
+      (set! (.next-poll r) (+ now 0.5))
+      (let [attrs (file-attributes (utf8 (.path r)))
+            modified
+              (msg f64
+                   (json/item attrs c"NSFileModificationDate")
+                   (sel c"timeIntervalSince1970")
+                   [])
+            size (cast i64 (json/value (json/item attrs c"NSFileSize")))]
+        (when (or (!= modified (.modified r)) (!= size (.size r)))
+          (set! (.modified r) modified)
+          (set! (.size r) size)
+          (load-file (document) (utf8 (.path r)))
+          (set! changed true)))
+      (set! (.reduced r)
+            (msg bool
+                 (msg (ptr i8)
+                      (class c"NSWorkspace")
+                      (sel c"sharedWorkspace")
+                      [])
+                 (sel c"accessibilityDisplayShouldReduceMotion")
+                 [])))
+    (when (and visible
+               (not (.paused r))
+               (not (.reduced r))
+               (> (.last-tick r) 0.0))
+      (set! (.phase r) (+ (.phase r) (clamp (- now (.last-tick r)) 0.0 0.1)))
+      (when (> (.count (document)) 0) (set! changed true)))
+    (set! (.last-tick r) (if visible now 0.0))
+    (load changed)))

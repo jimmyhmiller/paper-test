@@ -1,0 +1,159 @@
+(module paper-weather.scene-live-check)
+(import "paper-weather.scene-document" :as doc)
+(import "paper-weather.service" :as json)
+(import "paper-weather.scene-player" :as player)
+(import "paper.platform" :as host)
+(import "paper.scene" :as scene)
+(import "paper.render" :as render)
+(import "paper.workers" :as workers)
+(import "paper.flow" :use *)
+(import "paper.objc" :use *)
+(import "paper.ffi" :use [snprintf fabs CACurrentMediaTime])
+
+(defn save [(root (ptr i8)) (path (ptr i8))] (-> bool)
+  (let [(mut error) (nil)
+        data
+          (msg (ptr i8)
+               (class c"NSJSONSerialization")
+               (sel c"dataWithJSONObject:options:error:")
+               [(ptr i8) u64 (ptr (ptr i8))]
+               root
+               0
+               error)]
+    (msg bool
+         data
+         (sel c"writeToFile:atomically:")
+         [(ptr i8) bool]
+         (ns path)
+         true)))
+
+(defn mutable [(root (ptr i8))] (-> (ptr i8))
+  (let [(mut error) (nil)
+        data
+          (msg (ptr i8)
+               (class c"NSJSONSerialization")
+               (sel c"dataWithJSONObject:options:error:")
+               [(ptr i8) u64 (ptr (ptr i8))]
+               root
+               0
+               error)]
+    (msg (ptr i8)
+         (class c"NSJSONSerialization")
+         (sel c"JSONObjectWithData:options:error:")
+         [(ptr i8) u64 (ptr (ptr i8))]
+         data
+         1
+         error)))
+
+(defn json-source [(source (ptr i8))] (-> (ptr i8))
+  (json/decode (msg (ptr i8) (ns source) (sel c"dataUsingEncoding:") [u64] 4)))
+
+(defn main [(argc i32) (argv (ptr (ptr i8)))] (-> i64)
+  (assert (= argc (: 3 i32)))
+  (let [pool (new c"NSAutoreleasePool")
+        r (doc/runtime)
+        d (doc/document)
+        path (load (index argv 1))
+        output (load (index argv 2))]
+    (scene/init)
+    (set! (.headless (host/host)) true)
+    (set! (.scale (scene/scene)) 1.0)
+    (host/paper_configure c"Native data scene replay" 1000.0 662.0)
+    (host/paper_responsive 1000.0 662.0)
+    (set! (.width (scene/scene)) 1000)
+    (set! (.height (scene/scene)) 662)
+    (render/setup)
+    (player/event 0 0 0.0 0.0)
+    (assert (doc/load-file d c"scenes/new-york.json"))
+    (assert (save (.root d) path))
+    (set! (.path r) (retain (ns path)))
+    (set! (.requested r) true)
+    (doc/tick 100.0 true)
+    (let [revision (.revision d)
+          edit (mutable (.root d))
+          conditions (json/item edit c"conditions")
+          nodes (json/item edit c"nodes")]
+      (json/put conditions c"night" (json/integer 1))
+      (json/put conditions c"snow" (json/integer 1))
+      (json/put conditions c"snowfall" (json/integer 1))
+      (for [i 0 (json/count nodes)]
+        (let [n (json/at nodes i)]
+          (when (doc/equal (json/text (json/item n c"id")) c"brooklyn-bridge")
+            (json/put n c"transform" (json-source c"[-12,0,0,0,0]")))))
+      (assert (save edit path))
+      (assert (doc/tick 101.0 true))
+      (assert (= (.revision d) (+ revision 1)))
+      (assert (= (doc/condition d 5) 1.0))
+      (assert (> (.phase r) 0.0))
+      (let [good-root (.root d)
+            good-phase (.phase r)]
+        (assert (save (json-source c"{\"bad\":true}") path))
+        (assert (doc/tick 102.0 true))
+        (assert (= (.root d) good-root))
+        (assert (> (.phase r) good-phase)))
+      (assert (save edit path))
+      (doc/tick 103.0 true))
+    (player/event 3 800 0.0 0.0)
+    (assert (.paused r))
+    (let [phase (.phase r)] (doc/tick 104.0 true) (assert (= phase (.phase r))))
+    (player/event 3 800 0.0 0.0)
+    (assert (not (.paused r)))
+    (doc/tick 105.0 false)
+    (let [phase (.phase r)] (doc/tick 115.0 true) (assert (= phase (.phase r))))
+    (let [start (CACurrentMediaTime)
+          (mut bytes) (zeroed (array i8 1024))
+          (mut total) 0.0
+          (mut worst) 0.0]
+      (for [i 0 120]
+        (let [t (/ (cast f64 i) 30.0)]
+          (when (= i 60)
+            (let [edit (mutable (.root d))
+                  revision (.revision d)
+                  cloud
+                    (json-source c"{\"id\":\"live-added-cloud\",\"material\":\"cloud\",\"z\":7,\"transform\":[540,80,0,0,0],\"motion\":{\"kind\":\"drift\",\"amplitude\":12,\"period\":40,\"phase\":1},\"path\":[[\"M\",0,30],[\"C\",-12,30,-12,10,3,10],[\"C\",0,-8,25,-12,33,3],[\"C\",42,-12,65,-7,66,12],[\"C\",90,8,94,30,75,31],[\"Z\"]]}")]
+              (assert (!= cloud (nil)))
+              (msg i64
+                   (json/item edit c"nodes")
+                   (sel c"addObject:")
+                   [(ptr i8)]
+                   cloud)
+              (assert (save edit path))
+              (doc/tick 202.0 true)
+              (assert (= (.revision d) (+ revision 1)))))
+          (set! (.phase r) t)
+          (doc/set-condition d 0 (+ 0.35 (* 0.65 (minimum 1.0 (/ t 2.0)))))
+          (doc/set-condition d 5 (minimum 1.0 (/ t 2.0)))
+          (let [began (CACurrentMediaTime)]
+            (player/draw)
+            (render/render-frame true)
+            (let [duration (* 1000.0 (- (CACurrentMediaTime) began))]
+              (set! total (+ (load total) duration))
+              (set! worst (maximum (load worst) duration))))
+          (snprintf (index bytes 0) 1024 c"%s/frame-%03lld.png" output i)
+          (assert (= (render/snapshot (index bytes 0)) 0))))
+      (assert (> (- (CACurrentMediaTime) start) 0.0))
+      (let [stats (new c"NSMutableDictionary")]
+        (json/put stats c"frames" (json/integer 120))
+        (json/put stats
+                  c"meanDrawRenderMs"
+                  (msg (ptr i8)
+                       (class c"NSNumber")
+                       (sel c"numberWithDouble:")
+                       [f64]
+                       (/ (load total) 120.0)))
+        (json/put stats
+                  c"worstDrawRenderMs"
+                  (msg (ptr i8)
+                       (class c"NSNumber")
+                       (sel c"numberWithDouble:")
+                       [f64]
+                       (load worst)))
+        (json/put stats
+                  c"scope"
+                  (ns c"Native 1000x662 offscreen draw/render/readback, excluding PNG encoding; not a native presentation-FPS measurement"))
+        (assert (save stats (json/joined output c"/timings.json")))
+        (release stats)))
+    (doc/dispose d)
+    (workers/stop)
+    (release pool))
+  0)

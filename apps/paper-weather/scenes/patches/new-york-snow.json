@@ -1,0 +1,5 @@
+[
+  {"op":"conditions","values":{"night":1,"winter":1,"snow":1,"snowfall":0.7,"rain":0,"wind":0.5}},
+  {"op":"set","id":"brooklyn-bridge","values":{"transform":[-12,0,0,0,0]}},
+  {"op":"material","name":"cloud","value":{"day":12898769,"night":5467002}}
+]

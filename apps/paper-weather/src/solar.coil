@@ -1,0 +1,48 @@
+(module paper-weather.solar)
+(import "coil.cc" :as cc)
+(import "paper.ffi" :use [sin cos floor])
+
+(extern asin :cc (cc/C) [f64] (-> f64))
+
+(extern atan2 :cc (cc/C) [f64 f64] (-> f64))
+
+;;; Solar coordinates ported from SunCalc 1.9.0 (Agafonkin, BSD-2-Clause).
+;;; See third-party/SunCalc-LICENSE.txt. Geometric altitude, degrees east of north.
+;;; This is a terrestrial astronomy calculation, independent of paper lighting.
+(const PI 3.141592653589793)
+
+(const RAD (/ PI 180.0))
+
+(defstruct Position [(altitude f64) (azimuth f64)])
+
+(defn wrap [(value f64) (period f64)] (-> f64)
+  (- value (* period (floor (/ value period)))))
+
+(defn position [(epoch f64) (latitude f64) (longitude f64)] (-> Position)
+  (let [days (- (+ (/ epoch 86400.0) 2440587.5) 2451545.0)
+        anomaly (* RAD (+ 357.5291 (* 0.98560028 days)))
+        center
+          (* RAD
+             (+ (* 1.9148 (sin anomaly))
+                (+ (* 0.02 (sin (* 2.0 anomaly)))
+                   (* 0.0003 (sin (* 3.0 anomaly))))))
+        longitude-ecliptic (+ (+ anomaly center) (+ (* RAD 102.9372) PI))
+        obliquity (* RAD 23.4397)
+        declination (asin (* (sin longitude-ecliptic) (sin obliquity)))
+        ascension
+          (atan2 (* (sin longitude-ecliptic) (cos obliquity))
+                 (cos longitude-ecliptic))
+        hour-angle
+          (- (+ (* RAD (+ 280.16 (* 360.9856235 days))) (* RAD longitude))
+             ascension)
+        phi (* RAD latitude)
+        altitude
+          (asin (+ (* (sin phi) (sin declination))
+                   (* (* (cos phi) (cos declination)) (cos hour-angle))))
+        azimuth
+          (atan2 (sin hour-angle)
+                 (- (* (cos hour-angle) (sin phi))
+                    (* (/ (sin declination) (cos declination)) (cos phi))))]
+    (Position
+      :altitude (/ altitude RAD)
+      :azimuth (wrap (+ (/ azimuth RAD) 180.0) 360.0))))

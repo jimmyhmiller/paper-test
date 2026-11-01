@@ -1,0 +1,194 @@
+{
+  "version": 1,
+  "name": "River meadow",
+  "seed": 2819,
+  "terrain": {
+    "kind": "river",
+    "horizon": 370,
+    "water_top": 390,
+    "water_bottom": 720,
+    "water_center": 610,
+    "water_half_width": 110,
+    "shore_sweep": 75
+  },
+  "protected_opening": [
+    515,
+    205,
+    710,
+    400
+  ],
+  "backdrop": {
+    "ridge_count": 0,
+    "ridge_center": 600,
+    "ridge_scale": 1,
+    "cloud_count": 3,
+    "cloud_height": [
+      70,
+      155
+    ]
+  },
+  "placement": {
+    "candidate_pool": 650,
+    "alternatives": 28,
+    "minimum_visible_height": 18,
+    "frame_margin": 28,
+    "preferences": {
+      "density": 1,
+      "near_tangency": 1.1,
+      "crowding": 1.7,
+      "neighbor_similarity": 0.75,
+      "individual_quality": 0.55
+    },
+    "paper_stack": [
+      30.8,
+      44.8
+    ]
+  },
+  "layers": [
+    {
+      "family": "broadleaf",
+      "count": 6,
+      "bounds": [
+        75,
+        430,
+        1110,
+        650
+      ],
+      "density_field": [
+        {
+          "center": [
+            190,
+            500
+          ],
+          "radius": [
+            150,
+            125
+          ],
+          "weight": 1
+        },
+        {
+          "center": [
+            1010,
+            485
+          ],
+          "radius": [
+            135,
+            95
+          ],
+          "weight": 0.85
+        }
+      ],
+      "scale": [
+        0.7,
+        1.2
+      ]
+    },
+    {
+      "family": "rock",
+      "count": 3,
+      "bounds": [
+        130,
+        455,
+        1100,
+        686
+      ],
+      "density_field": [
+        {
+          "center": [
+            440,
+            580
+          ],
+          "radius": [
+            100,
+            120
+          ],
+          "weight": 1
+        },
+        {
+          "center": [
+            790,
+            615
+          ],
+          "radius": [
+            100,
+            130
+          ],
+          "weight": 1
+        }
+      ],
+      "scale": [
+        0.5,
+        0.9
+      ],
+      "water_distance": [
+        0,
+        60
+      ]
+    },
+    {
+      "family": "grasses",
+      "count": 11,
+      "bounds": [
+        90,
+        430,
+        1110,
+        695
+      ],
+      "density_field": [
+        {
+          "center": [
+            350,
+            600
+          ],
+          "radius": [
+            200,
+            130
+          ],
+          "weight": 1
+        },
+        {
+          "center": [
+            880,
+            595
+          ],
+          "radius": [
+            190,
+            130
+          ],
+          "weight": 1
+        }
+      ],
+      "scale": [
+        0.65,
+        1.4
+      ],
+      "water_distance": [
+        0,
+        135
+      ]
+    }
+  ],
+  "states": [
+    {
+      "name": "summer",
+      "season": "summer",
+      "daylight": 1,
+      "moisture": 0.88,
+      "wind": 0.25,
+      "snow": 0,
+      "cloud": 0.2
+    },
+    {
+      "name": "autumn-dusk",
+      "season": "autumn",
+      "daylight": 0.45,
+      "moisture": 0.72,
+      "wind": 0.45,
+      "snow": 0,
+      "cloud": 0.35
+    }
+  ],
+  "ecology": {
+    "moisture": 0.85
+  }
+}

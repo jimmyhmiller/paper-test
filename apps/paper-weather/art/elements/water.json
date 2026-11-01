@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "name": "Water ribbon and fitted banks",
+  "construction": "water-v1",
+  "variation": {
+    "meander": {
+      "mean": 0.5,
+      "deviation": 0.24,
+      "range": [
+        0.15,
+        0.9
+      ]
+    },
+    "gesture": {
+      "mean": 0,
+      "deviation": 0.35,
+      "range": [
+        -0.8,
+        0.8
+      ]
+    }
+  },
+  "form": {
+    "bend": {
+      "base": 25,
+      "meander": 65
+    },
+    "near_width": {
+      "base": 170,
+      "meander": 75
+    },
+    "far_width": {
+      "base": 24,
+      "meander": 18
+    },
+    "offset": {
+      "base": 0,
+      "gesture": 45
+    }
+  },
+  "constraints": {
+    "bend": [
+      30,
+      90
+    ],
+    "near_width": [
+      180,
+      245
+    ],
+    "far_width": [
+      24,
+      42
+    ],
+    "offset": [
+      -40,
+      40
+    ]
+  },
+  "preferences": {
+    "width_ratio": {
+      "target": 6,
+      "tolerance": 0.9,
+      "weight": 1
+    },
+    "bend": {
+      "target": 60,
+      "tolerance": 30,
+      "weight": 0.6
+    }
+  },
+  "placement": {
+    "support": "basin",
+    "root_radius": 0,
+    "spacing": 0,
+    "moisture": [
+      0,
+      1
+    ]
+  },
+  "construction_rules": {
+    "samples": 28,
+    "bank_width": 11,
+    "ripple_count": 4
+  }
+}

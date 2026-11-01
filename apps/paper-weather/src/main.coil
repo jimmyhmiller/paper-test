@@ -1,0 +1,9 @@
+(module paper-weather.main)
+(import "coil.primitive" :as p)
+(import "paper.platform" :as host)
+(import "paper-weather.app" :as app)
+
+(defn main [] (-> i64)
+  (host/paper_configure c"Paper Weather" 1536.0 1024.0)
+  (host/paper_responsive 1244.0 850.0)
+  (host/paper_run (p/fnptr-of app/draw) (p/fnptr-of app/event)))

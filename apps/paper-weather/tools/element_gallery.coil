@@ -1,0 +1,57 @@
+(module paper-weather.element-gallery)
+(import "paper.flow" :use *)
+(import "paper.platform" :as host)
+(import "paper.scene" :as scene)
+(import "paper.render" :as render)
+(import "paper.workers" :as workers)
+(import "paper.objc" :use *)
+(import "paper-weather.scene-player" :as player)
+(import "paper-weather.scene-document" :as doc)
+
+(defn main [(argc i32) (argv (ptr (ptr i8)))] (-> i64)
+  (assert (= argc (: 3 i32)))
+  (let [pool (new c"NSAutoreleasePool")]
+    (scene/init)
+    (set! (.headless (host/host)) true)
+    (host/paper_configure c"Paper element family studies" 1200.0 782.0)
+    (set! (.width (scene/scene)) 1200)
+    (set! (.height (scene/scene)) 782)
+    (set! (.scale (scene/scene)) 1.0)
+    (render/setup)
+    (player/event 0 0 0.0 0.0)
+    (assert (doc/load-file (doc/document) (load (index argv 1))))
+    (player/draw)
+    (ink-height 46.0)
+    (for [i 0 6]
+      (let [x (+ 24.0 (* (cast f64 (% i 3)) 400.0))
+            y (+ 45.0 (* (cast f64 (/ i 3)) 360.0))]
+        (label x
+               y
+               22.0
+               0x23465b
+               1
+               (case i
+                 0 c"Broadleaf trees"
+                 1 c"Grasses and reeds"
+                 2 c"Folded stones"
+                 3 c"Continuous ridges"
+                 4 c"Cloud masses"
+                 c"Water and banks"))
+        (label x
+               (+ y 32.0)
+               12.0
+               0x61777b
+               0
+               (case i
+                 0 c"Branching · crown gesture · shared fold"
+                 1 c"Fan rhythm · moisture · exposure"
+                 2 c"Mass · weathering · shared facets"
+                 3 c"Relief · summit · fitted snow cap"
+                 4 c"Fullness · lobe rhythm · drift"
+                 c"Meander · perspective · fitted shoreline"))))
+    (render/render-frame true)
+    (assert (= (render/snapshot (load (index argv 2))) 0))
+    (workers/stop)
+    (doc/dispose (doc/document))
+    (release pool))
+  0)
