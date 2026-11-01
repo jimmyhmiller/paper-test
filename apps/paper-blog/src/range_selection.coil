@@ -1,0 +1,185 @@
+(module blog.range-selection)
+(import "coil.primitive" :as p)
+(import "blog.model" :as m)
+(import "blog.view" :as v)
+(import "paper.flow" :use *)
+(import "paper.ffi" :use [fabs])
+(import "paper.platform" :as host)
+(import "blog.theme" :as t)
+
+(const MOVE 770000)
+
+(const LEFT 770001)
+
+(const RIGHT 770002)
+
+(defstruct Selection
+  [(active bool)
+   (gesture bool)
+   (dragging bool)
+   (mode i64)
+   (start i64)
+   (end i64)
+   (anchor i64)
+   (base-first i64)
+   (base-last i64)
+   (pointer f64)])
+
+(defn state [] (-> (ptr Selection))
+  (p/alloc-static Selection))
+
+(defn reset [] (-> i64)
+  (set! (state)
+        (Selection
+          :active false
+          :gesture false
+          :dragging false
+          :mode 0
+          :start 0
+          :end 0
+          :anchor 0
+          :base-first 0
+          :base-last 0
+          :pointer 0.0))
+  0)
+
+(defn min-day [(a i64) (b i64)] (-> i64)
+  (if (< a b) a b))
+
+(defn bounded [(d (ptr m/Dataset)) (stamp i64)] (-> i64)
+  (m/maximum 0 (min-day (- (.days d) 1) (/ (- stamp (.start d)) m/DAY))))
+
+(defn first [(d (ptr m/Dataset))] (-> i64)
+  (if (.active (state)) (bounded d (.start (state))) 0))
+
+(defn last [(d (ptr m/Dataset))] (-> i64)
+  (if (.active (state))
+      (bounded d (.end (state)))
+      (m/maximum 0 (- (.days d) 1))))
+
+(defn count [(d (ptr m/Dataset))] (-> i64)
+  (if (> (.days d) 0) (+ 1 (- (last d) (first d))) 0))
+
+(defn contains? [(d (ptr m/Dataset)) (day i64)] (-> bool)
+  (and (> (.days d) 0) (>= day (first d)) (<= day (last d))))
+
+(defn set-range [(d (ptr m/Dataset)) (lo i64) (hi i64)] (-> i64)
+  (set! (.start (state)) (+ (.start d) (* lo m/DAY)))
+  (set! (.end (state)) (+ (.start d) (* hi m/DAY)))
+  (set! (.active (state)) true)
+  0)
+
+(defn synchronize [] (-> i64)
+  (when (= (.drag (host/host)) 0)
+    (set! (.gesture (state)) false)
+    (set! (.dragging (state)) false))
+  0)
+
+(defn handle [(d (ptr m/Dataset))
+              (r Rect)
+              (kind i64)
+              (id i64)
+              (x f64)
+              (overview bool)]
+  (-> bool)
+  (let [s (state)
+        day (v/bucket-at x r (.days d))
+        own (and (>= id MOVE) (<= id RIGHT))]
+    (cond (and (= kind 1) (> (.days d) 0) (or overview own))
+            (do
+              (set! (.gesture s) true)
+              (set! (.dragging s) false)
+              (set! (.mode s) (if own (+ 1 (- id MOVE)) 0))
+              (set! (.anchor s) (+ (.start d) (* day m/DAY)))
+              (set! (.pointer s) x)
+              (set! (.base-first s) (+ (.start d) (* (first d) m/DAY)))
+              (set! (.base-last s) (+ (.start d) (* (last d) m/DAY)))
+              true)
+          (and (= kind 2) (.gesture s))
+            (do
+              (when (> (fabs (- x (.pointer s))) 3.0) (set! (.dragging s) true))
+              (when (.dragging s)
+                (cond (= (.mode s) 1)
+                        (let [width
+                                (- (bounded d (.base-last s))
+                                   (bounded d (.base-first s)))
+                              lo
+                                (m/maximum 0
+                                           (min-day (- (- (.days d) 1) width)
+                                                    (+ (bounded d
+                                                                (.base-first s))
+                                                       (- day
+                                                          (bounded d
+                                                                   (.anchor s))))))]
+                          (set-range d lo (+ lo width)))
+                      (= (.mode s) 2)
+                        (set-range d
+                                   (min-day day (bounded d (.base-last s)))
+                                   (bounded d (.base-last s)))
+                      (= (.mode s) 3)
+                        (set-range d
+                                   (bounded d (.base-first s))
+                                   (m/maximum day (bounded d (.base-first s))))
+                      :else
+                        (set-range d
+                                   (min-day day (bounded d (.anchor s)))
+                                   (m/maximum day (bounded d (.anchor s))))))
+              (host/paper_redraw)
+              true)
+          (and (= kind 3) (.gesture s))
+            (let [consume (or (.dragging s) own)]
+              (set! (.gesture s) false)
+              (set! (.dragging s) false)
+              consume)
+          :else false)))
+
+(defn bounds [(r Rect) (d (ptr m/Dataset))] (-> Rect)
+  (let [step (/ (.w r) (cast f64 (m/maximum 1 (- (.days d) 1))))
+        left (maximum (.x r) (+ (.x r) (* step (- (cast f64 (first d)) 0.5))))
+        right
+          (minimum (+ (.x r) (.w r))
+                   (+ (.x r) (* step (+ (cast f64 (last d)) 0.5))))]
+    (if (= (.days d) 1)
+        r
+        (rect left (.y r) (maximum 1.0 (- right left)) (.h r)))))
+
+(defn draw [(r Rect) (d (ptr m/Dataset))] (-> i64)
+  (when (and (.active (state)) (> (.days d) 0))
+    (let [b (bounds r d)]
+      ;; The range is an ink registration mark, not another raised sheet.
+      (ink-height 52.0)
+      (host/paper_rule (.x b) (.y b) (.w b) 1.2 t/GOLD)
+      (host/paper_rule (.x b) (+ (.y b) (.h b)) (.w b) 1.2 t/GOLD)
+      (host/paper_rule (.x b) (.y b) 1.2 (.h b) t/GOLD)
+      (host/paper_rule (+ (.x b) (.w b)) (.y b) 1.2 (.h b) t/GOLD)
+      (ink-height 52.5)
+      (host/paper_hit MOVE
+                      (.x b)
+                      (.y b)
+                      (.w b)
+                      (.h b)
+                      c"Move selected date range"
+                      1
+                      0.0)
+      (for [i 0 2]
+        (let [x (if (= i 0) (.x b) (+ (.x b) (.w b)))
+              tab
+                (rect (- x 4.5)
+                      (+ (.y b)
+                         (* (.h b)
+                            (if (< (.w b) 24.0) (if (= i 0) 0.30 0.60) 0.43)))
+                      9.0
+                      28.0)]
+          (panel tab 0.6 47.0 (t/paper t/GOLD))
+          (ink-height 47.5)
+          (host/paper_rule (- x 0.5) (+ (.y tab) 7.0) 1.0 14.0 t/DAILY)
+          (ink-height 54.0)
+          (host/paper_hit (+ LEFT i)
+                          (- x 9.0)
+                          (- (.y tab) 6.0)
+                          18.0
+                          40.0
+                          c"Resize selected date range"
+                          1
+                          0.0)))))
+  0)

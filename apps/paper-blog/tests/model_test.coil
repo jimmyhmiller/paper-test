@@ -277,3 +277,44 @@
     (assert (= (load (index (.totals d) 0)) 15))
     (m/clear (mut d))
     (n/release pool)))
+
+(deftest all-time-keeps-history-before-thirty-days-and-does-not-start-in-1970
+  (let [pool (n/new c"NSAutoreleasePool")
+        (mut d) (m/empty)]
+    (assert (m/decode-utc (mut d)
+                          (n/read-json c"tests/fixtures/all-time.json")
+                          (n/nil)))
+    (assert (= (.views d) 18))
+    (assert (= (.count d) 2))
+    (assert (= (.days d) 1036))
+    (assert (= (strcmp (m/date-label (mut d) 0) c"Jan 1, 2024") 0))
+    (assert (= (load (index (.totals d) 0)) 5))
+    (assert (m/localize (mut d) (eastern-zone)))
+    (assert (= (.views d) 18))
+    (assert (= (.days d) 1036))
+    (let [(mut sum) 0]
+      (for [day 0 (.days d)]
+        (set! sum (+ (load sum) (load (index (.totals d) day)))))
+      (assert (= (load sum) 18)))
+    (m/clear (mut d))
+    (n/release pool)))
+
+(deftest empty-all-time-shows-current-day-without-decades-of-empty-buckets
+  (let [pool (n/new c"NSAutoreleasePool")
+        (mut d) (m/empty)]
+    (assert (m/decode-utc (mut d)
+                          (n/parse-text c"{\"bucket_ms\":3600000,\"prefix\":\"/api/\",\"window\":{\"from\":0,\"to\":1793512800000},\"series\":[]}")
+                          (n/nil)))
+    (assert (= (.views d) 0))
+    (assert (= (.days d) 1))
+    (m/clear (mut d))
+    (n/release pool)))
+
+(deftest timeline-timestamps-must-be-whole-milliseconds
+  (let [pool (n/new c"NSAutoreleasePool")
+        (mut d) (m/empty)]
+    (assert (not (m/decode-utc (mut d)
+                               (n/parse-text c"{\"bucket_ms\":3600000,\"prefix\":\"/api/\",\"window\":{\"from\":86400000,\"to\":90000000},\"series\":[{\"path\":\"/api/a\",\"label\":\"a\",\"total_views\":1,\"points\":[{\"bucket_start_ms\":86400000.5,\"views\":1}]}]}")
+                               (n/nil))))
+    (m/clear (mut d))
+    (n/release pool)))

@@ -1,0 +1,36 @@
+{
+  "bucket_ms": 3600000,
+  "prefix": "/api/",
+  "window": {
+    "from": 0,
+    "to": 1793512800000
+  },
+  "series": [
+    {
+      "path": "/api/old",
+      "label": "old",
+      "total_views": 11,
+      "points": [
+        {
+          "bucket_start_ms": 1704110400000,
+          "views": 5
+        },
+        {
+          "bucket_start_ms": 1748786400000,
+          "views": 6
+        }
+      ]
+    },
+    {
+      "path": "/api/new",
+      "label": "new",
+      "total_views": 7,
+      "points": [
+        {
+          "bucket_start_ms": 1793476800000,
+          "views": 7
+        }
+      ]
+    }
+  ]
+}

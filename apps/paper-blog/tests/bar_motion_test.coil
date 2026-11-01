@@ -59,3 +59,12 @@
       (assert (< (.y lifted) (.y base)))
       (assert (> (.h lifted) (.h base))))
     (set! (.hover-lift t) previous)))
+
+(deftest all-time-motion-storage-grows-past-a-year-with-separate-hourly-state
+  (motion/reserve 1036)
+  (set! (.animate (motion/state)) false)
+  (assert (= (motion/amount 0 1035 true) 1.0))
+  (assert (= (motion/amount 1 23 false) 0.0))
+  (motion/reserve 4)
+  (assert (= (motion/amount 0 3 false) 0.0))
+  (motion/shutdown))

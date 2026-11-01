@@ -1,7 +1,7 @@
 # Paper Blog
 
 A native macOS, Coil/Papercut dashboard for Jimmy Miller's blog. One screen
-shows the last 30 days of recorded views, the daily total, selected-post daily and hourly activity, a day/hour heatmap, and a scrolling index of posts with
+shows all recorded views, the daily total, selected-post daily and hourly activity, a day/hour heatmap, and a scrolling index of posts with
 views in that period. It uses the live Website analytics service already used
 by Jim Editor; there are no comparison metrics or extra dashboard screens.
 
@@ -26,10 +26,11 @@ compiler and Apple's command-line tools. No Python process runs inside the app.
   scale. Hover a band or index row to lift that post's sheet and show its full
   title, count, and daily history in the fixed detail area. The same paper color
   identifies the post in the stack, index, and isolated detail shape.
+- Drag across the top graph to select a date range. Its paper frame stays visible on the full-history overview. Drag the middle to move it or either gold edge to resize it. Daily bars, hourly totals, and the heatmap all use that same local date range, including zero-view days. A pinned post stays selected. Click the total, empty paper, or Escape to clear the range and post selection.
 - Daily and hourly bars lift toward the viewer with a tiny centered expansion of a single paper face and thin cut edge, then settle back. Their centers stay fixed, with no diagonal slide; the paper texture follows the same scale. Their stationary footprints and hit regions retain the original count scale. Lift follows global paper depth and respects macOS Reduce Motion.
 - Hover the charts to inspect the exact local date and count. Inspecting the
   main chart also shows that day's count for the selected post.
-- Hover previews a post. Moving across sidebar gaps, gutters, or the scrollbar preserves the current preview; leaving the sidebar restores the all-post view. Click a post or paper band to pin it while inspecting graphs. A bordered row and “Pinned” status show the lock. Click the same post again to unpin, or click the total, empty space, or Escape to restore all posts. Click another post to switch the pin. Arrow keys move through
+- Hover previews a post. Moving across sidebar gaps, gutters, or the scrollbar preserves the current preview; leaving the sidebar restores the all-post view. Click a post or paper band to pin it while inspecting graphs. A bordered row shows the lock. Click the same post again to unpin, or click the total, empty space, or Escape to restore all posts. Click another post to switch the pin. Arrow keys move through
   the index. Tab, Shift-Tab, Space, and Return use the native Paper focus system.
 - **Command-R** refreshes the data. It also refreshes automatically every five
   minutes. Concurrent refreshes are coalesced.
@@ -50,7 +51,7 @@ can always be selected through the index even when too thin to point at easily.
 
 The unified window keeps native traffic lights in their system positions. Rich dyed compressed-pulp stocks, exposed sheet edges, and directional shadows give the graphs physical paper relief. Hourly bars show only the selected post; the heatmap follows the selected post and shows its hourly views in fixed absolute-count bins. Hover links dates and hours across the charts; click to pin and Escape to clear.
 
-Click the small gold sun stamped into the upper-right corner of the daily-views sheet to open the persistent paper and sunlight editor. The draggable sun map controls lighting across the entire dashboard. All paper controls apply globally to every sheet, graph, tile, and panel in this dashboard. Each slider shows its value. Hold Shift while dragging for ten-times finer adjustment. Drag the card by its header; close it with the sun, ×, or Escape. It stays open while you hover, scroll, select posts, or inspect uncovered graphs. The popup only captures its own controls; Escape closes it before clearing any post pin. Reset all restores and saves every default immediately.
+Click the small gold sun stamped into the upper-right corner of the daily-views sheet to open the persistent paper and sunlight editor. The draggable sun map controls lighting across the entire dashboard. All paper controls apply globally to every sheet, graph, tile, and panel in this dashboard. Each slider shows its value. Hold Shift while dragging for ten-times finer adjustment. Drag the card by its header; close it with the sun, ×, or Escape. It stays open while you hover, scroll, select posts, or inspect uncovered graphs. The editor uses cut-paper pull tabs in recessed tracks and a die-cut sun over a recessed paper map. It only captures its own controls; Escape closes it before clearing any post pin. Reset all restores and saves every default immediately.
 
 | Parameter | Range |
 | --- | --- |
@@ -77,9 +78,9 @@ use another curl configuration file.
 It requests `/analytics/timeline?prefix=/api/&n=all&bucket=hour&from=…&to=…`
 from `https://computer.jimmyhmiller.com`. This is the backend's blog-scoped
 endpoint, not the general multi-project request summaries. Both bounds are
-fixed epoch milliseconds, defining a rolling 30-day window. The first and last local calendar days can be partial. Source buckets are validated in UTC, then regrouped into the Mac’s current timezone before any chart is drawn. Daily totals use local midnight; hourly bars and heatmap rows use local hours. At daylight-saving transitions, repeated fall hours are combined and nonexistent spring hours stay unobserved. View counts are conserved. Legacy daily caches are refreshed from the hourly service because UTC daily totals cannot be accurately split into local days.
+explicit epoch milliseconds: from zero through the current request time, covering all available history. The visible axis begins at the first recorded bucket, with no artificial 1970 start. The first and last local calendar days can be partial. Source buckets are validated in UTC, then regrouped into the Mac’s current timezone before any chart is drawn. Daily totals use local midnight; hourly bars and heatmap rows use local hours. At daylight-saving transitions, repeated fall hours are combined and nonexistent spring hours stay unobserved. View counts are conserved. Legacy daily caches are refreshed from the hourly service because UTC daily totals cannot be accurately split into local days.
 
-The complete requested date axis is zero-filled, even if no post has views on
+The complete recorded date axis is zero-filled, even if no post has views on
 a day. Each post's daily counts must add up to its reported total. Invalid JSON,
 unexpected schemas, duplicate posts, negative/fractional counts, unaligned or
 out-of-range dates, and mismatched totals reject the new snapshot. Empty data

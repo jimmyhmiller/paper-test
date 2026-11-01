@@ -5,6 +5,7 @@
 (import "blog.app" :as app)
 (import "blog.native" :as n)
 (import "blog.source" :as source)
+(import "blog.bar-motion" :as motion)
 
 (extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
 
@@ -45,6 +46,7 @@
         (host/paper_responsive 1280.0 900.0)
         (host/paper_unified_window true)
         (let [result (host/paper_run (fnptr-of app/draw) (fnptr-of app/event))]
+          (motion/shutdown)
           (source/shutdown)
           result))))
 

@@ -6,7 +6,7 @@
 (import "blog.theme" :as t)
 (import "blog.native" :as n)
 (import "blog.tuning" :as tuning)
-(import "paper.ffi" :use [snprintf sqrt])
+(import "paper.ffi" :use [snprintf sqrt sin cos])
 
 (const BASE 800000)
 
@@ -205,6 +205,62 @@
   (let [r (.bounds s)]
     (rect (+ (.x r) 22.0) (+ (.y r) 60.0) (- (.w r) 44.0) 132.0)))
 
+(defn cut-paper-sun [(x f64) (y f64)] (-> i64)
+  (begin-sheet)
+  (for [i 0 16]
+    (let [angle (- (* (cast f64 i) 0.39269908169872414) 1.5707963267948966)
+          radius (if (= (% i 2) 0) 10.0 6.8)
+          px (+ x (* (cos angle) radius))
+          py (+ y (* (sin angle) radius))]
+      (if (= i 0) (move-to px py) (line-to px py))))
+  (close-path)
+  (finish-sheet 61.3 (tint (t/paper t/GOLD) 0xc9692c 0.15))
+  (disc (- x 6.0) (- y 6.0) 12.0 62.0 (t/paper t/GOLD))
+  (disc (- x 5.3) (- y 5.3) 10.6 62.5 (tint (t/paper t/GOLD) 0xffd68c 0.12))
+  0)
+
+(defn paper-slider [(track Rect) (value f64)] (-> i64)
+  (let [slot (rect (.x track) (+ (.y track) 7.0) (.w track) 6.0)
+        x (- (+ (.x track) (* (.w track) value)) 7.0)
+        y (+ (.y track) 1.5)
+        gold (t/paper t/GOLD)]
+    ;; A real cut channel in the card, with a dyed paper strip seated inside.
+    (recess slot
+            1.0
+            59.0
+            3.0
+            0.65
+            (tint (t/paper t/POST) 0xa06879 0.20)
+            (t/paper t/BACK))
+    (when (> value 0.0)
+      (panel (rect (.x track) (+ (.y track) 8.2) (* (.w track) value) 3.6)
+             0.2
+             57.2
+             (tint gold 0xcf6b26 0.12)))
+    ;; A snipped cardstock pull-tab, its folded lip and scored center crease.
+    (panel (rect x (+ y 0.7) 14.0 16.0) 0.3 60.2 (tint gold 0x713a36 0.35))
+    (begin-sheet)
+    (move-to (+ x 1.0) y)
+    (line-to (+ x 11.0) y)
+    (line-to (+ x 14.0) (+ y 3.0))
+    (line-to (+ x 14.0) (+ y 14.0))
+    (line-to (+ x 12.0) (+ y 16.0))
+    (line-to x (+ y 16.0))
+    (line-to x (+ y 1.0))
+    (close-path)
+    (finish-sheet 62.1 gold)
+    (begin-sheet)
+    (move-to (+ x 1.0) (+ y 0.5))
+    (line-to (+ x 12.0) (+ y 0.5))
+    (line-to (+ x 7.0) (+ y 4.0))
+    (close-path)
+    (finish-sheet 62.6 (tint gold 0xffda96 0.24))
+    (panel (rect (+ x 6.7) (+ y 6.0) 0.6 7.0)
+           0.0
+           62.4
+           (tint gold 0x9b591e 0.35)))
+  0)
+
 (defn draw-map [(s (ptr light/Lighting))] (-> i64)
   (let [m (map-state)
         r (map-bounds s)]
@@ -213,30 +269,33 @@
             (minimum (.low m) (minimum -1.0 (- (minimum (.x s) (.y s)) 0.25))))
       (set! (.high m)
             (maximum (.high m) (maximum 2.0 (+ (maximum (.x s) (.y s)) 0.25)))))
-    (let [span (- (.high m) (.low m))]
-      (panel r 1.0 63.2 (t/paper t/BACK))
-      ;; This outline represents the whole dashboard in the light's world.
-      (frame (rect (+ (.x r) (* (.w r) (/ (- (.low m)) span)))
-                   (+ (.y r) (* (.h r) (/ (- (.low m)) span)))
-                   (/ (.w r) span)
-                   (/ (.h r) span))
-             0.0
-             0.7
-             63.4
-             (t/paper t/MUTED))
-      (disc (- (+ (.x r) (* (.w r) (/ (- (.x s) (.low m)) span))) 6.0)
-            (- (+ (.y r) (* (.h r) (/ (- (.y s) (.low m)) span))) 6.0)
-            12.0
-            63.8
-            (t/paper t/GOLD)))
+    (let [span (- (.high m) (.low m))
+          window
+            (rect (+ (.x r) (* (.w r) (/ (- (.low m)) span)))
+                  (+ (.y r) (* (.h r) (/ (- (.low m)) span)))
+                  (/ (.w r) span)
+                  (/ (.h r) span))]
+      (recess r
+              2.0
+              59.0
+              3.0
+              1.2
+              (tint (t/paper t/POST) 0xa06879 0.20)
+              (t/paper t/BACK))
+      ;; The scene's footprint is a small cut-paper card in the light's world.
+      (panel window 1.0 58.0 (tint (t/paper t/DAILY) 0x5a9b94 0.15))
+      (panel (inset window 1.2) 0.2 59.0 (t/paper t/DAILY))
+      (panel (rect (+ (.x window) 1.8)
+                   (+ (.y window) 1.8)
+                   (* (.w window) 0.20)
+                   (- (.h window) 3.6))
+             0.2
+             59.5
+             (t/paper t/INDEX))
+      (cut-paper-sun (+ (.x r) (* (.w r) (/ (- (.x s) (.low m)) span)))
+                     (+ (.y r) (* (.h r) (/ (- (.y s) (.low m)) span)))))
     (ink-height 64.0)
-    (hit (+ BASE 1) r c"Drag the sun to light all paper in the dashboard")
-    (label (.x r)
-           (+ (.y r) (.h r) 10.0)
-           10.0
-           t/MUTED
-           0
-           c"Drag the sun · lights the whole dashboard"))
+    (hit (+ BASE 1) r c"Drag the sun to light all paper in the dashboard"))
   0)
 
 (defn value-buffer [] (-> (ptr (array i8 96)))
@@ -268,8 +327,21 @@
                      (- (.h v) height 16.0))]
         (set! (.bounds s) (rect x y width height)))
       (let [r (.bounds s)]
-        (panel r 2.0 63.0 (t/paper t/POST))
-        (frame r 2.0 0.8 63.2 (t/paper 0x9b6075))
+        (panel r 3.0 55.0 (tint (t/paper t/POST) 0x25182d 0.22))
+        (frame r 3.0 0.7 55.8 (t/paper 0x9b6075))
+        (panel (inset r 1.2) 2.0 57.0 (t/paper t/POST))
+        ;; A shallow folded grip on the card's header.
+        (panel (rect (- (+ (.x r) (* (.w r) 0.5)) 14.0) (+ (.y r) 8.0) 28.0 1.2)
+               0.0
+               58.4
+               (tint (t/paper t/POST) 0xd18e9a 0.25))
+        (panel (rect (- (+ (.x r) (* (.w r) 0.5)) 14.0)
+                     (+ (.y r) 10.0)
+                     28.0
+                     0.6)
+               0.0
+               57.6
+               (tint (t/paper t/POST) 0x291b2e 0.20))
         (ink-height 64.0)
         (hit (+ BASE 5) r c"Paper and sunlight controls")
         (hit (+ BASE 7)
@@ -298,19 +370,7 @@
                    t/INK
                    3
                    text)
-            (panel (rect (.x track) (+ (.y track) 8.0) (.w track) 4.0)
-                   1.0
-                   63.3
-                   (t/paper t/BACK))
-            (panel (rect (.x track) (+ (.y track) 8.0) (* (.w track) value) 4.0)
-                   1.0
-                   63.5
-                   (t/paper t/GOLD))
-            (disc (- (+ (.x track) (* (.w track) value)) 6.0)
-                  (+ (.y track) 4.0)
-                  12.0
-                  63.8
-                  (t/paper t/GOLD))
+            (paper-slider track value)
             (ink-height 64.0)
             (host/paper_hit (+ BASE 20 i)
                             (.x track)
@@ -320,18 +380,17 @@
                             (parameter-name i)
                             1
                             value)))
+        (panel (rect (+ (.x r) 14.0) (+ (.y r) (- (.h r) 37.0)) 85.0 30.0)
+               1.0
+               58.5
+               (tint (t/paper t/POST) 0xad6879 0.12))
+        (ink-height 64.0)
         (label (+ (.x r) 22.0)
                (+ (.y r) (- (.h r) 28.0))
                11.0
                t/INK
                0
                c"Reset all")
-        (label (+ (.x r) 140.0)
-               (+ (.y r) (- (.h r) 28.0))
-               10.0
-               t/MUTED
-               0
-               c"Shift-drag for fine adjustment")
         (hit (+ BASE 4)
              (rect (+ (.x r) 14.0) (+ (.y r) (- (.h r) 37.0)) 85.0 30.0)
              c"Reset all paper and sunlight settings"))))

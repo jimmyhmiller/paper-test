@@ -126,7 +126,7 @@
                         (set! (.response s)
                               (n/retain (append (.directory s) c"http-status")))
                         (let [to (n/now-ms)
-                              from (- to (* 30 m/DAY))
+                              from 0
                               args (n/new c"NSMutableArray")
                               task (n/new c"NSTask")
                               output (status-file (.response s))

@@ -6,15 +6,33 @@
 (import "blog.native" :as n)
 (import "blog.tuning" :as tuning)
 
-(defstruct Motion [(last f64) (seconds f64) (pending bool) (animate bool)])
+(defstruct Motion
+  [(last f64)
+   (seconds f64)
+   (pending bool)
+   (animate bool)
+   (levels (ptr f64))
+   (slots i64)])
 
 (defn state [] (-> (ptr Motion))
   (p/alloc-static Motion))
 
-;;; Separate channels for daily and hourly bars. Day axes are limited to 367
-;;; dates by model validation; reserve 384 slots per graph.
-(defn levels [] (-> (ptr (array f64 768)))
-  (p/alloc-static (array f64 768)))
+(defn reserve [(days i64)] (-> i64)
+  (let [s (state)
+        slots (if (> days 0) days 1)]
+    (when (!= slots (.slots s))
+      (let [values (cast (ptr f64) (n/calloc (cast u64 (+ slots 24)) 8))]
+        (when (!= values (cast (ptr f64) 0))
+          (n/free (cast (ptr i8) (.levels s)))
+          (set! (.levels s) values)
+          (set! (.slots s) slots)))))
+  0)
+
+(defn shutdown [] (-> i64)
+  (n/free (cast (ptr i8) (.levels (state))))
+  (set! (.levels (state)) (cast (ptr f64) 0))
+  (set! (.slots (state)) 0)
+  0)
 
 (defn step [(value f64) (target f64) (seconds f64)] (-> f64)
   (let [next
@@ -23,7 +41,8 @@
                 (- 1.0 (pow 0.001 (/ (clamp seconds 0.0 0.05) 0.12)))))]
     (if (< (fabs (- target next)) 0.001) target next)))
 
-(defn begin [] (-> i64)
+(defn begin [(days i64)] (-> i64)
+  (reserve days)
   (let [s (state)
         now (host/CACurrentMediaTime)]
     (set! (.seconds s)
@@ -43,12 +62,17 @@
 
 (defn amount [(group i64) (slot i64) (active bool)] (-> f64)
   (let [s (state)
-        value (index (levels) (+ (* group 384) slot))
-        target (if active 1.0 0.0)
-        next (if (.animate s) (step (load value) target (.seconds s)) target)]
-    (set! value next)
-    (when (!= next target) (set! (.pending s) true))
-    next))
+        target (if active 1.0 0.0)]
+    (if (or (= (.levels s) (cast (ptr f64) 0))
+            (< slot 0)
+            (>= slot (if (= group 0) (.slots s) 24)))
+        target
+        (let [value (index (.levels s) (+ (if (= group 0) 0 (.slots s)) slot))
+              next
+                (if (.animate s) (step (load value) target (.seconds s)) target)]
+          (set! value next)
+          (when (!= next target) (set! (.pending s) true))
+          next))))
 
 (defn active? [] (-> bool)
   (.pending (state)))

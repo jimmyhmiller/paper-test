@@ -94,24 +94,52 @@
                (n/sel c"capitalizedString")
                []))))
 
+(defn timestamp? [(value (ptr i8))] (-> bool)
+  (and (n/number? value)
+       (>= (n/integer value) 0)
+       (= (n/msg f64 value (n/sel c"doubleValue") [])
+          (cast f64 (n/integer value)))))
+
+(defn history-start [(series (ptr i8))
+                     (requested-from i64)
+                     (to i64)] (-> i64)
+  (if (!= requested-from 0)
+      requested-from
+      (let [(mut earliest) to]
+        (for [i 0 (n/count series)]
+          (let [points (n/key (n/at series i) c"points")]
+            (for [j 0 (n/count points)]
+              (let [stamp (n/key (n/at points j) c"bucket_start_ms")
+                    ts (n/integer stamp)]
+                (when (and (timestamp? stamp)
+                           (>= ts 0)
+                           (<= ts to)
+                           (< ts (load earliest)))
+                  (set! earliest ts))))))
+        (load earliest))))
+
 ;;; Parse into a separate dataset. Failure never modifies the currently shown
 ;;; snapshot. Counts and per-day series are reconciled before publication.
 (defn decode-utc [(out (ptr Dataset)) (root (ptr i8)) (catalog (ptr i8))]
   (-> bool)
   (let [window (n/key root c"window")
         series (n/key root c"series")
-        from (n/integer (n/key window c"from"))
+        requested-from (n/integer (n/key window c"from"))
         to (n/integer (n/key window c"to"))
         bucket (n/integer (n/key root c"bucket_ms"))
+        from (history-start series requested-from to)
         days (+ 1 (/ (- (bucket-start to) (bucket-start from)) DAY))]
     (if (or (not (n/dict? root))
             (not (n/array? series))
-            (not (n/number? (n/key window c"from")))
-            (not (n/number? (n/key window c"to")))
+            (not (timestamp? (n/key window c"from")))
+            (not (timestamp? (n/key window c"to")))
+            (< requested-from 0)
+            (< to requested-from)
             (< from 0)
             (< to from)
             (< days 1)
-            (> days 367)
+            (> days 100000)
+            (> (* (n/count series) days 24) 16000000)
             (and (!= bucket DAY) (!= bucket HOUR))
             (not (n/string? (n/key root c"prefix")))
             (!= (strcmp (n/utf8 (n/key root c"prefix")) c"/api/") 0)
@@ -133,7 +161,8 @@
                    (.dates next)
                    (n/sel c"addObject:")
                    [(ptr i8)]
-                   (n/date-text (+ (.start next) (* day DAY)) c"MMM d")))
+                   (n/date-text (+ (.start next) (* day DAY))
+                                (if (> days 366) c"MMM d, yyyy" c"MMM d"))))
           (set! (.posts next)
                 (cast (ptr Post)
                       (n/calloc (cast u64 (maximum 1 (.count next)))
@@ -202,8 +231,8 @@
                               day (/ (- ts (.start next)) DAY)]
                           (if (or (not (n/nonnegative-integer? (n/key point
                                                                       c"views")))
-                                  (not (n/number? (n/key point
-                                                         c"bucket_start_ms")))
+                                  (not (timestamp? (n/key point
+                                                          c"bucket_start_ms")))
                                   (!= (% ts bucket) 0)
                                   (< ts (.start next))
                                   (< ts (* (/ from bucket) bucket))
@@ -308,12 +337,15 @@
         heat (cast (ptr i64) (n/calloc (cast u64 cells) 8))
         observed (cast (ptr i64) (n/calloc (cast u64 cells) 8))
         hours (cast (ptr i64) (n/calloc 24 8))
-        dates (n/new c"NSMutableArray")]
-    (if (or (= totals (cast (ptr i64) 0))
+        dates (n/new c"NSMutableArray")
+        mapping (cast (ptr i64) (n/calloc (cast u64 (* (.days d) 24)) 8))]
+    (if (or (= mapping (cast (ptr i64) 0))
+            (= totals (cast (ptr i64) 0))
             (= heat (cast (ptr i64) 0))
             (= observed (cast (ptr i64) 0))
             (= hours (cast (ptr i64) 0)))
         (do
+          (n/free (cast (ptr i8) mapping))
           (n/free (cast (ptr i8) totals))
           (n/free (cast (ptr i8) heat))
           (n/free (cast (ptr i8) observed))
@@ -326,11 +358,13 @@
                    dates
                    (n/sel c"addObject:")
                    [(ptr i8)]
-                   (n/date-text (+ start (* day DAY)) c"MMM d")))
+                   (n/date-text (+ start (* day DAY))
+                                (if (> days 366) c"MMM d, yyyy" c"MMM d"))))
           (for [slot 0 (* (.days d) 24)]
             (let [ts (+ (.start d) (* slot HOUR))
                   local (n/wall-ms ts zone)
                   target (/ (- local start) HOUR)]
+              (set! (index mapping slot) target)
               (when (and (>= ts (* (/ (.from d) HOUR) HOUR))
                          (<= ts (* (/ (.to d) HOUR) HOUR))
                          (>= target 0)
@@ -349,9 +383,7 @@
                       (n/free (cast (ptr i8) cells-out)))
                     (do
                       (for [slot 0 (* (.days d) 24)]
-                        (let [ts (+ (.start d) (* slot HOUR))
-                              local (n/wall-ms ts zone)
-                              target (/ (- local start) HOUR)
+                        (let [target (load (index mapping slot))
                               amount (load (index (.hours post) slot))]
                           (when (and (> amount 0)
                                      (>= target 0)
@@ -376,6 +408,7 @@
                       (for [day 0 days]
                         (set! (.peak post)
                               (maximum (.peak post) (load (index values day)))))))))
+            (n/free (cast (ptr i8) mapping))
             (n/free (cast (ptr i8) (.totals d)))
             (n/free (cast (ptr i8) (.heat d)))
             (n/free (cast (ptr i8) (.hour-totals d)))

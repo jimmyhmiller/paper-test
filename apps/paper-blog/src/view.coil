@@ -27,12 +27,12 @@
         mid-h (* (- h 48.0) 0.30)
         bottom-y (+ middle-y mid-h 10.0)
         half (- (* width 0.5) 5.0)
-        rows (cast i64 (floor (/ (- h 220.0) 32.0)))]
+        rows (cast i64 (floor (/ (- h 200.0) 32.0)))]
     (Layout
       :width w
       :height h
       :sidebar (rect 0.0 0.0 side h)
-      :list (rect 20.0 198.0 (- side 35.0) (* (cast f64 rows) 32.0))
+      :list (rect 20.0 184.0 (- side 35.0) (* (cast f64 rows) 32.0))
       :daily (rect x 14.0 width top-h)
       :post (rect x middle-y half mid-h)
       :hour (rect (+ x half 10.0) middle-y half mid-h)
