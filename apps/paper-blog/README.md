@@ -50,7 +50,7 @@ can always be selected through the index even when too thin to point at easily.
 
 The unified window keeps native traffic lights in their system positions. Rich dyed compressed-pulp stocks, exposed sheet edges, and directional shadows give the graphs physical paper relief. Hourly bars show only the selected post; the heatmap follows the selected post and shows its hourly views in fixed absolute-count bins. Hover links dates and hours across the charts; click to pin and Escape to clear.
 
-Click the small gold sun stamped into the upper-right corner of the daily-views sheet to open the persistent paper and sunlight editor. The draggable sun map controls lighting across the entire dashboard. All paper controls apply globally to every sheet, graph, tile, and panel in this dashboard. Each slider shows its value. Hold Shift while dragging for ten-times finer adjustment. The card can be dragged, closed with Escape, or dismissed by clicking outside; the post pin remains unchanged. Reset all restores and saves every default immediately.
+Click the small gold sun stamped into the upper-right corner of the daily-views sheet to open the persistent paper and sunlight editor. The draggable sun map controls lighting across the entire dashboard. All paper controls apply globally to every sheet, graph, tile, and panel in this dashboard. Each slider shows its value. Hold Shift while dragging for ten-times finer adjustment. Drag the card by its header; close it with the sun, ×, or Escape. It stays open while you hover, scroll, select posts, or inspect uncovered graphs. The popup only captures its own controls; Escape closes it before clearing any post pin. Reset all restores and saves every default immediately.
 
 | Parameter | Range |
 | --- | --- |

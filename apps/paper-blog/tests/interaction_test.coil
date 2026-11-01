@@ -354,7 +354,7 @@
       (m/clear d))
     (n/release pool)))
 
-(deftest sunlight-stamp-opens-modal-controls-without-changing-the-post-pin
+(deftest sunlight-popup-allows-post-selection-and-closes-without-clearing-the-pin
   (let [pool (n/new c"NSAutoreleasePool")]
     (setup)
     (let [d (field (source/state) data)
@@ -367,9 +367,10 @@
       (app/event 3 sun/BASE 0.0 0.0)
       (app/draw)
       (assert (.open lighting))
-      (assert (= (host/hit-test 35.0 240.0) (+ sun/BASE 6)))
+      (assert (= (host/hit-test 35.0 240.0) 101))
       (app/event 3 100 35.0 208.0)
-      (assert (= (.selected (app/interaction)) 1))
+      (assert (= (.selected (app/interaction)) 0))
+      (assert (.open lighting))
       (let [track (sun/track-bounds lighting 3)]
         (app/event 1
                    (+ sun/BASE 23)
@@ -379,7 +380,7 @@
       (app/event 4 53 0.0 0.0)
       (assert (not (.open lighting)))
       (assert (.selection-locked (app/interaction)))
-      (assert (= (.selected (app/interaction)) 1))
+      (assert (= (.selected (app/interaction)) 0))
       (m/clear d))
     (n/release pool)))
 
@@ -565,5 +566,41 @@
         (assert (= (.h rest) (.h raised))))
       (assert (= (.views d) 15))
       (set! (.headless (host/host)) was-headless)
+      (m/clear d))
+    (n/release pool)))
+
+(deftest nonmodal-lighting-popup-keeps-uncovered-hovers-scrolling-and-graphs-live
+  (let [pool (n/new c"NSAutoreleasePool")]
+    (setup)
+    (let [d (field (source/state) data)
+          s (sun/state)
+          ui (app/interaction)]
+      (assert (m/decode-utc d (n/read-json c"tests/fixtures/many.json") (n/nil)))
+      (app/event 3 sun/BASE 0.0 0.0)
+      (app/draw)
+      (let [l (v/layout 1560.0 1000.0 (.count d))
+            row (v/row l 1)
+            plot (.post-plot l)]
+        (host/update-hover (+ (.x row) 10.0) (+ (.y row) 10.0))
+        (app/draw)
+        (assert (= (.selected ui) 1))
+        (assert (.open s))
+        (app/event 7 60 0.0 -32.0)
+        (assert (> (.scroll ui) 0.0))
+        (assert (.open s))
+        (host/update-hover (+ (.x plot) (* (.w plot) 0.5)) (+ (.y plot) 10.0))
+        (app/draw)
+        (assert (>= (.day ui) 0))
+        (assert (.open s)))
+      (app/event 3 101 35.0 240.0)
+      (assert (.selection-locked ui))
+      (app/event 3 62 40.0 75.0)
+      (assert (= (.selected ui) -1))
+      (assert (.open s))
+      (let [map (sun/map-bounds s)]
+        (assert (= (host/hit-test (+ (.x map) 10.0) (+ (.y map) 10.0))
+                   (+ sun/BASE 1))))
+      (app/event 4 53 0.0 0.0)
+      (assert (not (.open s)))
       (m/clear d))
     (n/release pool)))

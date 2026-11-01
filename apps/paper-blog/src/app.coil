@@ -956,7 +956,7 @@
     (sun/apply)
     (track-pointer)
     (limit-offset l)
-    (when (not (.open (sun/state))) (update-hover d))
+    (when (not (sun/captures-pointer?)) (update-hover d))
     (motion/begin)
     (panel (rect 0.0 0.0 (.width l) (.height l)) 0.0 4.0 (t/paper t/BACK))
     (paper-leaf (.sidebar l) t/INDEX)

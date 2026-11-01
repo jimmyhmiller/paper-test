@@ -267,9 +267,6 @@
                      16.0
                      (- (.h v) height 16.0))]
         (set! (.bounds s) (rect x y width height)))
-      (host/paper_modal_scope)
-      (ink-height 64.0)
-      (hit (+ BASE 6) v c"Dismiss paper controls")
       (let [r (.bounds s)]
         (panel r 2.0 63.0 (t/paper t/POST))
         (frame r 2.0 0.8 63.2 (t/paper 0x9b6075))
@@ -280,7 +277,7 @@
              c"Move paper controls")
         (label (+ (.x r) 22.0) (+ (.y r) 20.0) 18.0 t/INK 1 c"Paper & sunlight")
         (label (- (+ (.x r) (.w r)) 40.0) (+ (.y r) 18.0) 20.0 t/INK 0 c"×")
-        (hit BASE
+        (hit (+ BASE 2)
              (rect (- (+ (.x r) (.w r)) 49.0) (+ (.y r) 9.0) 36.0 36.0)
              c"Close paper controls")
         (draw-map s)
@@ -351,20 +348,33 @@
               131072)
            0)))
 
+(defn owns-id? [(id i64)] (-> bool)
+  (and (>= id BASE) (< id (+ BASE 20 COUNT))))
+
+;;; Preserve graph inspection while the pointer adjusts the popup itself,
+;;; while leaving all uncovered dashboard controls live.
+(defn captures-pointer? [] (-> bool)
+  (and (.open (state))
+       (or (owns-id? (.hover (host/host)))
+           (owns-id? (.drag (host/host)))
+           (.dragging (state))
+           (.dragging (map-state)))))
+
 (defn handle [(kind i64) (id i64) (x f64) (y f64)] (-> bool)
   (let [s (state)]
     (cond (and (.open s) (= kind 4) (= id 53))
             (do
               (set! (.open s) false)
+              (set! (.dragging s) false)
               (set! (.dragging (map-state)) false)
               (host/paper_redraw)
               true)
-          (and (= kind 3) (= id BASE))
-            (do (set! (.open s) (not (.open s))) (host/paper_redraw) true)
-          (and (.open s) (= kind 3) (= id (+ BASE 6)))
+          (and (= kind 3) (or (= id BASE) (and (.open s) (= id (+ BASE 2)))))
             (do
-              (set! (.open s) false)
-              (set! (.dragging (map-state)) false)
+              (set! (.open s) (not (.open s)))
+              (when (not (.open s))
+                (set! (.dragging s) false)
+                (set! (.dragging (map-state)) false))
               (host/paper_redraw)
               true)
           (and (.open s) (= kind 3) (= id (+ BASE 4)))
@@ -432,7 +442,9 @@
               (set! (.positioned s) true)
               (host/paper_redraw)
               true)
-          (and (.open s) (= kind 3)) (do (set! (.dragging s) false) true)
+          (and (.open s) (= kind 3) (= id (+ BASE 7)))
+            (do (set! (.dragging s) false) true)
+          (and (.open s) (or (= id (+ BASE 5)) (= id (+ BASE 7)))) true
           (= kind 6) false
           (= kind 0) false
-          :else (.open s))))
+          :else false)))
