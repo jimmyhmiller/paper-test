@@ -873,15 +873,21 @@
         color (stack/color (.path post))
         text (index (text-buffer) 0)]
     (when excluded
-      ;; Match the hovered sheet's outline and stock, with its elevation
-      ;; mirrored below the index surface instead of raised above it.
-      (recess r 1.0 14.0 11.0 0.35 (t/paper t/INDEX) (t/paper color)))
+      ;; Keep the hover outline, but seat muted stock near the bottom of the
+      ;; index sheet. A wider cut lip makes the inward edge easier to read.
+      (recess r
+              1.0
+              14.0
+              13.5
+              0.65
+              (t/paper t/INDEX)
+              (tint (t/paper color) 0x858187 0.75)))
     (when active
       (panel r 1.0 25.0 (t/paper color))
       (when (.selection-locked s)
         (frame (inset r 1.5) 0.5 0.8 26.0 (t/paper 0x291b2c))))
-    (ink-height (if excluded 3.5 (if active 25.5 15.0)))
-    (let [ink (cast u32 (if (or excluded active) 0x291b2c t/INK))]
+    (ink-height (if excluded 1.0 (if active 25.5 15.0)))
+    (let [ink (cast u32 (if excluded 0x48444a (if active 0x291b2c t/INK)))]
       (label (+ (.x r) 8.0)
              (+ (.y r) 9.0)
              10.5
