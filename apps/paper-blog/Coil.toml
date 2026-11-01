@@ -8,7 +8,7 @@ paper = { path = "../../lib/paper" }
 
 [link]
 frameworks = ["AppKit", "QuartzCore", "CoreGraphics", "CoreText", "ImageIO", "CoreFoundation", "AVFoundation", "Metal"]
-libs = ["objc"]
+libs = ["objc", "curl"]
 
 [test]
 roots = ["tests"]

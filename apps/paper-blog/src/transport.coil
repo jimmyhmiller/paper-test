@@ -1,0 +1,74 @@
+(module blog.transport)
+(import "coil.primitive" :as p)
+(import "coil.http.client" :as http)
+(import "coil.alloc" :as alloc)
+(import "coil.str" :as str)
+(import "coil.slice" :as slice)
+(import "coil.thread" :as thread)
+(import "coil.atomic" :as atomic)
+(import "coil.cancellation" :as cancellation)
+(import "coil.result" :use *)
+(import "blog.native" :as n)
+
+(defstruct Transfer
+  [(worker thread/Thread)
+   (cancel cancellation/Cancellation)
+   (done i64)
+   (status i64)
+   (error i64)
+   (bytes (ptr i8))
+   (url (ptr i8))
+   (authorization (ptr i8))])
+
+;;; RFC 6750 b64token. Reject whitespace, control bytes, and misplaced padding.
+(defn valid-token? [(token (slice u8))] (-> bool)
+  (let [(mut valid) (> (len token) 0)
+        (mut padding) false]
+    (for [i 0 (len token)]
+      (let [c (get token i)]
+        (if (= c (: 61 u8))
+            (do (when (= i 0) (set! valid false)) (set! padding true))
+            (when (or (load padding)
+                      (not (or (and (>= c (: 65 u8)) (<= c (: 90 u8)))
+                               (and (>= c (: 97 u8)) (<= c (: 122 u8)))
+                               (and (>= c (: 48 u8)) (<= c (: 57 u8)))
+                               (= c (: 45 u8)) (= c (: 46 u8)) (= c (: 95 u8))
+                               (= c (: 126 u8)) (= c (: 43 u8)) (= c (: 47 u8)))))
+              (set! valid false)))))
+    (load valid)))
+
+(defn consume [(bytes (ptr u8)) (count i64) (context (ptr i8))] (-> i64)
+  (let [t (cast (ptr Transfer) context)]
+    (if (> (+ (n/msg i64 (.bytes t) (n/sel c"length") []) count) 16777216)
+        (do (set! (.error t) 2) http/BODY-STOP)
+        (do
+          (n/msg i64 (.bytes t) (n/sel c"appendBytes:length:") [(ptr u8) i64] bytes count)
+          http/BODY-CONTINUE))))
+
+(defn work [(context (ptr i8))] (-> (ptr i8))
+  (let [pool (n/new c"NSAutoreleasePool")
+        t (cast (ptr Transfer) context)
+        a (alloc/malloc-allocator)
+        headers [(http/Header :name "Authorization" :value (str/from-cstr (n/utf8 (.authorization t))))]
+        (mut req) (http/Request :method "GET" :url (str/from-cstr (n/utf8 (.url t)))
+                               :headers headers :body "" :connect-timeout-ms 10000
+                               :timeout-ms 45000 :follow-redirects false :ca-info "")]
+    (match (http/request-stream-cancellable a (mut req)
+             (http/BodySink :context context :consume (fnptr-of consume)) (field t cancel))
+      (Err [e] (when (= (.error t) 0)
+                 (set! (.error t) (if (http/error-timeout? e) 3 1))))
+      (Ok [response]
+        (do
+          (set! (.status t) (http/streaming-response-status response))
+          (http/streaming-response-free a response))))
+    (n/release pool)
+    (atomic/store (field t done) 1)
+    (n/nil)))
+
+(defn cleanup [(t (ptr Transfer))] (-> i64)
+  (cancellation/Cancellation::close! (field t cancel))
+  (n/release (.bytes t))
+  (n/release (.url t))
+  (n/release (.authorization t))
+  (set! (.bytes t) (n/nil))
+  0)

@@ -16,7 +16,7 @@ open '/Applications/Paper Blog.app'
 The installer verifies the signature, stages the bundle on the destination volume, and replaces any previous installation with rollback on failure. The installed app is independent of the checkout. To keep it in the Dock, open its Dock menu and choose Options → Keep in Dock.
 
 The signed bundle includes its title catalog and a paper-rendered icon. It
-requires macOS 14 or later and `/usr/bin/curl`. Builds require the installed Coil
+requires macOS 14 or later. Builds require the installed Coil
 compiler and Apple's command-line tools. No Python process runs inside the app.
 
 ## Interactions
@@ -71,10 +71,22 @@ The controls edit real renderer/material parameters. Paper elevations stay withi
 
 ## Live data and offline use
 
-The app launches curl directly, without a shell, using the existing credential
-file `~/.jim/dataflow/analytics.curl`. Credentials are never copied into the
-bundle, cache, logs, or command-line arguments. Set `PAPER_BLOG_AUTH_CONFIG` to
-use another curl configuration file.
+The app uses `coil.http.client` (linked libcurl) on a worker thread, with
+streamed response limits and cancellation on shutdown. No curl process is launched.
+The bearer token is read from `~/.jim/dataflow/analytics.token`; set
+`PAPER_BLOG_TOKEN_FILE` to use another token file. The file contains only the token
+(with an optional trailing newline), and should have permissions `0600`.
+Credentials are never copied into the bundle, cache, logs, or command-line arguments.
+
+To migrate the existing `~/.jim/dataflow/analytics.curl` credential once:
+
+```sh
+python3 scripts/migrate_auth.py
+```
+
+The migration creates the token file with private permissions and refuses to
+overwrite an existing file. Custom legacy configurations can be supplied with
+`--source PATH --destination PATH`. `PAPER_BLOG_AUTH_CONFIG` is no longer used.
 
 It requests `/analytics/timeline?prefix=/api/&n=all&bucket=hour&from=…&to=…`
 from `https://computer.jimmyhmiller.com`. This is the backend's blog-scoped

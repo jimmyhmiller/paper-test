@@ -1,0 +1,28 @@
+(module blog.transport-test)
+(import "blog.transport" :as t)
+(import "blog.native" :as n)
+(import "coil.primitive" :as p)
+(import "coil.http.client" :as http)
+
+(deftest bearer-token-validation
+  (assert (t/valid-token? "Ab09-._~+/=="))
+  (assert (not (t/valid-token? "")))
+  (assert (not (t/valid-token? "=abc")))
+  (assert (not (t/valid-token? "abc=x")))
+  (assert (not (t/valid-token? "abc\r\nX: injected")))
+  (assert (not (t/valid-token? "abc def"))))
+
+(deftest streaming-limit-stops-before-appending-overflow
+  (let [pool (n/new c"NSAutoreleasePool")
+        transfer (p/alloc-stack t/Transfer)
+        byte (p/alloc-stack u8)]
+    (set! (.bytes transfer) (n/new c"NSMutableData"))
+    (set! (.error transfer) 0)
+    (set! byte 65)
+    (assert (= (t/consume byte 1 (cast (ptr i8) transfer)) http/BODY-CONTINUE))
+    (assert (= (n/msg i64 (.bytes transfer) (n/sel c"length") []) 1))
+    (assert (= (t/consume byte 16777216 (cast (ptr i8) transfer)) http/BODY-STOP))
+    (assert (= (.error transfer) 2))
+    (assert (= (n/msg i64 (.bytes transfer) (n/sel c"length") []) 1))
+    (n/release (.bytes transfer))
+    (n/release pool)))

@@ -9,8 +9,6 @@
 
 (extern free :cc (cc/C) [(ptr i8)] (-> void))
 
-(extern mkdtemp :cc (cc/C) [(ptr i8)] (-> (ptr i8)))
-
 (extern usleep :cc (cc/C) [u32] (-> i32))
 
 (defn kind? [(obj (ptr i8)) (name (ptr i8))] (-> bool)

@@ -22,7 +22,8 @@ def main():
     resources.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / 'build/release/paper-blog', macos / 'paper-blog')
     shutil.copy2(ROOT / 'resources/titles.json', resources / 'titles.json')
-    run('coil', 'run', 'src/icon.coil', '--', '--snapshot', 'build/icon.png')
+    subprocess.run(['coil', 'run', '--', '--snapshot', str(ROOT / 'build/icon.png')],
+                   cwd=ROOT / 'tools/icon', check=True)
     iconset = ROOT / 'build/PaperBlog.iconset'
     iconset.mkdir(exist_ok=True)
     for points in [16, 32, 128, 256, 512]:

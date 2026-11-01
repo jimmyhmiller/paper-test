@@ -3,14 +3,17 @@
 (import "paper.ffi" :use [snprintf strcmp])
 (import "blog.native" :as n)
 (import "blog.model" :as m)
+(import "blog.transport" :as transport)
+(import "coil.str" :as str)
+(import "coil.thread" :as thread)
+(import "coil.atomic" :as atomic)
+(import "coil.cancellation" :as cancellation)
+(import "coil.result" :use *)
 
 (defstruct Source
   [(data m/Dataset)
-   (task (ptr i8))
+   (transfer transport/Transfer)
    (catalog (ptr i8))
-   (directory (ptr i8))
-   (output (ptr i8))
-   (response (ptr i8))
    (cache (ptr i8))
    (loading bool)
    (failed bool)
@@ -51,203 +54,83 @@
            (n/nil)
            (mut error))))
 
-(defn remove-directory [] (-> i64)
-  (let [s (state)]
-    (when (!= (.directory s) (n/nil))
-      (let [(mut error) (n/nil)]
-        (n/msg bool
-               (manager)
-               (n/sel c"removeItemAtPath:error:")
-               [(ptr i8) (mut (ptr i8))]
-               (.directory s)
-               (mut error)))
-      (n/release (.directory s))
-      (n/release (.output s))
-      (n/release (.response s))
-      (set! (.directory s) (n/nil))
-      (set! (.output s) (n/nil))
-      (set! (.response s) (n/nil))))
-  0)
-
-(defn status-file [(path (ptr i8))] (-> (ptr i8))
-  (n/msg bool
-         (manager)
-         (n/sel c"createFileAtPath:contents:attributes:")
-         [(ptr i8) (ptr i8) (ptr i8)]
-         path
-         (n/nil)
-         (n/nil))
-  (n/msg (ptr i8)
-         (n/class c"NSFileHandle")
-         (n/sel c"fileHandleForWritingAtPath:")
-         [(ptr i8)]
-         path))
-
 (defn fail [(message (ptr i8))] (-> bool)
   (set! (.failed (state)) true)
   (set! (.message (state)) message)
   false)
 
-;;; NSTask launches curl directly with separate argv entries: no shell, no
-;;; credentials in argv, no blocking UI, and bounded response size and time.
-;;; Use the existing Website curl config; never copy it into the bundle/cache.
 (defn request [] (-> bool)
-  (let [s (state)
-        text (index (buffer) 0)]
+  (let [s (state) t (field s transfer) text (index (buffer) 0)]
     (if (or (.loading s) (.fixture s))
         false
         (do
           (set! (.last-attempt s) (n/now-ms))
-          (cast i64
-                (snprintf text 2048 c"%s/.jim/dataflow/analytics.curl" (n/home)))
-          (let [auth (n/ns (n/env c"PAPER_BLOG_AUTH_CONFIG" text))]
-            (if (not (exists? auth))
-                (fail c"Credentials missing: ~/.jim/dataflow/analytics.curl · ⌘R to retry")
+          (cast i64 (snprintf text 2048 c"%s/.jim/dataflow/analytics.token" (n/home)))
+          (let [bytes (n/read-data (n/env c"PAPER_BLOG_TOKEN_FILE" text))
+                token-text (n/msg (ptr i8)
+                             (n/msg (ptr i8) (n/class c"NSString") (n/sel c"alloc") [])
+                             (n/sel c"initWithData:encoding:") [(ptr i8) i64] bytes 4)
+                token (n/msg (ptr i8) token-text (n/sel c"stringByTrimmingCharactersInSet:")
+                        [(ptr i8)] (n/msg (ptr i8) (n/class c"NSCharacterSet")
+                                     (n/sel c"whitespaceAndNewlineCharacterSet") []))]
+            (if (or (= token (n/nil))
+                    (> (n/msg i64 bytes (n/sel c"length") []) 16384)
+                    (!= (len (str/from-cstr (n/utf8 token)))
+                        (n/msg i64 token (n/sel c"lengthOfBytesUsingEncoding:") [i64] 4))
+                    (not (transport/valid-token? (str/from-cstr (n/utf8 token)))))
+                (do (n/release token-text)
+                    (fail c"Bearer token missing or invalid. Run scripts/migrate_auth.py · ⌘R to retry"))
                 (do
-                  (let [url
-                          (n/msg (ptr i8)
-                                 (manager)
-                                 (n/sel c"temporaryDirectory")
-                                 [])]
-                    (cast i64
-                          (snprintf text
-                                    2048
-                                    c"%s/paper-blog-XXXXXX"
-                                    (n/utf8 (n/msg (ptr i8)
-                                                   url
-                                                   (n/sel c"path")
-                                                   [])))))
-                  (if (= (n/mkdtemp text) (n/nil))
-                      (fail c"Could not create a private download directory · ⌘R to retry")
+                  (set! (.authorization t)
+                    (n/retain (n/msg (ptr i8) (n/ns c"Bearer ") (n/sel c"stringByAppendingString:")
+                                    [(ptr i8)] token)))
+                  (n/release token-text)
+                  (cast i64 (snprintf text 2048
+                    c"https://computer.jimmyhmiller.com/analytics/timeline?prefix=/api/&n=all&bucket=hour&from=0&to=%lld"
+                    (n/now-ms)))
+                  (set! (.url t) (n/retain (n/ns text)))
+                  (set! (.bytes t) (n/new c"NSMutableData"))
+                  (set! (.status t) 0)
+                  (set! (.error t) 0)
+                  (atomic/store (field t done) 0)
+                  (match (cancellation/Cancellation::init (field t cancel))
+                    (Err [e]
                       (do
-                        (set! (.directory s) (n/retain (n/ns text)))
-                        (set! (.output s)
-                              (n/retain (append (.directory s) c"timeline.json")))
-                        (set! (.response s)
-                              (n/retain (append (.directory s) c"http-status")))
-                        (let [to (n/now-ms)
-                              from 0
-                              args (n/new c"NSMutableArray")
-                              task (n/new c"NSTask")
-                              output (status-file (.response s))
-                              null
-                                (n/msg (ptr i8)
-                                       (n/class c"NSFileHandle")
-                                       (n/sel c"fileHandleWithNullDevice")
-                                       [])]
-                          (cast i64
-                                (snprintf text
-                                          2048
-                                          c"https://computer.jimmyhmiller.com/analytics/timeline?prefix=/api/&n=all&bucket=hour&from=%lld&to=%lld"
-                                          from
-                                          to))
-                          (let [values
-                                  [c"--config"
-                                   (n/utf8 auth)
-                                   c"--silent"
-                                   c"--show-error"
-                                   c"--fail"
-                                   c"--proto"
-                                   c"=https"
-                                   c"--connect-timeout"
-                                   c"10"
-                                   c"--max-time"
-                                   c"45"
-                                   c"--max-filesize"
-                                   c"16777216"
-                                   c"--output"
-                                   (n/utf8 (.output s))
-                                   c"--write-out"
-                                   c"%{http_code}"
-                                   text]]
-                            (for [i 0 18]
-                              (n/msg i64
-                                     args
-                                     (n/sel c"addObject:")
-                                     [(ptr i8)]
-                                     (n/ns (get values i)))))
-                          (n/msg i64
-                                 task
-                                 (n/sel c"setLaunchPath:")
-                                 [(ptr i8)]
-                                 (n/ns c"/usr/bin/curl"))
-                          (n/msg i64
-                                 task
-                                 (n/sel c"setArguments:")
-                                 [(ptr i8)]
-                                 args)
-                          (n/msg i64
-                                 task
-                                 (n/sel c"setStandardOutput:")
-                                 [(ptr i8)]
-                                 output)
-                          (n/msg i64
-                                 task
-                                 (n/sel c"setStandardError:")
-                                 [(ptr i8)]
-                                 null)
-                          (n/msg i64
-                                 task
-                                 (n/sel c"setStandardInput:")
-                                 [(ptr i8)]
-                                 null)
-                          (let [(mut error) (n/nil)
-                                launched
-                                  (n/msg bool
-                                         task
-                                         (n/sel c"launchAndReturnError:")
-                                         [(mut (ptr i8))]
-                                         (mut error))]
-                            (n/msg i64 output (n/sel c"closeFile") [])
-                            (n/release args)
-                            (if launched
-                                (do
-                                  (set! (.task s) task)
-                                  (set! (.loading s) true)
-                                  (set! (.message s)
-                                        c"Refreshing from your blog…")
-                                  true)
-                                (do
-                                  (n/release task)
-                                  (remove-directory)
-                                  (fail c"Could not launch the data request · ⌘R to retry"))))))))))))))
+                        (n/release (.url t)) (n/release (.authorization t)) (n/release (.bytes t))
+                        (fail c"Could not initialize request cancellation · ⌘R to retry")))
+                    (Ok [cancel]
+                      (if (= (thread/Thread::spawn (field t worker) (fnptr-of transport/work)
+                                                  (cast (ptr i8) t)) (: 0 i32))
+                          (do (set! (.loading s) true)
+                              (set! (.message s) c"Refreshing from your blog…") true)
+                          (do (transport/cleanup t)
+                              (fail c"Could not start the data request · ⌘R to retry"))))))))))))
 
 ;;; Only publish a complete, validated snapshot. A failed refresh preserves
 ;;; last-good data and its original time range. Cache writes are atomic.
 (defn poll [] (-> bool)
   (let [s (state)]
-    (if (or (not (.loading s)) (n/msg bool (.task s) (n/sel c"isRunning") []))
+    (if (or (not (.loading s)) (= (atomic/read (field (field s transfer) done)) 0))
         false
-        (let [code (n/msg i32 (.task s) (n/sel c"terminationStatus") [])
-              http-data (n/read-data (n/utf8 (.response s)))
-              http-text
-                (n/msg (ptr i8)
-                       (n/msg (ptr i8)
-                              (n/class c"NSString")
-                              (n/sel c"alloc")
-                              [])
-                       (n/sel c"initWithData:encoding:")
-                       [(ptr i8) i64]
-                       http-data
-                       4)
-              http
-                (if (= http-text (n/nil))
-                    0
-                    (n/msg i64 http-text (n/sel c"integerValue") []))
-              bytes (n/read-data (n/utf8 (.output s)))
+        (let [t (field s transfer)
+              joined (thread/Thread::join (field t worker))
+              code (.error t)
+              http (.status t)
+              bytes (.bytes t)
               root (n/parse-data bytes)]
           (set! (.loading s) false)
-          (n/release (.task s))
-          (set! (.task s) (n/nil))
-          (n/release http-text)
           (cond (or (= http 401) (= http 403))
-                  (fail c"Blog access was denied. Check your curl credentials · ⌘R to retry")
-                (!= code (: 0 i32))
+                  (fail c"Blog access was denied. Check your bearer token · ⌘R to retry")
+                (= code 2)
+                  (fail c"The blog response exceeded 16 MiB · ⌘R to retry")
+                (= code 3)
+                  (fail c"The blog request timed out · ⌘R to retry")
+                (!= code 0)
                   (let [text (index (error-buffer) 0)]
                     (cast i64
                           (snprintf text
                                     256
-                                    c"Request failed (curl %d, HTTP %lld) · ⌘R to retry"
+                                    c"Request failed (transport %lld, HTTP %lld) · ⌘R to retry"
                                     code
                                     http))
                     (fail text))
@@ -270,7 +153,7 @@
                         (set! (.message s)
                               c"Live data · could not save offline cache · ⌘R to refresh")))
                     true))
-          (remove-directory)
+          (transport/cleanup t)
           true))))
 
 (defn initialize [] (-> i64)
@@ -312,10 +195,10 @@
 (defn shutdown [] (-> i64)
   (let [s (state)]
     (when (.loading s)
-      (n/msg i64 (.task s) (n/sel c"terminate") [])
-      (n/msg i64 (.task s) (n/sel c"waitUntilExit") [])
-      (n/release (.task s)))
-    (remove-directory)
+      (cancellation/Cancellation::request! (field (field s transfer) cancel))
+      (thread/Thread::join (field (field s transfer) worker))
+      (transport/cleanup (field s transfer))
+      (set! (.loading s) false))
     (m/clear (field s data))
     (n/release (.catalog s))
     (n/release (.cache s)))

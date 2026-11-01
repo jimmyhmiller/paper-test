@@ -1,0 +1,17 @@
+(module blog.live-data-check)
+(import "blog.source" :as source)
+(import "blog.native" :as n)
+
+;;; Run with PAPER_BLOG_CACHE_DIR set to a temporary directory.
+(defn main [] (-> i64)
+  (let [pool (n/new c"NSAutoreleasePool")
+        s (source/state)]
+    (source/initialize)
+    (when (not (n/has-arg? c"--cancel"))
+      (loop
+        (if (not (.loading s)) (break)
+            (do (source/poll) (n/usleep 10000)))))
+    (let [failed (.failed s)]
+      (source/shutdown)
+      (n/release pool)
+      (if failed 1 0))))
