@@ -872,11 +872,20 @@
         active (and (not excluded) (= post-index (.selected s)))
         color (stack/color (.path post))
         text (index (text-buffer) 0)]
+    (when excluded
+      ;; The row and its ink sit below the index stock, inside a real cut seat.
+      (recess (inset r 1.0)
+              2.0
+              14.0
+              3.5
+              0.7
+              (t/paper t/INDEX)
+              (tint (t/paper t/INDEX) 0x211526 0.20)))
     (when active
       (panel r 1.0 25.0 (t/paper color))
       (when (.selection-locked s)
         (frame (inset r 1.5) 0.5 0.8 26.0 (t/paper 0x291b2c))))
-    (ink-height (if active 25.5 15.0))
+    (ink-height (if excluded 11.0 (if active 25.5 15.0)))
     (let [ink (cast u32 (if excluded 0xa07b89 (if active 0x291b2c t/INK)))]
       (label (+ (.x r) 8.0)
              (+ (.y r) 9.0)
@@ -895,14 +904,6 @@
                    ink
                    3
                    (formatted (.views post))))
-    (when excluded
-      (ink-height 16.0)
-      (host/paper_rule (+ (.x r) 30.0)
-                       (+ (.y r) 15.0)
-                       (minimum (- (.w r) 104.0)
-                                (text-width (n/utf8 (.short-title post)) 14.0 1))
-                       0.8
-                       0xa07b89))
     (cast i64
           (snprintf text
                     2048
